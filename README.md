@@ -15,6 +15,9 @@ combines the strongest compatible ideas from Ponytail and pstack:
 - Critical-path native Codex subagents: start independent work early, keep the
   parent moving, and wait only once at a named merge point when the result is
   actually required.
+- Terminal-state reconciliation that distinguishes a received final from a
+  closed host thread, performs one bounded close/check/interrupt sequence, and
+  never reruns completed work merely to clear a stale UI card.
 - A guarded custom-agent lifecycle that inventories existing agents, prefers a
   reusable specialist over a generic built-in, creates a narrow managed agent
   when that specialty is missing, records evidence, promotes tested experience,
@@ -22,6 +25,9 @@ combines the strongest compatible ideas from Ponytail and pstack:
 - Evidence-gated route recommendations that strengthen repeatedly weak agents,
   economize consistently strong but slow agents, and keep Fast/Standard as an
   explicit latency-versus-cost decision.
+- Bounded AVO-inspired variation sessions with sanitized lineage, fixed
+  candidate/wall/tool/token/credit budgets, stagnation-gated supervision,
+  multi-objective shadow comparison, and a separate existing promotion gate.
 
 It intentionally does not ship an MCP server, Node lifecycle hooks, a background
 watcher, or dozens of always-loaded skills. One Python-standard-library CLI is
@@ -160,6 +166,13 @@ finish-now request and then becomes an explicit gap instead of blocking forever.
 Every brief declares whether the route is parallel or sequential, its criticality
 and deadline, and either the concurrent parent slice and merge point or the
 evidence supporting the sequential quality/time/cost gate.
+At closeout, a child `FINAL_ANSWER` means the result arrived; it does not prove
+the host thread closed. The parent verifies the result, checks terminal state
+once, asks once to stop and close any completed-but-active child, then uses the
+available interrupt/stop control. If the UI still cannot confirm closure, the
+parent records `stale_host_status`, stops waiting, and never reruns that work just
+to clear the card. Managed-agent leases are released only after confirmed
+terminal state; otherwise the bounded lease is allowed to expire.
 Authorized idempotent publishing uses the normal transport first, retries
 one clearly transient failure once, and then switches to a previously verified
 safe transport instead of repeatedly waiting on the same broken path.
@@ -227,6 +240,36 @@ agent TOML, global `config.toml`, or the current session. Named custom agents
 must use an explicit-role fallback to shadow a different model or effort because
 their TOML values take precedence. Fast remains recommendation-only when the
 host does not expose a per-agent service-tier field.
+
+### Bounded variation and stagnation supervision
+
+Schema v4 keeps credits, retries, rework, and enumerated failure reasons separate
+from the existing quality score. `stagnation-status` authorizes a supervisor only
+after a comparable no-improvement streak or the same high-confidence failure
+reason repeats three times. A single poor or slow run never starts self-editing.
+An explicit user can still request a manual variation session.
+
+The variation sequence is deliberately split:
+
+1. `variation-plan` snapshots sanitized lineage and fixes one to four candidates,
+   a 60–3,600 second end-to-end wall budget, up to 32 total tool calls, and total
+   token/credit buckets covering generation plus shadow verification.
+2. `variation-stage` accepts exactly that count only before the deadline and
+   within every budget. It stores staged challengers and changes no TOML.
+3. `variation-verify` requires at least three identical shadow cases, an
+   independent high-confidence judge, strong evidence, no critical regression,
+   and a separate wall/token/credit/retry/rework comparison.
+4. The existing `promote` command must still run separately. Only then does the
+   logical playbook revision advance; the stable TOML remains unchanged.
+
+Quality and safety are hard gates. With less than a three-point quality gain, a
+challenger must have no known resource regression and strictly improve at least
+one resource or rework objective. A larger quality gain may trade resources only
+when that tradeoff was explicitly accepted. Unknown credits remain unknown and
+cannot be counted as savings. The supervisor can propose a direction; it cannot
+change global configuration, promote a candidate, or bypass revision/hash/lease
+checks. Full JSON contracts and commands are in
+[`agent-lifecycle.md`](skills/lean-stack/references/agent-lifecycle.md).
 
 The lifecycle database and quarantine live under
 `~/.codex/lean-stack/`. They do not retain user prompts, repository content,
@@ -302,6 +345,11 @@ test groups.
   candidate, evidence, lineage, A/B gate, and rollback/quarantine lifecycle.
   The last project is new and is treated as an engineering pattern rather than
   proof of broad production maturity.
+- [AVO](https://arxiv.org/abs/2603.24517) informs the bounded variation-session,
+  stagnation-supervisor, and multi-objective candidate-generation additions. The
+  plugin intentionally does not copy its long-running autonomous loop: every
+  candidate remains budgeted, staged, independently verified, and separately
+  promoted.
 - [RouteLLM](https://github.com/lm-sys/RouteLLM) informs calibrated,
   task-distribution-specific strong/weak model thresholds instead of single-run
   switching.

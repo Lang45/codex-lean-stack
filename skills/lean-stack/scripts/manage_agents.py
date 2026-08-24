@@ -27,8 +27,9 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 ROUTING_POLICY_VERSION = 2
+VARIATION_POLICY_VERSION = 1
 BUILTIN_AGENTS = ("default", "worker", "explorer")
 MANAGED_PREFIX = "lean_"
 MAX_ACTIVE_MANAGED_AGENTS = 8
@@ -36,6 +37,9 @@ MAX_AGENT_FILE_BYTES = 16 * 1024
 MAX_INSTRUCTION_BYTES = 6 * 1024
 MAX_PROMOTED_RULES = 12
 MIN_RULE_OBSERVATIONS = 3
+MAX_VARIATION_CANDIDATES = 4
+MAX_VARIATION_WALL_SECONDS = 3600
+MAX_VARIATION_TOOL_CALLS = 32
 
 ALLOWED_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max", "ultra"}
 ALLOWED_SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
@@ -79,6 +83,7 @@ ALLOWED_CONFIRMATIONS = {"deterministic", "independent_model", "human"}
 ALLOWED_JUDGES = {"parent", "deterministic", "independent_model", "human"}
 ALLOWED_CONFIDENCE = {"low", "medium", "high"}
 ALLOWED_BUCKETS = {"low", "expected", "high", "unknown"}
+ALLOWED_BUDGET_BUCKETS = {"low", "expected", "high"}
 ALLOWED_USER_VERDICTS = {"approve", "reject", "unknown"}
 ALLOWED_REQUESTED_SERVICE_TIERS = {"inherit", "standard", "fast", "unknown"}
 ALLOWED_EFFECTIVE_SERVICE_TIERS = {"standard", "fast", "priority", "unknown"}
@@ -96,6 +101,38 @@ ALLOWED_ROUTING_ATTRIBUTIONS = {
     "tool_or_environment",
     "role_mismatch",
     "unknown",
+}
+ALLOWED_FAILURE_REASONS = {
+    "none",
+    "incorrect_result",
+    "missing_evidence",
+    "scope_miss",
+    "safety_boundary",
+    "tool_failure",
+    "timeout",
+    "cost_overrun",
+    "excessive_rework",
+    "role_mismatch",
+    "stale_host_status",
+    "other",
+}
+NON_EVOLUTION_FAILURE_REASONS = {
+    "tool_failure",
+    "timeout",
+    "role_mismatch",
+    "stale_host_status",
+}
+ALLOWED_VARIATION_TRIGGERS = {"manual", "stagnation"}
+ALLOWED_VARIATION_RATIONALES = {
+    "quality_recovery",
+    "evidence_strengthening",
+    "scope_control",
+    "safety_guard",
+    "latency_reduction",
+    "token_reduction",
+    "credit_reduction",
+    "rework_reduction",
+    "novel_direction",
 }
 MUTABLE_STATES = {
     "pending_visibility",
@@ -133,6 +170,10 @@ REPORT_KEYS = {
     "user_verdict",
     "experience",
     "routing",
+    "credit_bucket",
+    "retry_count",
+    "rework_count",
+    "failure_reason",
 }
 ROUTING_KEYS = {
     "requested_model",
@@ -165,8 +206,60 @@ PROMOTION_KEYS = {
     "judge_kind",
     "judge_confidence",
 }
+REPORT_METRIC_KEYS = {
+    "credit_bucket",
+    "retry_count",
+    "rework_count",
+    "failure_reason",
+}
+VARIATION_PLAN_KEYS = {
+    "request_id",
+    "agent_id",
+    "task_class",
+    "risk_tier",
+    "trigger",
+    "candidate_limit",
+    "wall_time_seconds",
+    "tool_call_limit",
+    "token_bucket",
+    "credit_bucket",
+}
+VARIATION_STAGE_KEYS = {
+    "session_id",
+    "elapsed_seconds",
+    "tool_calls_used",
+    "token_bucket_used",
+    "credit_bucket_used",
+    "supervisor_direction",
+    "candidates",
+}
+VARIATION_CANDIDATE_KEYS = {
+    "rule_key",
+    "rule",
+    "applies_to",
+    "rationale_code",
+}
+VARIATION_COMPARISON_KEYS = {
+    "tradeoff_accepted",
+    "shadow_suite_sha256",
+    "elapsed_seconds_total",
+    "tool_calls_total",
+    "token_bucket_total",
+    "credit_bucket_total",
+    "incumbent_duration_bucket",
+    "challenger_duration_bucket",
+    "incumbent_token_bucket",
+    "challenger_token_bucket",
+    "incumbent_credit_bucket",
+    "challenger_credit_bucket",
+    "incumbent_retry_count",
+    "challenger_retry_count",
+    "incumbent_rework_count",
+    "challenger_rework_count",
+}
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TAG_RE = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
 EXPERIENCE_KEY_RE = re.compile(r"^[a-z][a-z0-9-]{2,63}$")
 MARKER_RE = re.compile(r"^# lean-stack-agent-id: ([0-9a-f-]{36})\r?$", re.MULTILINE)
@@ -226,6 +319,12 @@ def sha256_bytes(data: bytes) -> str:
 
 def json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def evaluation_report_digests(report: dict[str, Any]) -> tuple[str, str]:
+    current = sha256_bytes(json_text(report).encode("utf-8"))
+    legacy = {key: value for key, value in report.items() if key not in REPORT_METRIC_KEYS}
+    return current, sha256_bytes(json_text(legacy).encode("utf-8"))
 
 
 def toml_string(value: str) -> str:
@@ -429,6 +528,23 @@ def validate_string_list(
             raise LifecycleError(f"{label} 含重复值: {item}")
         result.append(item)
     return result
+
+
+def validate_bounded_int(value: Any, label: str, *, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise LifecycleError(f"{label} 必须是 {minimum} 到 {maximum} 的整数")
+    return value
+
+
+def validate_budget_bucket(value: Any, label: str) -> str:
+    bucket = validate_text(value, label, maximum=12)
+    if bucket not in ALLOWED_BUDGET_BUCKETS:
+        raise LifecycleError(f"{label} 必须是 low、expected 或 high")
+    return bucket
+
+
+def bucket_rank(value: str) -> int | None:
+    return {"low": 0, "expected": 1, "high": 2}.get(value)
 
 
 def validate_spec(raw: dict[str, Any]) -> dict[str, Any]:
@@ -640,7 +756,7 @@ def validate_routing(raw: Any) -> dict[str, Any] | None:
 
 
 def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
-    required = REPORT_KEYS - {"experience", "routing"}
+    required = REPORT_KEYS - {"experience", "routing"} - REPORT_METRIC_KEYS
     validate_exact_keys(raw, allowed=REPORT_KEYS, required=required, label="评测报告")
     try:
         agent_id = str(uuid.UUID(validate_text(raw["agent_id"], "agent_id", maximum=36)))
@@ -686,6 +802,20 @@ def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
     verdict = validate_text(raw["user_verdict"], "user_verdict", maximum=12)
     if verdict not in ALLOWED_USER_VERDICTS:
         raise LifecycleError("user_verdict 不受支持")
+    credit = validate_text(raw.get("credit_bucket", "unknown"), "credit_bucket", maximum=12)
+    if credit not in ALLOWED_BUCKETS:
+        raise LifecycleError("credit_bucket 不受支持")
+    retry_count = validate_bounded_int(
+        raw.get("retry_count", 0), "retry_count", minimum=0, maximum=20
+    )
+    rework_count = validate_bounded_int(
+        raw.get("rework_count", 0), "rework_count", minimum=0, maximum=20
+    )
+    failure_reason = validate_text(
+        raw.get("failure_reason", "none"), "failure_reason", maximum=32
+    )
+    if failure_reason not in ALLOWED_FAILURE_REASONS:
+        raise LifecycleError("failure_reason 不受支持")
     experience = validate_experience(raw.get("experience"), task_class)
     routing = validate_routing(raw.get("routing"))
     return {
@@ -702,6 +832,10 @@ def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
         "judge_confidence": confidence,
         "duration_bucket": duration,
         "token_bucket": token,
+        "credit_bucket": credit,
+        "retry_count": retry_count,
+        "rework_count": rework_count,
+        "failure_reason": failure_reason,
         "user_verdict": verdict,
         "experience": experience,
         "routing": routing,
@@ -742,6 +876,193 @@ def validate_promotion(raw: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def validate_variation_plan(raw: dict[str, Any]) -> dict[str, Any]:
+    validate_exact_keys(
+        raw,
+        allowed=VARIATION_PLAN_KEYS,
+        required=VARIATION_PLAN_KEYS,
+        label="变异会话计划",
+    )
+    result = {
+        "request_id": normalize_uuid(raw["request_id"], "request_id"),
+        "agent_id": normalize_uuid(raw["agent_id"], "agent_id"),
+    }
+    task_class = validate_text(raw["task_class"], "task_class", maximum=32)
+    if task_class not in ALLOWED_TASK_CLASSES:
+        raise LifecycleError("task_class 不受支持")
+    risk_tier = validate_text(raw["risk_tier"], "risk_tier", maximum=32)
+    if risk_tier not in ALLOWED_RISK_CEILINGS:
+        raise LifecycleError("risk_tier 不受支持")
+    trigger = validate_text(raw["trigger"], "trigger", maximum=16)
+    if trigger not in ALLOWED_VARIATION_TRIGGERS:
+        raise LifecycleError("trigger 必须是 manual 或 stagnation")
+    result.update(
+        task_class=task_class,
+        risk_tier=risk_tier,
+        trigger=trigger,
+        candidate_limit=validate_bounded_int(
+            raw["candidate_limit"],
+            "candidate_limit",
+            minimum=1,
+            maximum=MAX_VARIATION_CANDIDATES,
+        ),
+        wall_time_seconds=validate_bounded_int(
+            raw["wall_time_seconds"],
+            "wall_time_seconds",
+            minimum=60,
+            maximum=MAX_VARIATION_WALL_SECONDS,
+        ),
+        tool_call_limit=validate_bounded_int(
+            raw["tool_call_limit"],
+            "tool_call_limit",
+            minimum=0,
+            maximum=MAX_VARIATION_TOOL_CALLS,
+        ),
+        token_bucket=validate_budget_bucket(raw["token_bucket"], "token_bucket"),
+        credit_bucket=validate_budget_bucket(raw["credit_bucket"], "credit_bucket"),
+    )
+    return result
+
+
+def validate_variation_stage(raw: dict[str, Any]) -> dict[str, Any]:
+    validate_exact_keys(
+        raw,
+        allowed=VARIATION_STAGE_KEYS,
+        required=VARIATION_STAGE_KEYS,
+        label="变异候选提交",
+    )
+    direction_raw = raw["supervisor_direction"]
+    direction = None
+    if direction_raw is not None:
+        direction = validate_text(
+            direction_raw,
+            "supervisor_direction",
+            maximum=240,
+            reject_sensitive=True,
+        )
+    candidates_raw = raw["candidates"]
+    if not isinstance(candidates_raw, list) or not 1 <= len(candidates_raw) <= MAX_VARIATION_CANDIDATES:
+        raise LifecycleError(
+            f"candidates 必须是含 1 到 {MAX_VARIATION_CANDIDATES} 项的数组"
+        )
+    candidates: list[dict[str, str]] = []
+    keys: set[str] = set()
+    for index, item_raw in enumerate(candidates_raw):
+        item = require_object(item_raw, f"candidates[{index}]")
+        validate_exact_keys(
+            item,
+            allowed=VARIATION_CANDIDATE_KEYS,
+            required=VARIATION_CANDIDATE_KEYS,
+            label=f"candidates[{index}]",
+        )
+        rule_key = validate_text(item["rule_key"], f"candidates[{index}].rule_key", maximum=64)
+        if not EXPERIENCE_KEY_RE.fullmatch(rule_key):
+            raise LifecycleError("候选 rule_key 必须是 3 到 64 位的小写连字符标识")
+        if rule_key in keys:
+            raise LifecycleError("candidates 含重复 rule_key")
+        keys.add(rule_key)
+        rule = validate_text(
+            item["rule"],
+            f"candidates[{index}].rule",
+            maximum=240,
+            reject_sensitive=True,
+        )
+        applies_to = validate_text(
+            item["applies_to"], f"candidates[{index}].applies_to", maximum=32
+        )
+        if applies_to not in ALLOWED_TASK_CLASSES:
+            raise LifecycleError("候选 applies_to 不受支持")
+        rationale = validate_text(
+            item["rationale_code"], f"candidates[{index}].rationale_code", maximum=32
+        )
+        if rationale not in ALLOWED_VARIATION_RATIONALES:
+            raise LifecycleError("候选 rationale_code 不受支持")
+        candidates.append(
+            {
+                "rule_key": rule_key,
+                "rule": rule,
+                "applies_to": applies_to,
+                "rationale_code": rationale,
+            }
+        )
+    return {
+        "session_id": normalize_uuid(raw["session_id"], "session_id"),
+        "elapsed_seconds": validate_bounded_int(
+            raw["elapsed_seconds"],
+            "elapsed_seconds",
+            minimum=0,
+            maximum=MAX_VARIATION_WALL_SECONDS,
+        ),
+        "tool_calls_used": validate_bounded_int(
+            raw["tool_calls_used"],
+            "tool_calls_used",
+            minimum=0,
+            maximum=MAX_VARIATION_TOOL_CALLS,
+        ),
+        "token_bucket_used": validate_budget_bucket(
+            raw["token_bucket_used"], "token_bucket_used"
+        ),
+        "credit_bucket_used": validate_budget_bucket(
+            raw["credit_bucket_used"], "credit_bucket_used"
+        ),
+        "supervisor_direction": direction,
+        "candidates": candidates,
+    }
+
+
+def validate_variation_verification(raw: dict[str, Any]) -> dict[str, Any]:
+    expected = (
+        (PROMOTION_KEYS - {"candidate_id"})
+        | {"variation_candidate_id"}
+        | VARIATION_COMPARISON_KEYS
+    )
+    validate_exact_keys(raw, allowed=expected, required=expected, label="变异候选验证")
+    promotion_like = {
+        key: value for key, value in raw.items() if key not in VARIATION_COMPARISON_KEYS
+    }
+    promotion_like["candidate_id"] = promotion_like.pop("variation_candidate_id")
+    result = validate_promotion(promotion_like)
+    result["variation_candidate_id"] = result.pop("candidate_id")
+    if not isinstance(raw["tradeoff_accepted"], bool):
+        raise LifecycleError("tradeoff_accepted 必须是布尔值")
+    result["tradeoff_accepted"] = raw["tradeoff_accepted"]
+    shadow_suite_sha256 = validate_text(
+        raw["shadow_suite_sha256"], "shadow_suite_sha256", maximum=64
+    )
+    if not SHA256_RE.fullmatch(shadow_suite_sha256):
+        raise LifecycleError("shadow_suite_sha256 必须是 64 位小写十六进制 SHA-256")
+    result["shadow_suite_sha256"] = shadow_suite_sha256
+    result["elapsed_seconds_total"] = validate_bounded_int(
+        raw["elapsed_seconds_total"],
+        "elapsed_seconds_total",
+        minimum=0,
+        maximum=MAX_VARIATION_WALL_SECONDS,
+    )
+    result["tool_calls_total"] = validate_bounded_int(
+        raw["tool_calls_total"],
+        "tool_calls_total",
+        minimum=0,
+        maximum=MAX_VARIATION_TOOL_CALLS,
+    )
+    result["token_bucket_total"] = validate_budget_bucket(
+        raw["token_bucket_total"], "token_bucket_total"
+    )
+    result["credit_bucket_total"] = validate_budget_bucket(
+        raw["credit_bucket_total"], "credit_bucket_total"
+    )
+    for prefix in ("incumbent", "challenger"):
+        for metric in ("duration", "token", "credit"):
+            key = f"{prefix}_{metric}_bucket"
+            value = validate_text(raw[key], key, maximum=12)
+            if value not in ALLOWED_BUCKETS:
+                raise LifecycleError(f"{key} 不受支持")
+            result[key] = value
+        for metric in ("retry", "rework"):
+            key = f"{prefix}_{metric}_count"
+            result[key] = validate_bounded_int(raw[key], key, minimum=0, maximum=20)
+    return result
+
+
 def high_quality(report: dict[str, Any]) -> bool:
     scores = report["scores"]
     return (
@@ -757,6 +1078,45 @@ def high_quality(report: dict[str, Any]) -> bool:
         and report["judge_confidence"] in {"medium", "high"}
         and report["user_verdict"] != "reject"
     )
+
+
+def variation_resource_comparison(report: dict[str, Any]) -> dict[str, Any]:
+    improvements: list[str] = []
+    regressions: list[str] = []
+    unknown: list[str] = []
+    for metric in ("duration", "token", "credit"):
+        incumbent = report[f"incumbent_{metric}_bucket"]
+        challenger = report[f"challenger_{metric}_bucket"]
+        incumbent_rank = bucket_rank(incumbent)
+        challenger_rank = bucket_rank(challenger)
+        if incumbent_rank is None or challenger_rank is None:
+            unknown.append(metric)
+        elif challenger_rank < incumbent_rank:
+            improvements.append(metric)
+        elif challenger_rank > incumbent_rank:
+            regressions.append(metric)
+    for metric in ("retry", "rework"):
+        incumbent = report[f"incumbent_{metric}_count"]
+        challenger = report[f"challenger_{metric}_count"]
+        if challenger < incumbent:
+            improvements.append(metric)
+        elif challenger > incumbent:
+            regressions.append(metric)
+    quality_gain = report["challenger_quality"] - report["incumbent_quality"]
+    if quality_gain < 3:
+        if regressions:
+            raise LifecycleError("质量未显著提升时，challenger 不得在资源或返工维度回归")
+        if not improvements:
+            raise LifecycleError("质量持平路径必须在墙钟、token、credits、重试或返工上严格改进")
+    requires_tradeoff = quality_gain >= 3 and bool(regressions)
+    if requires_tradeoff and not report["tradeoff_accepted"]:
+        raise LifecycleError("质量提升伴随资源回归；需要明确接受该 tradeoff")
+    return {
+        "improvements": improvements,
+        "regressions": regressions,
+        "unknown": unknown,
+        "tradeoff_accepted": report["tradeoff_accepted"],
+    }
 
 
 def canonical_model(model: str) -> str:
@@ -1015,12 +1375,26 @@ class AgentLifecycle:
         )
         row = connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         current_version = int(row["value"]) if row is not None else None
-        if current_version not in {None, 1, SCHEMA_VERSION}:
+        if current_version not in {None, 1, 2, 3, SCHEMA_VERSION}:
             raise LifecycleError("生命周期数据库版本不受当前脚本支持")
-        if current_version in {None, 1}:
+        if current_version != SCHEMA_VERSION:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                AgentLifecycle.create_routing_schema(connection)
+                if current_version in {None, 1, 2}:
+                    if current_version in {None, 1}:
+                        AgentLifecycle.create_routing_schema(connection)
+                    else:
+                        routing_table = connection.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='evaluation_routing'"
+                        ).fetchone()
+                        if routing_table is None:
+                            raise LifecycleError(
+                                "生命周期数据库 v2 缺少 evaluation_routing 表"
+                            )
+                    AgentLifecycle.create_evolution_schema(connection)
+                else:
+                    AgentLifecycle.migrate_v3_to_v4(connection)
+                AgentLifecycle.validate_evolution_schema(connection)
                 if current_version is None:
                     connection.execute(
                         "INSERT INTO meta(key, value) VALUES('schema_version', ?)",
@@ -1036,11 +1410,113 @@ class AgentLifecycle:
                 connection.rollback()
                 raise
         else:
-            routing_table = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='evaluation_routing'"
-            ).fetchone()
-            if routing_table is None:
-                raise LifecycleError("生命周期数据库 v2 缺少 evaluation_routing 表")
+            AgentLifecycle.validate_evolution_schema(connection)
+
+    @staticmethod
+    def validate_evolution_schema(connection: sqlite3.Connection) -> None:
+        required_tables = {
+            "evaluation_routing",
+            "evaluation_metrics",
+            "variation_sessions",
+            "variation_candidates",
+        }
+        present = {
+            item["name"]
+            for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        missing = sorted(required_tables - present)
+        if missing:
+            raise LifecycleError(
+                f"生命周期数据库 v4 缺少表: {', '.join(missing)}"
+            )
+        required_columns = {
+            "evaluation_metrics": {
+                "evaluation_id",
+                "credit_bucket",
+                "retry_count",
+                "rework_count",
+                "failure_reason",
+            },
+            "variation_sessions": {
+                "session_id",
+                "request_sha256",
+                "base_revision",
+                "base_sha256",
+                "lineage_json",
+                "stage_sha256",
+                "stage_elapsed_seconds",
+                "stage_tool_calls_used",
+                "stage_token_bucket_used",
+                "stage_credit_bucket_used",
+                "expires_at",
+            },
+            "variation_candidates": {
+                "variation_candidate_id",
+                "session_id",
+                "rule_key",
+                "shadow_suite_sha256",
+                "verification_sha256",
+                "promoted_candidate_id",
+            },
+        }
+        for table_name, expected_columns in required_columns.items():
+            actual_columns = {
+                item["name"]
+                for item in connection.execute(
+                    f"PRAGMA table_info({table_name})"
+                ).fetchall()
+            }
+            missing_columns = sorted(expected_columns - actual_columns)
+            if missing_columns:
+                raise LifecycleError(
+                    f"生命周期数据库 v4 的 {table_name} 缺少列: "
+                    f"{', '.join(missing_columns)}"
+                )
+
+    @staticmethod
+    def migrate_v3_to_v4(connection: sqlite3.Connection) -> None:
+        required_tables = {
+            "evaluation_routing",
+            "evaluation_metrics",
+            "variation_sessions",
+            "variation_candidates",
+        }
+        present = {
+            item["name"]
+            for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        missing = sorted(required_tables - present)
+        if missing:
+            raise LifecycleError(
+                f"生命周期数据库 v3 缺少表: {', '.join(missing)}"
+            )
+        additions = {
+            "variation_sessions": {
+                "stage_elapsed_seconds": "INTEGER",
+                "stage_tool_calls_used": "INTEGER",
+                "stage_token_bucket_used": "TEXT",
+                "stage_credit_bucket_used": "TEXT",
+            },
+            "variation_candidates": {
+                "shadow_suite_sha256": "TEXT",
+            },
+        }
+        for table_name, columns in additions.items():
+            existing = {
+                item["name"]
+                for item in connection.execute(
+                    f"PRAGMA table_info({table_name})"
+                ).fetchall()
+            }
+            for column_name, column_type in columns.items():
+                if column_name not in existing:
+                    connection.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+                    )
 
     @staticmethod
     def create_routing_schema(connection: sqlite3.Connection) -> None:
@@ -1062,6 +1538,67 @@ class AgentLifecycle:
             )
             """
         )
+
+    @staticmethod
+    def create_evolution_schema(connection: sqlite3.Connection) -> None:
+        statements = (
+            """CREATE TABLE IF NOT EXISTS evaluation_metrics (
+                evaluation_id TEXT PRIMARY KEY REFERENCES evaluations(evaluation_id),
+                credit_bucket TEXT NOT NULL,
+                retry_count INTEGER NOT NULL,
+                rework_count INTEGER NOT NULL,
+                failure_reason TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS variation_sessions (
+                session_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL UNIQUE,
+                request_sha256 TEXT NOT NULL,
+                policy_version INTEGER NOT NULL,
+                agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+                base_revision INTEGER NOT NULL,
+                base_sha256 TEXT NOT NULL,
+                task_class TEXT NOT NULL,
+                risk_tier TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                trigger_evaluation_ids TEXT NOT NULL,
+                lineage_json TEXT NOT NULL,
+                candidate_limit INTEGER NOT NULL,
+                wall_time_seconds INTEGER NOT NULL,
+                tool_call_limit INTEGER NOT NULL,
+                token_bucket TEXT NOT NULL,
+                credit_bucket TEXT NOT NULL,
+                status TEXT NOT NULL,
+                supervisor_direction TEXT,
+                stage_sha256 TEXT,
+                stage_elapsed_seconds INTEGER,
+                stage_tool_calls_used INTEGER,
+                stage_token_bucket_used TEXT,
+                stage_credit_bucket_used TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS variation_candidates (
+                variation_candidate_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES variation_sessions(session_id),
+                ordinal INTEGER NOT NULL,
+                rule_key TEXT NOT NULL,
+                rule_text TEXT NOT NULL,
+                applies_to TEXT NOT NULL,
+                rationale_code TEXT NOT NULL,
+                status TEXT NOT NULL,
+                shadow_suite_sha256 TEXT,
+                verification_sha256 TEXT,
+                promoted_candidate_id TEXT REFERENCES candidates(candidate_id),
+                created_at TEXT NOT NULL,
+                verified_at TEXT,
+                UNIQUE(session_id, ordinal),
+                UNIQUE(session_id, rule_key)
+            )""",
+            """CREATE INDEX IF NOT EXISTS variation_sessions_agent_revision
+                ON variation_sessions(agent_id, base_revision, status)""",
+        )
+        for statement in statements:
+            connection.execute(statement)
 
     @staticmethod
     def begin(connection: sqlite3.Connection) -> None:
@@ -2000,8 +2537,8 @@ class AgentLifecycle:
             version = connection.execute(
                 "SELECT value FROM meta WHERE key='schema_version'"
             ).fetchone()
-            if version is None or int(version["value"]) != SCHEMA_VERSION:
-                raise LifecycleError("路由建议需要 v2 状态；先通过下一次安全 mutation 完成迁移")
+            if version is None or int(version["value"]) not in {2, 3, SCHEMA_VERSION}:
+                raise LifecycleError("路由建议需要 v2、v3 或 v4 状态；先完成安全迁移")
             row, _, _, _ = self.verified_active_agent(connection, agent_id)
             if row["state"] == "retire_eligible":
                 return self.route_payload(
@@ -2021,6 +2558,705 @@ class AgentLifecycle:
             )
         finally:
             connection.close()
+
+    @staticmethod
+    def comparable_evaluations(
+        connection: sqlite3.Connection,
+        agent_id: str,
+        revision: int,
+        task_class: str,
+        risk_tier: str,
+        *,
+        limit: int = 5,
+    ) -> list[sqlite3.Row]:
+        rows = connection.execute(
+            """SELECT e.*,
+                      COALESCE(m.credit_bucket, 'unknown') AS metric_credit_bucket,
+                      COALESCE(m.retry_count, 0) AS metric_retry_count,
+                      COALESCE(m.rework_count, 0) AS metric_rework_count,
+                      COALESCE(m.failure_reason, 'none') AS metric_failure_reason,
+                      COALESCE(r.attribution, 'unknown') AS metric_attribution
+                 FROM evaluations e
+                 LEFT JOIN evaluation_metrics m ON m.evaluation_id=e.evaluation_id
+                 LEFT JOIN evaluation_routing r ON r.evaluation_id=e.evaluation_id
+                WHERE e.agent_id=? AND e.revision=? AND e.task_class=? AND e.risk_tier=?
+                ORDER BY e.created_at DESC, e.rowid DESC LIMIT ?""",
+            (agent_id, revision, task_class, risk_tier, limit),
+        ).fetchall()
+        return list(reversed(rows))
+
+    @staticmethod
+    def evaluation_summary(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "evaluation_id": row["evaluation_id"],
+            "quality": row["correctness"] + row["clarity"],
+            "correctness": row["correctness"],
+            "evidence": row["evidence"],
+            "scope": row["scope"],
+            "safety": row["safety"],
+            "total": row["total"],
+            "wall_time": row["duration_bucket"],
+            "tokens": row["token_bucket"],
+            "credits": row["metric_credit_bucket"],
+            "retries": row["metric_retry_count"],
+            "rework": row["metric_rework_count"],
+            "failure_reason": row["metric_failure_reason"],
+            "attribution": row["metric_attribution"],
+            "judge_kind": row["judge_kind"],
+            "judge_confidence": row["judge_confidence"],
+        }
+
+    @staticmethod
+    def stagnation_evidence_eligible(row: sqlite3.Row) -> bool:
+        try:
+            evidence_flags = set(json.loads(row["evidence_flags"]))
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return (
+            row["judge_confidence"] == "high"
+            and row["judge_kind"] in {"deterministic", "independent_model", "human"}
+            and bool(evidence_flags & STRONG_EVIDENCE_FLAGS)
+            and row["critical_event"] == "none"
+            and row["metric_failure_reason"] not in NON_EVOLUTION_FAILURE_REASONS
+            and row["metric_attribution"] not in {"tool_or_environment", "role_mismatch"}
+        )
+
+    @staticmethod
+    def meaningful_evaluation_improvement(
+        incumbent: sqlite3.Row, challenger: sqlite3.Row
+    ) -> bool:
+        if (
+            challenger["safety"] < incumbent["safety"]
+            or challenger["correctness"] < incumbent["correctness"]
+        ):
+            return False
+        if challenger["total"] >= incumbent["total"] + 2:
+            return True
+        if challenger["total"] < incumbent["total"]:
+            return False
+        improved = False
+        for base_key, metric_key in (
+            ("duration_bucket", "duration_bucket"),
+            ("token_bucket", "token_bucket"),
+            ("metric_credit_bucket", "metric_credit_bucket"),
+        ):
+            incumbent_rank = bucket_rank(incumbent[base_key])
+            challenger_rank = bucket_rank(challenger[metric_key])
+            if incumbent_rank is None or challenger_rank is None:
+                continue
+            if challenger_rank > incumbent_rank:
+                return False
+            improved = improved or challenger_rank < incumbent_rank
+        for key in ("metric_retry_count", "metric_rework_count"):
+            if challenger[key] > incumbent[key]:
+                return False
+            improved = improved or challenger[key] < incumbent[key]
+        return improved
+
+    def _stagnation_payload(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        task_class: str,
+        risk_tier: str,
+    ) -> dict[str, Any]:
+        recent = self.comparable_evaluations(
+            connection,
+            row["agent_id"],
+            row["revision"],
+            task_class,
+            risk_tier,
+        )
+        eligible_rows = [item for item in recent if self.stagnation_evidence_eligible(item)]
+        repeated: dict[str, int] = {}
+        for item in eligible_rows:
+            reason = item["metric_failure_reason"]
+            if (
+                reason != "none"
+            ):
+                repeated[reason] = repeated.get(reason, 0) + 1
+        repeated_reason = next(
+            (reason for reason, count in sorted(repeated.items()) if count >= 3),
+            None,
+        )
+
+        no_improvement_streak = 0
+        if eligible_rows:
+            incumbent = eligible_rows[0]
+            for challenger in eligible_rows[1:]:
+                if self.meaningful_evaluation_improvement(incumbent, challenger):
+                    incumbent = challenger
+                    no_improvement_streak = 0
+                else:
+                    no_improvement_streak += 1
+        latest = eligible_rows[-1] if eligible_rows else None
+        unresolved_objective = bool(
+            latest
+            and (
+                latest["total"] < 90
+                or latest["duration_bucket"] == "high"
+                or latest["token_bucket"] == "high"
+                or latest["metric_credit_bucket"] == "high"
+                or latest["metric_retry_count"] > 0
+                or latest["metric_rework_count"] > 0
+            )
+        )
+        no_comparable_improvement = (
+            len(eligible_rows) >= 4
+            and no_improvement_streak >= 3
+            and unresolved_objective
+        )
+        reasons: list[str] = []
+        if no_comparable_improvement:
+            reasons.append("no_comparable_improvement")
+        if repeated_reason is not None:
+            reasons.append(f"repeated_failure:{repeated_reason}")
+        eligible = bool(reasons) and row["state"] != "retire_eligible"
+        if row["state"] == "retire_eligible":
+            status = "retirement_precedes_variation"
+        elif eligible:
+            status = "stagnant"
+        elif len(eligible_rows) < 4:
+            status = "insufficient_evidence"
+        else:
+            status = "improving_or_stable"
+        return {
+            "ok": True,
+            "action": "supervise" if eligible else "hold",
+            "status": status,
+            "agent_id": row["agent_id"],
+            "revision": row["revision"],
+            "task_class": task_class,
+            "risk_tier": risk_tier,
+            "eligible": eligible,
+            "reason_codes": reasons,
+            "repeated_failure_reason": repeated_reason,
+            "no_improvement_streak": no_improvement_streak,
+            "comparable_evaluation_count": len(eligible_rows),
+            "excluded_evaluation_count": len(recent) - len(eligible_rows),
+            "recent_evaluations": [
+                self.evaluation_summary(item) for item in eligible_rows
+            ],
+            "toml_modified": False,
+            "global_config_modified": False,
+        }
+
+    def stagnation_status(
+        self, agent_id: str, task_class: str, risk_tier: str
+    ) -> dict[str, Any]:
+        if task_class not in ALLOWED_TASK_CLASSES:
+            raise LifecycleError("task_class 不受支持")
+        if risk_tier not in ALLOWED_RISK_CEILINGS:
+            raise LifecycleError("risk_tier 不受支持")
+        connection = self.connect(create=False)
+        if connection is None:
+            raise LifecycleError("生命周期状态尚不存在；没有可比较的评测")
+        try:
+            version = connection.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()
+            if version is None or int(version["value"]) != SCHEMA_VERSION:
+                raise LifecycleError(
+                    "stagnation-status 是只读命令，需要先由一次授权 mutation 将状态迁移到 v4"
+                )
+            pending_operations = connection.execute(
+                "SELECT COUNT(*) AS count FROM operations WHERE stage='prepared'"
+            ).fetchone()["count"]
+            if pending_operations:
+                return {
+                    "ok": False,
+                    "action": "hold",
+                    "status": "recovery_required",
+                    "agent_id": agent_id,
+                    "task_class": task_class,
+                    "risk_tier": risk_tier,
+                    "pending_operations": pending_operations,
+                    "eligible": False,
+                    "reason_codes": ["pending_lifecycle_operation"],
+                    "toml_modified": False,
+                    "global_config_modified": False,
+                }
+            row, _, _, _ = self.verified_active_agent(connection, agent_id)
+            return self._stagnation_payload(connection, row, task_class, risk_tier)
+        finally:
+            connection.close()
+
+    @staticmethod
+    def variation_plan_result(row: sqlite3.Row, *, action: str) -> dict[str, Any]:
+        lineage = json.loads(row["lineage_json"])
+        return {
+            "ok": True,
+            "action": action,
+            "session_id": row["session_id"],
+            "request_id": row["request_id"],
+            "agent_id": row["agent_id"],
+            "base_revision": row["base_revision"],
+            "status": row["status"],
+            "trigger": row["trigger"],
+            "lineage": lineage,
+            "budgets": {
+                "candidate_limit": row["candidate_limit"],
+                "wall_time_seconds": row["wall_time_seconds"],
+                "tool_call_limit": row["tool_call_limit"],
+                "token_bucket": row["token_bucket"],
+                "credit_bucket": row["credit_bucket"],
+                "expires_at": row["expires_at"],
+            },
+            "candidate_contract": {
+                "required_count": row["candidate_limit"],
+                "allowed_rationale_codes": sorted(ALLOWED_VARIATION_RATIONALES),
+                "maximum_rule_characters": 240,
+                "stable_toml_write_allowed": False,
+            },
+            "supervisor": {
+                "allowed": row["trigger"] == "stagnation",
+                "scope": "propose_direction_only",
+                "automatic_promotion_allowed": False,
+                "automatic_global_change_allowed": False,
+            },
+            "toml_modified": False,
+            "global_config_modified": False,
+        }
+
+    def plan_variation(self, raw_plan: dict[str, Any]) -> dict[str, Any]:
+        plan = validate_variation_plan(raw_plan)
+        request_sha256 = sha256_bytes(json_text(plan).encode("utf-8"))
+        with self.mutation_lock():
+            connection = self.connect(create=True)
+            assert connection is not None
+            try:
+                self.begin(connection)
+                existing = connection.execute(
+                    "SELECT * FROM variation_sessions WHERE request_id=?",
+                    (plan["request_id"],),
+                ).fetchone()
+                if existing is not None:
+                    if existing["request_sha256"] != request_sha256:
+                        raise LifecycleError("同一 request_id 的变异计划发生变化")
+                    connection.commit()
+                    return self.variation_plan_result(existing, action="variation_plan_exists")
+                try:
+                    row, _, _, _ = self.verified_active_agent(connection, plan["agent_id"])
+                except OwnershipConflict:
+                    connection.rollback()
+                    self.mark_conflict(connection, plan["agent_id"])
+                    raise
+                if row["state"] not in {"probation", "active", "degraded"}:
+                    raise LifecycleError("当前代理状态不允许创建变异会话")
+                if self.active_lease_count(connection, row["agent_id"]):
+                    raise LifecycleError("存在活动运行租约，禁止基于移动中的基线创建变异会话")
+                open_session = connection.execute(
+                    """SELECT session_id FROM variation_sessions
+                        WHERE agent_id=? AND base_revision=?
+                          AND status IN ('planned','staged') AND expires_at>?""",
+                    (row["agent_id"], row["revision"], utc_now()),
+                ).fetchone()
+                if open_session is not None:
+                    raise LifecycleError("当前 revision 已有未结束的变异会话")
+                stagnation = self._stagnation_payload(
+                    connection, row, plan["task_class"], plan["risk_tier"]
+                )
+                if plan["trigger"] == "stagnation" and not stagnation["eligible"]:
+                    raise LifecycleError("没有足够的可比停滞证据，禁止启动 supervisor")
+                promoted_rules = [
+                    {"rule_key": item["rule_key"], "rule": item["rule_text"]}
+                    for item in connection.execute(
+                        """SELECT rule_key, rule_text FROM candidates
+                            WHERE agent_id=? AND status='promoted'
+                            ORDER BY promoted_at, candidate_id""",
+                        (row["agent_id"],),
+                    ).fetchall()
+                ]
+                lineage = {
+                    "policy_version": VARIATION_POLICY_VERSION,
+                    "agent_id": row["agent_id"],
+                    "revision": row["revision"],
+                    "task_class": plan["task_class"],
+                    "risk_tier": plan["risk_tier"],
+                    "current_model": row["model"],
+                    "current_reasoning_effort": row["reasoning_effort"],
+                    "validated_experience": promoted_rules,
+                    "recent_evaluations": stagnation["recent_evaluations"],
+                    "trigger_status": {
+                        "status": stagnation["status"],
+                        "reason_codes": stagnation["reason_codes"],
+                        "no_improvement_streak": stagnation["no_improvement_streak"],
+                    },
+                }
+                session_id = str(uuid.uuid4())
+                created = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+                expires = created + dt.timedelta(seconds=plan["wall_time_seconds"])
+                created_text = created.isoformat().replace("+00:00", "Z")
+                expires_text = expires.isoformat().replace("+00:00", "Z")
+                trigger_ids = [
+                    item["evaluation_id"] for item in stagnation["recent_evaluations"]
+                ]
+                connection.execute(
+                    """INSERT INTO variation_sessions(
+                           session_id, request_id, request_sha256, policy_version,
+                           agent_id, base_revision, base_sha256, task_class, risk_tier,
+                           trigger, trigger_evaluation_ids, lineage_json, candidate_limit,
+                           wall_time_seconds, tool_call_limit, token_bucket, credit_bucket,
+                           status, supervisor_direction, stage_sha256, created_at, expires_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        session_id,
+                        plan["request_id"],
+                        request_sha256,
+                        VARIATION_POLICY_VERSION,
+                        row["agent_id"],
+                        row["revision"],
+                        row["expected_sha256"],
+                        plan["task_class"],
+                        plan["risk_tier"],
+                        plan["trigger"],
+                        json_text(trigger_ids),
+                        json_text(lineage),
+                        plan["candidate_limit"],
+                        plan["wall_time_seconds"],
+                        plan["tool_call_limit"],
+                        plan["token_bucket"],
+                        plan["credit_bucket"],
+                        "planned",
+                        None,
+                        None,
+                        created_text,
+                        expires_text,
+                    ),
+                )
+                connection.commit()
+                stored = connection.execute(
+                    "SELECT * FROM variation_sessions WHERE session_id=?", (session_id,)
+                ).fetchone()
+                assert stored is not None
+                return self.variation_plan_result(stored, action="variation_planned")
+            except Exception:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+    @staticmethod
+    def staged_candidate_payloads(
+        connection: sqlite3.Connection, session_id: str
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "variation_candidate_id": item["variation_candidate_id"],
+                "ordinal": item["ordinal"],
+                "rule_key": item["rule_key"],
+                "rule": item["rule_text"],
+                "applies_to": item["applies_to"],
+                "rationale_code": item["rationale_code"],
+                "status": item["status"],
+                "shadow_suite_sha256": item["shadow_suite_sha256"],
+                "candidate_id": item["promoted_candidate_id"],
+            }
+            for item in connection.execute(
+                """SELECT * FROM variation_candidates
+                    WHERE session_id=? ORDER BY ordinal""",
+                (session_id,),
+            ).fetchall()
+        ]
+
+    def stage_variation(self, raw_stage: dict[str, Any]) -> dict[str, Any]:
+        stage = validate_variation_stage(raw_stage)
+        stage_sha256 = sha256_bytes(json_text(stage).encode("utf-8"))
+        with self.mutation_lock():
+            connection = self.connect(create=True)
+            assert connection is not None
+            try:
+                self.begin(connection)
+                session = connection.execute(
+                    "SELECT * FROM variation_sessions WHERE session_id=?",
+                    (stage["session_id"],),
+                ).fetchone()
+                if session is None:
+                    raise LifecycleError("变异会话不存在")
+                if session["status"] != "planned":
+                    if session["stage_sha256"] == stage_sha256:
+                        candidates = self.staged_candidate_payloads(
+                            connection, stage["session_id"]
+                        )
+                        connection.commit()
+                        return {
+                            "ok": True,
+                            "action": "variation_stage_exists",
+                            "session_id": stage["session_id"],
+                            "status": session["status"],
+                            "candidates": candidates,
+                            "toml_modified": False,
+                        }
+                    raise LifecycleError("变异会话已经提交，拒绝用不同结果覆盖")
+                if parse_utc(session["expires_at"]) <= dt.datetime.now(dt.timezone.utc):
+                    raise LifecycleError("变异会话已超过墙钟预算；拒绝迟到候选")
+                try:
+                    row, _, _, _ = self.verified_active_agent(
+                        connection, session["agent_id"]
+                    )
+                except OwnershipConflict:
+                    connection.rollback()
+                    self.mark_conflict(connection, session["agent_id"])
+                    raise
+                if (
+                    row["revision"] != session["base_revision"]
+                    or row["expected_sha256"] != session["base_sha256"]
+                ):
+                    raise LifecycleError("变异会话基线已漂移；incumbent 保持不变")
+                if self.active_lease_count(connection, row["agent_id"]):
+                    raise LifecycleError("存在活动运行租约，禁止提交变异候选")
+                if len(stage["candidates"]) != session["candidate_limit"]:
+                    raise LifecycleError("候选数量必须与计划中的固定 candidate_limit 一致")
+                if stage["elapsed_seconds"] > session["wall_time_seconds"]:
+                    raise LifecycleError("变异候选超过墙钟预算")
+                if stage["tool_calls_used"] > session["tool_call_limit"]:
+                    raise LifecycleError("变异候选超过工具调用预算")
+                if bucket_rank(stage["token_bucket_used"]) > bucket_rank(session["token_bucket"]):
+                    raise LifecycleError("变异候选超过 token 预算桶")
+                if bucket_rank(stage["credit_bucket_used"]) > bucket_rank(
+                    session["credit_bucket"]
+                ):
+                    raise LifecycleError("变异候选超过 credit 预算桶")
+                if session["trigger"] == "stagnation" and stage["supervisor_direction"] is None:
+                    raise LifecycleError("停滞触发的会话必须记录 supervisor 新方向")
+                if session["trigger"] == "manual" and stage["supervisor_direction"] is not None:
+                    raise LifecycleError("manual 会话不得伪称 supervisor 方向")
+                now = utc_now()
+                for ordinal, candidate in enumerate(stage["candidates"], start=1):
+                    if candidate["applies_to"] not in {session["task_class"], "other"}:
+                        raise LifecycleError("候选 applies_to 必须匹配会话 task_class 或为 other")
+                    collision = connection.execute(
+                        """SELECT 1 FROM observations
+                            WHERE agent_id=? AND revision=? AND rule_key=?
+                           UNION ALL
+                           SELECT 1 FROM candidates
+                            WHERE agent_id=? AND rule_key=?
+                           LIMIT 1""",
+                        (
+                            row["agent_id"],
+                            row["revision"],
+                            candidate["rule_key"],
+                            row["agent_id"],
+                            candidate["rule_key"],
+                        ),
+                    ).fetchone()
+                    if collision is not None:
+                        raise LifecycleError("候选 rule_key 已存在于当前 lineage")
+                    connection.execute(
+                        """INSERT INTO variation_candidates(
+                               variation_candidate_id, session_id, ordinal, rule_key,
+                               rule_text, applies_to, rationale_code, status,
+                               shadow_suite_sha256, verification_sha256,
+                               promoted_candidate_id, created_at, verified_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            str(uuid.uuid4()),
+                            stage["session_id"],
+                            ordinal,
+                            candidate["rule_key"],
+                            candidate["rule"],
+                            candidate["applies_to"],
+                            candidate["rationale_code"],
+                            "staged",
+                            None,
+                            None,
+                            None,
+                            now,
+                            None,
+                        ),
+                    )
+                connection.execute(
+                    """UPDATE variation_sessions
+                          SET status='staged', supervisor_direction=?, stage_sha256=?,
+                              stage_elapsed_seconds=?, stage_tool_calls_used=?,
+                              stage_token_bucket_used=?, stage_credit_bucket_used=?
+                        WHERE session_id=?""",
+                    (
+                        stage["supervisor_direction"],
+                        stage_sha256,
+                        stage["elapsed_seconds"],
+                        stage["tool_calls_used"],
+                        stage["token_bucket_used"],
+                        stage["credit_bucket_used"],
+                        stage["session_id"],
+                    ),
+                )
+                candidates = self.staged_candidate_payloads(connection, stage["session_id"])
+                connection.commit()
+                return {
+                    "ok": True,
+                    "action": "variation_staged",
+                    "session_id": stage["session_id"],
+                    "status": "staged",
+                    "candidates": candidates,
+                    "promotion_eligible": False,
+                    "toml_modified": False,
+                    "global_config_modified": False,
+                    "next_step": "在相同 shadow 用例上独立验证候选，再运行 variation-verify。",
+                }
+            except Exception:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+            finally:
+                connection.close()
+
+    def verify_variation(self, raw_report: dict[str, Any]) -> dict[str, Any]:
+        report = validate_variation_verification(raw_report)
+        self.promotion_gate(report)
+        resource_comparison = variation_resource_comparison(report)
+        verification_sha256 = sha256_bytes(json_text(report).encode("utf-8"))
+        with self.mutation_lock():
+            connection = self.connect(create=True)
+            assert connection is not None
+            try:
+                self.begin(connection)
+                candidate = connection.execute(
+                    """SELECT vc.*, vs.agent_id, vs.base_revision, vs.base_sha256,
+                              vs.status AS session_status, vs.expires_at,
+                              vs.wall_time_seconds, vs.tool_call_limit,
+                              vs.token_bucket, vs.credit_bucket,
+                              vs.stage_elapsed_seconds, vs.stage_tool_calls_used,
+                              vs.stage_token_bucket_used, vs.stage_credit_bucket_used
+                         FROM variation_candidates vc
+                         JOIN variation_sessions vs ON vs.session_id=vc.session_id
+                        WHERE vc.variation_candidate_id=?""",
+                    (report["variation_candidate_id"],),
+                ).fetchone()
+                if candidate is None:
+                    raise LifecycleError("变异候选不存在")
+                if candidate["status"] == "verified":
+                    if candidate["verification_sha256"] != verification_sha256:
+                        raise LifecycleError("已验证候选不能用不同报告覆盖")
+                    connection.commit()
+                    return {
+                        "ok": True,
+                        "action": "variation_verification_exists",
+                        "variation_candidate_id": report["variation_candidate_id"],
+                        "candidate_id": candidate["promoted_candidate_id"],
+                        "promotion_eligible": True,
+                        "toml_modified": False,
+                    }
+                if candidate["status"] != "staged":
+                    raise LifecycleError("变异候选状态不允许验证")
+                if candidate["session_status"] not in {"staged", "verified"}:
+                    raise LifecycleError("变异会话状态不允许验证")
+                try:
+                    row, _, _, _ = self.verified_active_agent(
+                        connection, candidate["agent_id"]
+                    )
+                except OwnershipConflict:
+                    connection.rollback()
+                    self.mark_conflict(connection, candidate["agent_id"])
+                    raise
+                if (
+                    row["revision"] != candidate["base_revision"]
+                    or row["expected_sha256"] != candidate["base_sha256"]
+                ):
+                    raise LifecycleError("候选基线已漂移；拒绝验证迟到 challenger")
+                if self.active_lease_count(connection, row["agent_id"]):
+                    raise LifecycleError("存在活动运行租约，禁止验证 challenger")
+                if parse_utc(candidate["expires_at"]) <= dt.datetime.now(dt.timezone.utc):
+                    raise LifecycleError("变异会话已超过总墙钟预算；拒绝迟到 shadow 验证")
+                if not (
+                    candidate["stage_elapsed_seconds"]
+                    <= report["elapsed_seconds_total"]
+                    <= candidate["wall_time_seconds"]
+                ):
+                    raise LifecycleError("shadow 验证的总 elapsed_seconds 超出计划或低报")
+                if not (
+                    candidate["stage_tool_calls_used"]
+                    <= report["tool_calls_total"]
+                    <= candidate["tool_call_limit"]
+                ):
+                    raise LifecycleError("shadow 验证的总 tool_calls 超出计划或低报")
+                if not (
+                    bucket_rank(candidate["stage_token_bucket_used"])
+                    <= bucket_rank(report["token_bucket_total"])
+                    <= bucket_rank(candidate["token_bucket"])
+                ):
+                    raise LifecycleError("shadow 验证的总 token 桶超出计划或低报")
+                if not (
+                    bucket_rank(candidate["stage_credit_bucket_used"])
+                    <= bucket_rank(report["credit_bucket_total"])
+                    <= bucket_rank(candidate["credit_bucket"])
+                ):
+                    raise LifecycleError("shadow 验证的总 credit 桶超出计划或低报")
+                suite_mismatch = connection.execute(
+                    """SELECT 1 FROM variation_candidates
+                        WHERE session_id=? AND status='verified'
+                          AND shadow_suite_sha256<>? LIMIT 1""",
+                    (candidate["session_id"], report["shadow_suite_sha256"]),
+                ).fetchone()
+                if suite_mismatch is not None:
+                    raise LifecycleError("同一变异会话的 challenger 必须使用同一 shadow suite")
+                duplicate = connection.execute(
+                    """SELECT 1 FROM candidates
+                        WHERE agent_id=? AND rule_key=? LIMIT 1""",
+                    (row["agent_id"], candidate["rule_key"]),
+                ).fetchone()
+                if duplicate is not None:
+                    raise LifecycleError("当前 revision 已有同 key 候选")
+                candidate_id = str(uuid.uuid4())
+                now = utc_now()
+                connection.execute(
+                    "INSERT INTO candidates VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        candidate_id,
+                        row["agent_id"],
+                        row["revision"],
+                        row["expected_sha256"],
+                        candidate["rule_key"],
+                        candidate["rule_text"],
+                        candidate["applies_to"],
+                        report["case_count"],
+                        "candidate",
+                        now,
+                        None,
+                    ),
+                )
+                connection.execute(
+                    """UPDATE variation_candidates
+                          SET status='verified', shadow_suite_sha256=?,
+                              verification_sha256=?, promoted_candidate_id=?, verified_at=?
+                        WHERE variation_candidate_id=?""",
+                    (
+                        report["shadow_suite_sha256"],
+                        verification_sha256,
+                        candidate_id,
+                        now,
+                        report["variation_candidate_id"],
+                    ),
+                )
+                remaining = connection.execute(
+                    """SELECT COUNT(*) AS count FROM variation_candidates
+                        WHERE session_id=? AND status='staged'""",
+                    (candidate["session_id"],),
+                ).fetchone()["count"]
+                if remaining == 0:
+                    connection.execute(
+                        "UPDATE variation_sessions SET status='verified' WHERE session_id=?",
+                        (candidate["session_id"],),
+                    )
+                connection.commit()
+                return {
+                    "ok": True,
+                    "action": "variation_verified",
+                    "variation_candidate_id": report["variation_candidate_id"],
+                    "candidate_id": candidate_id,
+                    "promotion_eligible": True,
+                    "resource_comparison": resource_comparison,
+                    "toml_modified": False,
+                    "global_config_modified": False,
+                    "next_step": "使用同一独立报告中的 candidate_id 运行 promote；晋升门槛仍会重新检查。",
+                }
+            except Exception:
+                if connection.in_transaction:
+                    connection.rollback()
+                raise
+            finally:
+                connection.close()
 
     def record_evaluation(self, raw_report: dict[str, Any]) -> dict[str, Any]:
         report = validate_report(raw_report)
@@ -2046,15 +3282,34 @@ class AgentLifecycle:
                     raise LifecycleError(
                         "managed_named 评测的请求模型和推理强度必须与受管 TOML 配置一致"
                     )
-                report_digest = sha256_bytes(json_text(report).encode("utf-8"))
+                report_digest, legacy_report_digest = evaluation_report_digests(report)
                 existing = connection.execute(
                     """SELECT * FROM evaluations
                        WHERE agent_id=? AND revision=? AND run_id=?""",
                     (agent_id, row["revision"], report["run_id"]),
                 ).fetchone()
                 if existing is not None:
-                    if existing["report_sha256"] != report_digest:
+                    if existing["report_sha256"] not in {
+                        report_digest,
+                        legacy_report_digest,
+                    }:
                         raise LifecycleError("同一 run_id 的评测内容发生变化；拒绝把重试当作新运行")
+                    metrics = connection.execute(
+                        "SELECT 1 FROM evaluation_metrics WHERE evaluation_id=?",
+                        (existing["evaluation_id"],),
+                    ).fetchone()
+                    if metrics is None:
+                        legacy_row = existing["report_sha256"] == legacy_report_digest
+                        connection.execute(
+                            "INSERT INTO evaluation_metrics VALUES(?,?,?,?,?)",
+                            (
+                                existing["evaluation_id"],
+                                "unknown" if legacy_row else report["credit_bucket"],
+                                0 if legacy_row else report["retry_count"],
+                                0 if legacy_row else report["rework_count"],
+                                "none" if legacy_row else report["failure_reason"],
+                            ),
+                        )
                     experience = report["experience"]
                     observed = None
                     if experience is not None:
@@ -2126,6 +3381,16 @@ class AgentLifecycle:
                         report["user_verdict"],
                         report_digest,
                         now,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO evaluation_metrics VALUES(?,?,?,?,?)",
+                    (
+                        evaluation_id,
+                        report["credit_bucket"],
+                        report["retry_count"],
+                        report["rework_count"],
+                        report["failure_reason"],
                     ),
                 )
                 if routing is not None:
@@ -2737,6 +4002,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--service-tier", choices=sorted(ALLOWED_REQUESTED_SERVICE_TIERS), default="inherit"
     )
 
+    stagnation = subparsers.add_parser(
+        "stagnation-status", help="只读判断可比运行是否足以触发受限 supervisor"
+    )
+    stagnation.add_argument("--agent-id", required=True)
+    stagnation.add_argument("--task-class", choices=sorted(ALLOWED_TASK_CLASSES), required=True)
+    stagnation.add_argument(
+        "--risk-tier", choices=sorted(ALLOWED_RISK_CEILINGS), required=True
+    )
+
+    variation_plan = subparsers.add_parser(
+        "variation-plan", help="创建受墙钟、工具、token 和 credit 预算约束的变异会话"
+    )
+    variation_plan.add_argument("--plan", type=Path, required=True)
+
+    variation_stage = subparsers.add_parser(
+        "variation-stage", help="在预算内暂存 challenger，不修改稳定代理 TOML"
+    )
+    variation_stage.add_argument("--report", type=Path, required=True)
+
+    variation_verify = subparsers.add_parser(
+        "variation-verify", help="通过独立 shadow 和多目标门槛验证暂存 challenger"
+    )
+    variation_verify.add_argument("--report", type=Path, required=True)
+
     promote = subparsers.add_parser("promote", help="通过 shadow gate 后晋升候选规则")
     promote.add_argument("--report", type=Path, required=True)
 
@@ -2786,6 +4075,18 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             arguments.execution_mode,
             arguments.service_tier,
         )
+    if arguments.command == "stagnation-status":
+        return lifecycle.stagnation_status(
+            normalize_uuid(arguments.agent_id, "agent_id"),
+            arguments.task_class,
+            arguments.risk_tier,
+        )
+    if arguments.command == "variation-plan":
+        return lifecycle.plan_variation(load_bounded_json(arguments.plan))
+    if arguments.command == "variation-stage":
+        return lifecycle.stage_variation(load_bounded_json(arguments.report))
+    if arguments.command == "variation-verify":
+        return lifecycle.verify_variation(load_bounded_json(arguments.report))
     if arguments.command == "promote":
         return lifecycle.promote_candidate(load_bounded_json(arguments.report))
     if arguments.command == "retire":

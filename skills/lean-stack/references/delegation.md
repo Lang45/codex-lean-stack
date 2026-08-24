@@ -245,6 +245,32 @@ must write, give them naturally disjoint files or separate worktrees. A branch
 isolates writes only when it has its own worktree. Shared writes are serialized
 under one owner.
 
+## Terminal-state closeout
+
+Keep result delivery and host lifecycle as separate facts:
+
+- `result_received`: a complete structured result or `FINAL_ANSWER` arrived.
+- `result_verified`: the parent checked the required evidence and accepted or
+  rejected the slice.
+- `host_terminal`: the collaboration surface reports completed, stopped, or an
+  equivalent terminal state.
+
+At the merge point, drain every required result and then check child status once.
+For a child with a complete final that still appears active, send one explicit
+request to stop and close the completed thread, then perform one bounded status
+check. If it remains active, call the available interrupt/stop control. Do not
+resume it, ask it to repeat the final, or spawn a replacement merely to clear a
+stale card. If the host still exposes no terminal state, record
+`stale_host_status`, report that the result was received but UI closure was not
+confirmed, and stop waiting. Late or duplicate finals are idempotent inputs and
+cannot reopen a completed slice.
+
+For a managed agent, release its lifecycle lease only after `host_terminal` is
+confirmed. If the host cannot expose that fact, leave the bounded lease to expire;
+do not release it and then claim the child was safely closed. A non-essential UI
+status gap does not block the parent's final handoff after the useful result is
+verified and the bounded stop sequence is exhausted.
+
 ## Parent responsibilities
 
 The parent owns requirements, architecture, integration, and the final claim.

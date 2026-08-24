@@ -213,6 +213,64 @@ class AgentLifecycleTests(unittest.TestCase):
             "judge_confidence": "high",
         }
 
+    @staticmethod
+    def variation_plan(agent_id: str, *, trigger="manual", candidate_limit=1):
+        return {
+            "request_id": str(uuid.uuid4()),
+            "agent_id": agent_id,
+            "task_class": "review",
+            "risk_tier": "read_only",
+            "trigger": trigger,
+            "candidate_limit": candidate_limit,
+            "wall_time_seconds": 300,
+            "tool_call_limit": 4,
+            "token_bucket": "expected",
+            "credit_bucket": "expected",
+        }
+
+    @staticmethod
+    def variation_stage(session_id: str, *, supervisor_direction=None, elapsed=60):
+        return {
+            "session_id": session_id,
+            "elapsed_seconds": elapsed,
+            "tool_calls_used": 2,
+            "token_bucket_used": "low",
+            "credit_bucket_used": "low",
+            "supervisor_direction": supervisor_direction,
+            "candidates": [
+                {
+                    "rule_key": "verify-terminal-state-once",
+                    "rule": "Reconcile one terminal state before releasing the lifecycle lease.",
+                    "applies_to": "review",
+                    "rationale_code": "rework_reduction",
+                }
+            ],
+        }
+
+    @staticmethod
+    def variation_verification(variation_candidate_id: str):
+        report = AgentLifecycleTests.promotion(variation_candidate_id)
+        report["variation_candidate_id"] = report.pop("candidate_id")
+        report.update(
+            tradeoff_accepted=False,
+            shadow_suite_sha256="a" * 64,
+            elapsed_seconds_total=120,
+            tool_calls_total=3,
+            token_bucket_total="low",
+            credit_bucket_total="low",
+            incumbent_duration_bucket="expected",
+            challenger_duration_bucket="expected",
+            incumbent_token_bucket="expected",
+            challenger_token_bucket="low",
+            incumbent_credit_bucket="expected",
+            challenger_credit_bucket="low",
+            incumbent_retry_count=1,
+            challenger_retry_count=0,
+            incumbent_rework_count=1,
+            challenger_rework_count=0,
+        )
+        return report
+
     def db_row(self, query: str, parameters=()):
         connection = sqlite3.connect(self.lifecycle.db_path)
         connection.row_factory = sqlite3.Row
@@ -411,6 +469,126 @@ class AgentLifecycleTests(unittest.TestCase):
         )
         replay = self.lifecycle.promote_candidate(self.promotion(third["candidate_id"]))
         self.assertEqual(replay["action"], "candidate_already_promoted")
+
+    def test_stagnation_supervisor_requires_repeated_comparable_evidence(self):
+        created = self.create_visible_agent()
+        plan = self.variation_plan(created["agent_id"], trigger="stagnation")
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.plan_variation(plan)
+
+        for _ in range(3):
+            report = self.low_quality_report(created["agent_id"])
+            report.update(
+                credit_bucket="expected",
+                retry_count=1,
+                rework_count=1,
+                failure_reason="missing_evidence",
+            )
+            self.lifecycle.record_evaluation(report)
+
+        status = self.lifecycle.stagnation_status(
+            created["agent_id"], "review", "read_only"
+        )
+        self.assertTrue(status["eligible"])
+        self.assertIn("repeated_failure:missing_evidence", status["reason_codes"])
+        metrics = self.db_row(
+            "SELECT * FROM evaluation_metrics ORDER BY rowid DESC LIMIT 1"
+        )
+        self.assertEqual(metrics["credit_bucket"], "expected")
+        self.assertEqual(metrics["failure_reason"], "missing_evidence")
+
+        planned = self.lifecycle.plan_variation(plan)
+        self.assertTrue(planned["supervisor"]["allowed"])
+        staged = self.lifecycle.stage_variation(
+            self.variation_stage(
+                planned["session_id"],
+                supervisor_direction="Reduce repeated evidence omissions before changing model size.",
+            )
+        )
+        self.assertEqual(staged["status"], "staged")
+        self.assertFalse(staged["promotion_eligible"])
+
+    def test_stagnation_ignores_low_confidence_and_weak_evidence(self):
+        cases = (
+            ("low-confidence", "parent", "low", ["source_verified", "scope_audit"]),
+            ("weak-evidence", "independent_model", "high", ["scope_audit", "safety_audit"]),
+        )
+        for slug, judge, confidence, evidence_flags in cases:
+            with self.subTest(slug=slug):
+                created = self.lifecycle.create_agent(
+                    self.spec(slug=slug), self.project_root
+                )
+                self.lifecycle.confirm_visible(created["agent_id"])
+                for _ in range(4):
+                    report = self.low_quality_report(created["agent_id"])
+                    report["judge_kind"] = judge
+                    report["judge_confidence"] = confidence
+                    report["evidence_flags"] = evidence_flags
+                    self.lifecycle.record_evaluation(report)
+                status = self.lifecycle.stagnation_status(
+                    created["agent_id"], "review", "read_only"
+                )
+                self.assertFalse(status["eligible"])
+                self.assertEqual(status["comparable_evaluation_count"], 0)
+                self.assertEqual(status["excluded_evaluation_count"], 4)
+
+    def test_stagnation_status_does_not_recover_pending_file_operation(self):
+        created = self.create_visible_agent()
+        source = Path(created["path"])
+        destination = self.lifecycle.quarantine_dir / created["agent_id"] / source.name
+        self.insert_move_intent(
+            agent_id=created["agent_id"],
+            operation="quarantine",
+            source=source,
+            destination=destination,
+            target_state="quarantined",
+        )
+        before = source.read_bytes()
+
+        status = self.lifecycle.stagnation_status(
+            created["agent_id"], "review", "read_only"
+        )
+        self.assertEqual(status["status"], "recovery_required")
+        self.assertEqual(status["pending_operations"], 1)
+        self.assertEqual(source.read_bytes(), before)
+        self.assertFalse(destination.exists())
+        operation = self.db_row("SELECT stage FROM operations")
+        self.assertEqual(operation["stage"], "prepared")
+
+    def test_bounded_variation_stages_then_uses_existing_promotion_gate(self):
+        created = self.create_visible_agent()
+        incumbent = Path(created["path"]).read_bytes()
+        lease = self.lifecycle.acquire_lease(created["agent_id"], 120)
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.plan_variation(self.variation_plan(created["agent_id"]))
+        self.lifecycle.release_lease(lease["lease_id"])
+
+        planned = self.lifecycle.plan_variation(self.variation_plan(created["agent_id"]))
+        over_budget = self.variation_stage(planned["session_id"], elapsed=301)
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.stage_variation(over_budget)
+
+        staged = self.lifecycle.stage_variation(
+            self.variation_stage(planned["session_id"])
+        )
+        self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
+        variation_candidate_id = staged["candidates"][0]["variation_candidate_id"]
+        late_shadow = self.variation_verification(variation_candidate_id)
+        late_shadow["elapsed_seconds_total"] = 301
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.verify_variation(late_shadow)
+        verified = self.lifecycle.verify_variation(
+            self.variation_verification(variation_candidate_id)
+        )
+        self.assertTrue(verified["promotion_eligible"])
+        self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
+
+        promoted = self.lifecycle.promote_candidate(
+            self.promotion(verified["candidate_id"])
+        )
+        self.assertEqual(promoted["revision"], 2)
+        self.assertFalse(promoted["toml_modified"])
+        self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
 
     def test_routing_report_rejects_false_effective_values_and_named_mismatch(self):
         created = self.create_visible_agent()
@@ -611,6 +789,24 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertEqual(recommendation["application"], "recommendation_only")
         self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
 
+    def test_cli_help_exposes_bounded_variation_commands(self):
+        process = subprocess.run(
+            [sys.executable, str(SCRIPT), "--help"],
+            cwd=self.project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        for command in (
+            "stagnation-status",
+            "variation-plan",
+            "variation-stage",
+            "variation-verify",
+        ):
+            self.assertIn(command, process.stdout)
+
     def test_speed_bias_respects_token_and_explicit_tier_guards(self):
         cases = (
             ("high-token-guard", "standard", True),
@@ -763,7 +959,7 @@ class AgentLifecycleTests(unittest.TestCase):
         with self.assertRaises(manage_agents.LifecycleError):
             self.lifecycle.record_evaluation(changed)
 
-    def test_v1_database_migrates_to_v2_without_touching_agents(self):
+    def test_v1_database_migrates_to_v4_without_touching_agents(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-home")
         lifecycle.state_root.mkdir(parents=True)
         connection = sqlite3.connect(lifecycle.db_path)
@@ -809,14 +1005,156 @@ class AgentLifecycleTests(unittest.TestCase):
             version = migrated.execute(
                 "SELECT value FROM meta WHERE key='schema_version'"
             ).fetchone()["value"]
-            table = migrated.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='evaluation_routing'"
-            ).fetchone()
-            self.assertEqual(version, "2")
-            self.assertIsNotNone(table)
+            tables = {
+                row["name"]
+                for row in migrated.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            self.assertEqual(version, "4")
+            self.assertTrue(
+                {
+                    "evaluation_routing",
+                    "evaluation_metrics",
+                    "variation_sessions",
+                    "variation_candidates",
+                }.issubset(tables)
+            )
         finally:
             migrated.close()
         self.assertFalse(lifecycle.agents_dir.exists())
+
+    def test_v2_database_migrates_to_v4_without_guessing_old_metrics(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v2-home")
+        lifecycle.state_root.mkdir(parents=True)
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO meta(key, value) VALUES('schema_version', '2');
+                CREATE TABLE evaluation_routing (
+                    evaluation_id TEXT PRIMARY KEY,
+                    policy_version INTEGER NOT NULL,
+                    requested_model TEXT NOT NULL,
+                    requested_reasoning_effort TEXT NOT NULL,
+                    requested_service_tier TEXT NOT NULL,
+                    effective_model TEXT,
+                    effective_reasoning_effort TEXT,
+                    effective_service_tier TEXT,
+                    execution_mode TEXT NOT NULL,
+                    host_config_status TEXT NOT NULL,
+                    attribution TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = lifecycle.connect(create=True)
+        assert migrated is not None
+        try:
+            version = migrated.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()["value"]
+            metric_count = migrated.execute(
+                "SELECT COUNT(*) AS count FROM evaluation_metrics"
+            ).fetchone()["count"]
+            self.assertEqual(version, "4")
+            self.assertEqual(metric_count, 0)
+        finally:
+            migrated.close()
+
+    def test_v3_database_migrates_to_v4_with_cumulative_budget_columns(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v3-home")
+        current = lifecycle.connect(create=True)
+        assert current is not None
+        current.close()
+
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.execute(
+                "UPDATE meta SET value='3' WHERE key='schema_version'"
+            )
+            for column in (
+                "stage_elapsed_seconds",
+                "stage_tool_calls_used",
+                "stage_token_bucket_used",
+                "stage_credit_bucket_used",
+            ):
+                connection.execute(
+                    f"ALTER TABLE variation_sessions DROP COLUMN {column}"
+                )
+            connection.execute(
+                "ALTER TABLE variation_candidates DROP COLUMN shadow_suite_sha256"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = lifecycle.connect(create=True)
+        assert migrated is not None
+        try:
+            version = migrated.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()["value"]
+            session_columns = {
+                row["name"]
+                for row in migrated.execute(
+                    "PRAGMA table_info(variation_sessions)"
+                ).fetchall()
+            }
+            candidate_columns = {
+                row["name"]
+                for row in migrated.execute(
+                    "PRAGMA table_info(variation_candidates)"
+                ).fetchall()
+            }
+            self.assertEqual(version, "4")
+            self.assertTrue(
+                {
+                    "stage_elapsed_seconds",
+                    "stage_tool_calls_used",
+                    "stage_token_bucket_used",
+                    "stage_credit_bucket_used",
+                }.issubset(session_columns)
+            )
+            self.assertIn("shadow_suite_sha256", candidate_columns)
+        finally:
+            migrated.close()
+
+    def test_v4_evolution_schema_failure_rolls_back_new_tables(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v4-failure-home")
+        original = manage_agents.AgentLifecycle.create_evolution_schema
+
+        def fail_after_ddl(database):
+            original(database)
+            raise sqlite3.OperationalError("injected evolution migration failure")
+
+        manage_agents.AgentLifecycle.create_evolution_schema = staticmethod(fail_after_ddl)
+        try:
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, "injected evolution migration failure"
+            ):
+                lifecycle.connect(create=True)
+        finally:
+            manage_agents.AgentLifecycle.create_evolution_schema = staticmethod(original)
+
+        verification = sqlite3.connect(lifecycle.db_path)
+        try:
+            version = verification.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()
+            evolution_table = verification.execute(
+                """SELECT name FROM sqlite_master
+                    WHERE type='table' AND name='variation_sessions'"""
+            ).fetchone()
+        finally:
+            verification.close()
+        self.assertIsNone(version)
+        self.assertIsNone(evolution_table)
 
     def test_v1_migration_failure_rolls_back_and_closes_connection(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-failure-home")

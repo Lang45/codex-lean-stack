@@ -198,12 +198,20 @@ brief. Require Chinese output and the startup disclosure defined in
 runtime metadata is absent, the child reports it as unexposed; neither child nor
 parent guesses.
 
-Release the lease only after the child has stopped and its evidence is safely
-returned:
+Release the lease only after the child has stopped, its evidence is safely
+returned, and the collaboration surface confirms a terminal state:
 
 ```powershell
 py -3 scripts/manage_agents.py lease-release --lease-id <uuid>
 ```
+
+A complete `FINAL_ANSWER` establishes `result_received`; it does not establish
+`host_terminal`. If the child has a complete final but still appears active, ask
+once to stop and close it, perform one bounded state check, and then use the
+available interrupt/stop control. If the host still cannot expose a terminal
+state, record `failure_reason=stale_host_status`, stop waiting, and let the lease
+expire. Never release the lease or rerun the child merely to make the UI look
+finished. Late or duplicate finals do not create another evaluation.
 
 If the current host exposes no stable custom-agent selector, do not pretend the
 named TOML was used. Spawn an available role with the same explicit model and
@@ -252,6 +260,10 @@ free-form traces are rejected.
   "judge_confidence": "high",
   "duration_bucket": "expected",
   "token_bucket": "low",
+  "credit_bucket": "expected",
+  "retry_count": 0,
+  "rework_count": 0,
+  "failure_reason": "none",
   "user_verdict": "unknown",
   "routing": {
     "requested_model": "gpt-5.6-terra",
@@ -294,14 +306,22 @@ leave the full effective triplet unknown. `execution_mode` distinguishes a named
 managed agent from an explicit fallback or built-in; `attribution` is an enum
 such as `model_capacity`, `reasoning_depth`, `compute_latency`,
 `tool_or_environment`, or `role_mismatch`. Old reports without `routing` remain
-valid for the quality lifecycle but cannot drive resource recommendations.
+valid for the quality lifecycle but cannot drive resource recommendations. The
+v4 metric fields `credit_bucket`, `retry_count`, `rework_count`, and
+`failure_reason` are backward compatible: omission records `unknown`, `0`, `0`,
+and `none`. Unknown credits never mean zero cost and cannot prove an efficiency
+improvement.
 
 ## Adaptive resource recommendation
 
-Schema v2 adds `evaluation_routing`, keyed one-to-one to an evaluation. A v1
-database migrates in one SQLite transaction; historical evaluations are kept and
-receive no fabricated routing facts. The stable agent TOML, its configured model
-and effort, and the existing lifecycle states remain unchanged.
+Schema v2 added `evaluation_routing`, keyed one-to-one to an evaluation. Schema
+v3 added `evaluation_metrics` and the initial bounded variation tables. Schema
+v4 adds cumulative stage-plus-shadow budget fields and the shadow-suite hash. A
+v1 or v2 database creates the current tables directly; a v3 database adds the
+missing nullable columns. Both paths run in one SQLite transaction. Historical
+evaluations are kept and receive no fabricated routing, credit, retry, rework, or
+failure-reason facts. The stable agent TOML, its configured model and effort, and
+the existing lifecycle states remain unchanged.
 
 The router compares at most eight recent rows with the same agent revision,
 task class, risk tier, execution mode, requested model/effort, and requested
@@ -353,6 +373,152 @@ The deterministic routing-policy-v2 gates are:
 The model ladders and cost classes are versioned plugin policy, not timeless
 price facts. Unknown models fail closed. User-selected models and service tiers
 take precedence, and `external_effect` routes never apply automatically.
+
+## Bounded variation sessions
+
+Variation sessions add a small AVO-inspired candidate-generation loop without
+turning an agent into an unbounded self-modifier. They reuse the existing SQLite
+owner, revision hashes, leases, candidate table, shadow gate, and recoverable
+lifecycle. They never write the stable TOML or global Codex configuration.
+
+First inspect comparable evidence:
+
+```powershell
+py -3 scripts/manage_agents.py stagnation-status `
+  --agent-id <uuid> --task-class review --risk-tier read_only
+```
+
+This command is strictly read-only: it neither creates/migrates the database nor
+reconciles pending quarantine/restore intents. A pre-v4 database requires a later
+authorized mutation to migrate first. Pending lifecycle operations return
+`recovery_required`; only an explicit `recover` or another authorized mutation
+may reconcile them.
+
+The supervisor is eligible only after either three consecutive comparable runs
+fail to improve while an objective remains unresolved, or the same enumerated
+failure reason appears in three high-confidence independent, deterministic, or
+human evaluations. Every contributing row also needs strong evidence and no
+critical event. Tool/environment failures, timeouts, role mismatches, and stale
+host UI status are excluded from self-evolution evidence. A one-off low score,
+slow run, or free-form complaint does not trigger it. `retire_eligible` always
+takes precedence. An explicit user request may authorize `trigger=manual`
+without stagnation evidence; it does not authorize automatic promotion.
+
+Create one plan with a random, retry-stable `request_id`:
+
+```json
+{
+  "request_id": "00000000-0000-0000-0000-000000000010",
+  "agent_id": "00000000-0000-0000-0000-000000000000",
+  "task_class": "review",
+  "risk_tier": "read_only",
+  "trigger": "stagnation",
+  "candidate_limit": 2,
+  "wall_time_seconds": 600,
+  "tool_call_limit": 8,
+  "token_bucket": "expected",
+  "credit_bucket": "expected"
+}
+```
+
+```powershell
+py -3 scripts/manage_agents.py variation-plan --plan <variation-plan.json>
+```
+
+The returned lineage contains only the managed agent ID, logical revision,
+task/risk class, configured model and effort, validated experience rules, and up
+to five bounded evaluation summaries. It excludes prompts, repository paths,
+URLs, traces, terminal output, credentials, and model reasoning. The plan fixes
+one to four candidates, 60 to 3,600 seconds, zero to 32 tool calls, and explicit
+token/credit budget buckets. An active lease or an already-open session on the
+same revision fails closed.
+
+Submit exactly the planned number of candidates before the wall-clock deadline:
+
+```json
+{
+  "session_id": "00000000-0000-0000-0000-000000000011",
+  "elapsed_seconds": 240,
+  "tool_calls_used": 5,
+  "token_bucket_used": "low",
+  "credit_bucket_used": "low",
+  "supervisor_direction": "Reduce repeated evidence omissions before changing model size.",
+  "candidates": [
+    {
+      "rule_key": "verify-terminal-state-once",
+      "rule": "Reconcile one terminal state before releasing the lifecycle lease.",
+      "applies_to": "review",
+      "rationale_code": "rework_reduction"
+    },
+    {
+      "rule_key": "name-required-evidence-first",
+      "rule": "Name the decisive evidence before beginning the delegated review.",
+      "applies_to": "review",
+      "rationale_code": "evidence_strengthening"
+    }
+  ]
+}
+```
+
+```powershell
+py -3 scripts/manage_agents.py variation-stage --report <variation-stage.json>
+```
+
+A stagnation-triggered stage requires one sanitized supervisor direction; a
+manual stage must leave it `null`. The supervisor can propose a direction only.
+The CLI rejects late results, excess calls, higher token/credit buckets, count
+mismatches, key collisions, base-hash drift, and active leases. Successful output
+is `staged`, not promotion-eligible.
+
+Run each challenger on the same sanitized shadow cases, then submit the existing
+quality/evidence gate plus separate resource facts:
+
+```json
+{
+  "variation_candidate_id": "00000000-0000-0000-0000-000000000012",
+  "case_count": 3,
+  "incumbent_quality": 91,
+  "challenger_quality": 94,
+  "incumbent_efficiency": 12,
+  "challenger_efficiency": 13,
+  "evidence_flags": ["tests_passed", "runtime_check"],
+  "critical_regression": false,
+  "judge_kind": "independent_model",
+  "judge_confidence": "high",
+  "tradeoff_accepted": false,
+  "shadow_suite_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "elapsed_seconds_total": 420,
+  "tool_calls_total": 7,
+  "token_bucket_total": "expected",
+  "credit_bucket_total": "expected",
+  "incumbent_duration_bucket": "expected",
+  "challenger_duration_bucket": "expected",
+  "incumbent_token_bucket": "expected",
+  "challenger_token_bucket": "low",
+  "incumbent_credit_bucket": "expected",
+  "challenger_credit_bucket": "low",
+  "incumbent_retry_count": 1,
+  "challenger_retry_count": 0,
+  "incumbent_rework_count": 1,
+  "challenger_rework_count": 0
+}
+```
+
+```powershell
+py -3 scripts/manage_agents.py variation-verify --report <variation-verify.json>
+```
+
+Correctness, evidence, and safety remain hard gates. A quality gain of at least
+three may create a normal candidate; any known resource regression then requires
+`tradeoff_accepted=true`. Below that quality gain, the challenger must have no
+known wall-time, token, credit, retry, or rework regression and must strictly
+improve at least one of those objectives. Unknown credits remain unknown and do
+not count as an improvement. The total elapsed time, tool calls, token bucket, and
+credit bucket must include both generation and shadow verification, cannot be
+lower than the stage report, and must remain inside the original plan before its
+deadline. Verification still changes no TOML. It only creates a normal candidate
+ID; run the existing `promote` command separately so the incumbent/challenger
+gate is checked again.
 
 ## Candidate evolution and promotion
 

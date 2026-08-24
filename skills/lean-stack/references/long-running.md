@@ -31,8 +31,13 @@ behavior.
    transcripts in the main context.
 5. Verify each unit before the next depends on it. Reassess the design when the
    same workaround or failed assumption repeats.
-6. Stop at the terminal predicate. Report unresolved gaps honestly; do not add
-   adjacent improvements merely because the workflow is still running.
+6. Stop at the terminal predicate. Before the final handoff, drain required child
+   results and run the terminal-state closeout in `delegation.md`: a child final
+   proves result delivery, not host closure. Use one bounded close/check/interrupt
+   sequence, record `stale_host_status` when the host still cannot confirm a
+   terminal state, and never rerun completed work to clear a stale UI card. Report
+   unresolved gaps honestly; do not add adjacent improvements merely because the
+   workflow is still running.
 
 For an authorized, idempotent external transfer such as publishing one verified
 commit, try the normal transport first. After one bounded retry of a clearly

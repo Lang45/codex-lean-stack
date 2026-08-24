@@ -1,7 +1,7 @@
 {
   "name": "codex-lean-stack",
-  "version": "0.2.1+codex.20260824163826",
-  "description": "Fast, evidence-driven Codex engineering with critical-path subagents, guarded agent evolution, and bounded-cost speed routing.",
+  "version": "0.3.0+codex.20260824185030",
+  "description": "Fast, evidence-driven Codex engineering with closed-loop subagents, budgeted agent evolution, and bounded-cost routing.",
   "author": {
     "name": "Lang45",
     "url": "https://github.com/Lang45"
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Codex Lean Stack",
     "shortDescription": "Fast verified work with critical-path subagents.",
-    "longDescription": "Combines a minimal implementation ladder with essential verification, non-blocking critical-path subagents, fail-closed custom-agent evolution, and speed-biased quality/latency/cost route recommendations.",
+    "longDescription": "Combines a minimal implementation ladder with essential verification, non-blocking critical-path subagents, explicit terminal-state reconciliation, fail-closed budgeted agent evolution, and quality/latency/cost routing.",
     "developerName": "Lang45",
     "category": "Productivity",
     "capabilities": [

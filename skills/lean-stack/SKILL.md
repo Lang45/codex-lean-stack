@@ -160,14 +160,25 @@ when its API forbids localized names; do not present that technical identifier a
 the user-facing name. If an effective value is unavailable, report it as not
 exposed and name the requested value; never guess from behavior or identity text.
 
+Treat `FINAL_ANSWER` or another complete result as `result_received`, not proof
+that the host has closed the child thread. At the merge point, collect the result,
+verify its required evidence, and perform one bounded terminal-state check. If a
+complete child still appears active, send one explicit stop-and-close request,
+check once more, then use the available interrupt/stop control. Never respawn the
+work merely to clear the UI. If the host still does not expose a terminal state,
+label it `stale_host_status`, stop waiting, and disclose the UI gap. A non-critical
+stale card must not block the parent's useful final answer. Release a managed
+agent's lease only after a confirmed terminal state; when the host cannot confirm
+one, let the bounded lease expire instead of claiming a clean close.
+
 Stay single-agent for a trivial task, work whose overlapping writes and startup
 cost exceed the expected benefit, or a tightly sequential chain that does not
 clear all three sequential-route gates. Increased delegation frequency does not
 authorize redundant agents, duplicated scopes, shared-file races, or a cheap
 first attempt whose expected retry and escalation erase the claimed savings.
 
-After every managed-agent run, release its lifecycle lease and submit an
-evidence-scored report. High-quality and efficient runs may contribute one
+After every terminal managed-agent run, release its lifecycle lease and submit
+an evidence-scored report. High-quality and efficient runs may contribute one
 generic experience observation, but only a repeated rule that beats the
 incumbent in an independent shadow comparison may be promoted. A confirmed
 extreme failure can retire only a plugin-owned, hash-matching, inactive agent by
@@ -187,6 +198,20 @@ runs are enough to propose Fast for a low- or medium-cost configuration when the
 user accepts a bounded cost increase. High-cost configurations prefer Standard;
 every Fast candidate still requires a cost notice, host capability check, and
 user confirmation.
+
+For deliberate agent evolution, use the lifecycle's bounded variation path.
+`stagnation-status` may authorize a supervisor only after comparable runs show a
+real no-improvement streak or repeat the same high-confidence enumerated failure.
+An explicit user request may instead authorize a manual variation session.
+`variation-plan` fixes candidate count and end-to-end wall-clock, tool-call,
+token, and credit budgets and emits only sanitized lineage. `variation-stage` rejects late or
+over-budget output and can only stage challengers. `variation-verify` requires
+independent shadow evidence, keeps generation plus verification inside the same
+budgets, and records quality, wall time, tokens, credits, retries, and rework as
+separate objectives. It creates a normal candidate but
+still cannot promote it; the existing `promote` gate must run separately. No
+variation or supervisor command edits stable TOML, global Codex configuration,
+or the active session. Unknown credits remain unknown rather than zero.
 
 ## Proof contract
 
