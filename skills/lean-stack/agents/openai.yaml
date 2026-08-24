@@ -1,4 +1,4 @@
 interface:
   display_name: "Lean Stack"
-  short_description: "Fast verified work with critical-path subagents."
-  default_prompt: "Use $lean-stack; keep the parent moving while subagents run, prefer bounded-cost speed, and run only the essential checks."
+  short_description: "Fast verified work with eager adaptive subagents."
+  default_prompt: "Use $lean-stack; start useful subagents early, keep the parent moving, use rapid evidence-scored evolution, and run only essential checks."

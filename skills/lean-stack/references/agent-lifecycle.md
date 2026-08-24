@@ -106,6 +106,14 @@ explicit-role fallback because the custom TOML value has higher precedence.
 Service-tier proposals are always recommendation-only until the real spawn
 surface exposes and validates that field.
 
+In schema v5, `recommend-route` first returns an open rapid challenger as
+`action=compete`, including its `challenger_id`, exact one-axis configuration,
+task weights, and `execution_mode=explicit_fallback`. When a challenger has won,
+catalog and `recommend-route` expose that preferred route as the rapid champion;
+use the explicit fallback whenever it conflicts with the stable named TOML pin.
+The older repeated-evidence router runs only when no rapid competition route is
+pending or preferred.
+
 An only-next-step sequential route has a stricter reuse gate than ordinary
 parallel delegation. It may automatically select only an existing selectable
 custom agent with at least one recent comparable evaluation on the current
@@ -195,8 +203,9 @@ py -3 scripts/manage_agents.py lease-acquire --agent-id <uuid> --ttl-seconds 720
 Repeat the role-specific model and effort in the spawn fields and the written
 brief. Require Chinese output and the startup disclosure defined in
 `delegation.md`. The generated TOML also contains that contract. If effective
-runtime metadata is absent, the child reports it as unexposed; neither child nor
-parent guesses.
+runtime metadata is absent, the child completely omits the corresponding
+user-visible effective field; neither child nor parent prints a placeholder or
+guesses. Internal routing storage may still use `unknown`.
 
 Release the lease only after the child has stopped, its evidence is safely
 returned, and the collaboration surface confirms a terminal state:
@@ -245,6 +254,7 @@ free-form traces are rejected.
   "run_id": "00000000-0000-0000-0000-000000000001",
   "task_class": "review",
   "risk_tier": "read_only",
+  "evolution_mode": "rapid",
   "scores": {
     "correctness": 34,
     "evidence": 18,
@@ -289,14 +299,28 @@ py -3 scripts/manage_agents.py record --report <evaluation.json>
 ```
 
 Generate one random `run_id` when the subagent run starts and reuse that exact
-value for every retry of its evaluation submission. The database accepts only
-one report per `(agent, revision, run_id)`; a retry with identical content is
-idempotent, while changed content under the same ID is rejected.
+value for every retry of its evaluation submission. The recorder checks
+`(agent, run_id)` across logical revisions before any mutation. A retry with
+identical content is idempotent, while changed content under the same ID is
+rejected; an immediate rapid revision therefore cannot turn a retry into a
+second rewrite, demerit, or challenger.
 
-An experience is eligible for observation only when the run scores at least 90,
-meets per-dimension floors, is efficient, has strong evidence, has no critical
-event, and was not rejected by the user. One successful run records one
-observation; it does not rewrite the agent.
+`evolution_mode` is optional and defaults to `guarded` for compatibility. In
+`guarded`, an experience is eligible for observation only when the run scores at
+least 90, meets the per-dimension floors, is efficient, has strong evidence, has
+no critical event, and was not rejected by the user. Three matching observations
+may stage the existing shadow-tested candidate.
+
+The installed skill submits `rapid`. A rapid high-quality report must carry one
+bounded sanitized experience. The recorder applies that one rule immediately to
+the versioned playbook injected by future briefs, increments one logical revision,
+and leaves the stable TOML unchanged. A score below 90 immediately records a
+demerit: `ceil((90-score)/5)` reputation points, at least one, with a floor of
+zero. Only a score below 65 may stage one stronger model or reasoning challenger,
+and only when bounded attribution identifies that exact axis. External/tool,
+timeout, role-mismatch, stale-host, and unknown failures still receive the
+demerit but never trigger resource strengthening. Confirmed retirement always
+precedes every rapid mutation.
 
 The optional `routing` object is a bounded configuration fact, not a free-form
 diagnosis. Keep requested and effective values separate. Use `unknown` whenever
@@ -307,20 +331,55 @@ managed agent from an explicit fallback or built-in; `attribution` is an enum
 such as `model_capacity`, `reasoning_depth`, `compute_latency`,
 `tool_or_environment`, or `role_mismatch`. Old reports without `routing` remain
 valid for the quality lifecycle but cannot drive resource recommendations. The
-v4 metric fields `credit_bucket`, `retry_count`, `rework_count`, and
+metric fields `credit_bucket`, `retry_count`, `rework_count`, and
 `failure_reason` are backward compatible: omission records `unknown`, `0`, `0`,
 and `none`. Unknown credits never mean zero cost and cannot prove an efficiency
 improvement.
+
+## Finite rapid competition
+
+A high-quality rapid incumbent remains available. The lifecycle stages at most
+one logical resource challenger for each agent, task class, and risk tier. It
+copies the incumbent route and changes exactly one neighboring model, reasoning,
+or host-confirmed speed tier. Named TOML pins are tested through
+`execution_mode=explicit_fallback`; no challenger overwrites the TOML or global
+configuration.
+
+Catalog exposes `resource_challengers`. To test one, submit its exact
+`challenger_id` and requested model, effort, and service tier in a rapid report.
+The challenger wins only when it preserves the existing high-quality contract
+and improves the task-specific weighted objective. Architecture weights
+quality/speed/cost as `75/15/10`; implementation `65/25/10`; review `65/20/15`;
+test `55/30/15`; exploration `45/35/20`; documentation `45/30/25`; other tasks
+`55/25/20`. Workspace-write and external-effect risk shift another 5 or 10
+points toward quality. Quality is correctness, evidence, scope, clarity, and
+safety; speed uses duration; cost uses token and credit buckets. Unknown resource
+facts are neutral for both arms and never prove an improvement. Otherwise the
+incumbent is retained. Each configuration is visited at most once within the
+agent/task/risk search, whether it appeared as a source or a challenger, so a
+winner cannot immediately recreate the previous incumbent as a reverse copy.
+Repeated high scores cannot duplicate an already staged or tested neighbor.
+After all finite adjacent tiers lose, the lifecycle reports
+`converged_no_untested_neighbor`; later high scores continue absorbing experience
+but create no copies. A winning configuration becomes the preferred route and
+starts a new finite neighbor search from that new baseline. A normal run may
+stage another neighbor only when its requested model, effort, and tier match that
+preferred champion. If the stable named TOML still pins an older route, the run
+may absorb experience but reports `champion_baseline_not_run`; first run the
+preferred route through an explicit fallback. A Fast champion additionally needs
+host-confirmed effective Fast/priority metadata before it can seed another round.
 
 ## Adaptive resource recommendation
 
 Schema v2 added `evaluation_routing`, keyed one-to-one to an evaluation. Schema
 v3 added `evaluation_metrics` and the initial bounded variation tables. Schema
-v4 adds cumulative stage-plus-shadow budget fields and the shadow-suite hash. A
-v1 or v2 database creates the current tables directly; a v3 database adds the
-missing nullable columns. Both paths run in one SQLite transaction. Historical
+v4 added cumulative stage-plus-shadow budget fields and the shadow-suite hash.
+Schema v5 adds `agent_profiles`, cross-revision `evolution_actions`, and finite
+`resource_challengers`. A v1 or v2 database creates the current tables directly;
+v3 first receives the v4 columns, and v4 receives the v5 tables. Every path runs
+in one SQLite transaction. Historical
 evaluations are kept and receive no fabricated routing, credit, retry, rework, or
-failure-reason facts. The stable agent TOML, its configured model and effort, and
+rapid-action, reputation, challenger, or failure-reason facts. The stable agent TOML, its configured model and effort, and
 the existing lifecycle states remain unchanged.
 
 The router compares at most eight recent rows with the same agent revision,
@@ -389,7 +448,7 @@ py -3 scripts/manage_agents.py stagnation-status `
 ```
 
 This command is strictly read-only: it neither creates/migrates the database nor
-reconciles pending quarantine/restore intents. A pre-v4 database requires a later
+reconciles pending quarantine/restore intents. A pre-v5 database requires a later
 authorized mutation to migrate first. Pending lifecycle operations return
 `recovery_required`; only an explicit `recover` or another authorized mutation
 may reconcile them.
@@ -575,6 +634,12 @@ A single wrong answer, timeout, failed test, tool outage, expensive run, role
 mismatch, or unclear report is not an extreme event and never triggers deletion.
 Three scores below 65 among the latest five comparable revision evaluations mark
 the managed agent degraded.
+
+Rapid mode separately records every score below 90 as one idempotent demerit and
+reputation reduction. A score below 65 may stage one attributable single-axis
+resource challenger, but it does not by itself degrade, rewrite, quarantine, or
+delete the incumbent. The repeated degradation and retirement evidence below
+remains the safety boundary.
 
 Retirement eligibility requires either:
 

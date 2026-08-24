@@ -2,7 +2,7 @@
 name: lean-stack
 description: >
   Deliver software engineering work with the smallest defensible solution,
-  evidence-led playbooks, deliberate native Codex subagents, and a guarded
+  evidence-led playbooks, deliberate native Codex subagents, and an adaptive
   custom-agent lifecycle with evidence-gated quality, latency, and cost routing.
   Use when the user says lean stack, minimal verified change, rigorous workflow,
   deliberate subagents, evolving agents, adaptive agent routing, YAGNI, or avoid
@@ -108,11 +108,15 @@ as boundaries that require their own evidence.
 This skill explicitly requests an eager but bounded native Codex subagent
 workflow. For every non-trivial engineering task, look for at least one bounded
 child route that can improve evidence, speed, quality, or total cost. Prefer a
-parallel slice that overlaps useful parent work, and delegate one by default only
-when startup and merge overhead are plausibly lower than the serial work;
-delegate two or three when distinct workstreams divide cleanly. After spawning a
-parallel child, continue independent parent work and wait only at the named merge
-point. If the child result is the only next step, allow a sequential specialist
+parallel slice that overlaps useful parent work. For a medium-or-larger task,
+normally delegate one stable, non-overlapping read-only slice when the conservative
+end-to-end estimate saves about 15 seconds or more after startup, transfer, merge,
+verification, retry, and escalation are counted. Normally delegate two when two
+such slices divide cleanly; use a third only when it remains independent and does
+not congest the merge. Start documentation checks, codebase mapping, focused test
+analysis, source verification, and independent review as soon as their inputs are
+stable. After spawning a parallel child, continue independent parent work and wait
+only at the named merge point. If the child result is the only next step, allow a sequential specialist
 route only for an existing custom agent with at least one comparable high-scoring precedent,
 and only when the quality, end-to-end-time, and total-cost gates in
 [delegation.md](references/delegation.md) all pass. A built-in, newly created,
@@ -121,6 +125,14 @@ probationary custom agent can qualify through its high-scoring precedent.
 One bounded immediate wait is then expected and must not be described as
 parallelism. Before spawning any subagent, read that reference and the [managed custom-agent
 lifecycle](references/agent-lifecycle.md) in full.
+
+Re-run this gate on every user continuation, scope expansion, grouped defect
+update, or new long-running phase. A task that began single-agent is not allowed
+to remain serial after stable parallel inputs appear. If the current task has no
+native collaboration tool, uses an older multi-agent runtime, or predates the
+plugin refresh without hot reload, the skill cannot manufacture a subagent:
+continue safe parent work, record the capability miss, and validate the policy
+in a fresh loaded task rather than claiming delegation occurred.
 
 At the delegation checkpoint, inventory built-in, personal, project, and
 plugin-managed agents before choosing. Reuse the narrowest suitable specialized
@@ -154,11 +166,12 @@ Require every subagent to report in the user's current language unless the user
 explicitly requests another language. Preserve code, paths, identifiers, quoted
 source text, and raw error messages in their original form when useful. Its first
 progress update must first state a concise user-visible agent name localized to
-that language, then disclose the requested and runtime-effective model and
-reasoning effort. The host's internal task identifier may remain an ASCII slug
+that language, then disclose the requested model and reasoning effort. Add an
+effective model, effort, or speed line only when the host actually exposes that
+specific runtime value. The host's internal task identifier may remain an ASCII slug
 when its API forbids localized names; do not present that technical identifier as
-the user-facing name. If an effective value is unavailable, report it as not
-exposed and name the requested value; never guess from behavior or identity text.
+the user-facing name. Omit every unavailable effective field completely; never
+emit an unavailable-value placeholder or guess from behavior or identity text.
 
 Treat `FINAL_ANSWER` or another complete result as `result_received`, not proof
 that the host has closed the child thread. At the merge point, collect the result,
@@ -178,9 +191,26 @@ authorize redundant agents, duplicated scopes, shared-file races, or a cheap
 first attempt whose expected retry and escalation erase the claimed savings.
 
 After every terminal managed-agent run, release its lifecycle lease and submit
-an evidence-scored report. High-quality and efficient runs may contribute one
-generic experience observation, but only a repeated rule that beats the
-incumbent in an independent shadow comparison may be promoted. A confirmed
+an evidence-scored report with `evolution_mode=rapid`. A run that satisfies the
+existing high-quality contract must include one bounded sanitized experience;
+the lifecycle immediately adds that one rule to the versioned injected playbook.
+A score below 90 immediately records one demerit and lowers the routing reputation;
+only a score below 65 may stage one stronger model or reasoning neighbor, and only
+when evidence attributes the failure to that axis. Tool/environment, timeout,
+role-mismatch, stale-host, and unknown-attribution failures are penalized but do
+not masquerade as model weakness.
+
+Every high-quality incumbent is retained while the lifecycle stages at most one
+resource challenger for the same task/risk class. A challenger is a logical copy
+of the incumbent route and changes exactly one model, reasoning, or exposed speed
+tier. Each finite neighboring configuration is tried at most once. A proven winner
+becomes the preferred route; when all adjacent single-axis tiers have been tested
+without improvement, the competition converges and later high scores absorb
+experience without producing more copies. Stable TOML and global Codex settings
+remain unchanged; named agents use an explicit fallback to test conflicting pins.
+
+The omitted or explicit `guarded` mode preserves the three-observation and shadow
+promotion workflow for existing callers. A confirmed
 extreme failure can retire only a plugin-owned, hash-matching, inactive agent by
 moving its single TOML to recoverable quarantine. Built-in, project, user-owned,
 externally edited, or currently running agents are never automatically modified
@@ -190,7 +220,7 @@ promotion, quarantine, or restore action.
 When runtime configuration facts are available, include the requested and
 effective model, reasoning effort, service tier, execution mode, and a bounded
 cause code in that report. Unknown effective values remain unknown. Repeated
-low-quality comparable runs may produce a stronger single-axis recommendation;
+low-quality comparable guarded runs may produce a stronger single-axis recommendation;
 sustained high-quality but slow runs may produce a cheaper/lower-effort
 recommendation. Fast remains recommendation-only unless the current spawn
 surface exposes and validates a per-agent service tier. Three high-quality slow

@@ -14,8 +14,11 @@ behavior.
    give every writer a disjoint output. Keep integration and shared state with
    one owner. Select and request each slice's model and reasoning effort from the
    delegation role matrix instead of applying one configuration to the program.
-   Estimate the critical path: do not fan out when agent startup, duplicate
-   reading, and synthesis are likely to take longer than the work saved.
+   For a medium-or-larger program, normally start one stable non-overlapping
+   read-only slice when the conservative end-to-end saving is about 15 seconds
+   or more, and normally start two when two clean slices meet that gate. Count
+   startup, duplicate reading, transfer, synthesis, verification, retry, and
+   escalation; do not fan out when those costs are likely to exceed the saving.
    Start useful children early, continue the parent-owned critical-path slice,
    and place a single explicit merge point later in the plan. Never make
    "spawn, immediately wait, then continue" the default shape.
@@ -28,7 +31,9 @@ behavior.
    savings.
 4. At each checkpoint, record the decision, evidence, result, and next risk in
    the task plan or a user-requested durable log. Do not accumulate raw agent
-   transcripts in the main context.
+   transcripts in the main context. Re-run the delegation gate at each phase
+   boundary and after a user continuation adds work; do not inherit a prior
+   single-agent decision after the inputs or remaining scope changed.
 5. Verify each unit before the next depends on it. Reassess the design when the
    same workaround or failed assumption repeats.
 6. Stop at the terminal predicate. Before the final handoff, drain required child

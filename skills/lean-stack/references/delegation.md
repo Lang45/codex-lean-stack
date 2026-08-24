@@ -19,15 +19,34 @@ Delegate only when all are true:
 
 Good first uses are codebase mapping, documentation checks, log or test analysis,
 independent review axes, and tests that can run without competing for the same
-state. For a typical non-trivial change, one read-only explorer or reviewer is
-enough to satisfy the eager gate while the parent owns implementation. Avoid
+state. For a medium-or-larger task, normally spawn one read-only child as soon as
+a stable non-overlapping slice is conservatively expected to save about 15 seconds
+or more end to end. Normally spawn two when two such slices have independent done
+predicates. This estimate includes startup, context transfer, merge, verification,
+retry, and escalation. A third child needs a third real slice and a merge that will
+not become the bottleneck. Avoid
 delegation for a one-function edit, a single linear debugging chain that fails
 the sequential specialist gate, or several agents writing the same files.
+
+Run the gate again after every `continue`, newly added defect group, broadened
+scope, or phase transition. Long-lived implementation tasks commonly become
+parallelizable only after the first repository map, reproduction, or design
+decision stabilizes; delaying the next gate until final review loses most of the
+wall-clock benefit. Short visual nudges and a genuinely coupled edit remain
+single-agent.
+
+The gate also needs an executable host route. If native collaboration tools are
+absent, the task is on an older multi-agent runtime, or the task began before the
+plugin was installed or refreshed and cannot hot-load it, record
+`native_subagent_unavailable` and continue in the parent. Do not create a
+user-owned peer task as a fake subagent, and do not claim that a skill prompt can
+invoke a tool the host did not provide. Validate the new behavior in a fresh task.
 
 ## Shape
 
 - After the gate passes, default to one subagent and use two or three only for
-  genuinely distinct workstreams. Respect the runtime limit and never create
+  genuinely distinct workstreams. Prefer two for two clean independent slices
+  instead of serially waiting for the first one. Respect the runtime limit and never create
   more agents than useful, non-overlapping slices.
 - Prefer read-only exploration and review agents. Keep one implementation owner
   unless writable targets are disjoint by construction.
@@ -159,7 +178,16 @@ Use these speed-biased, bounded-cost defaults:
 - High-cost model/effort combinations stay on Standard.
 - Three high-quality slow runs can propose Fast for low- or medium-cost
   combinations when the user accepts some extra cost.
-- A single low score or slow run never changes any axis.
+- In `rapid` lifecycle mode, every score below 90 immediately records a demerit
+  and lowers routing reputation. Only a score below 65 with attributable
+  `model_capacity` or `reasoning_depth` evidence stages one stronger neighboring
+  axis. Tool/environment, timeout, role mismatch, stale-host, and unknown causes
+  never trigger resource strengthening.
+- High-quality rapid runs immediately absorb one sanitized experience and retain
+  the incumbent while trying at most one untested single-axis resource neighbor.
+  The finite search stops after every adjacent model, effort, or exposed speed
+  tier has been tried without improvement. `guarded` mode retains the repeated-
+  evidence routing gates below.
 - Change one axis per shadow comparison so the cause remains identifiable.
 - A named custom-agent file that pins model or effort cannot be tested with a
   conflicting spawn override; use an explicit-role fallback or the incumbent.
@@ -203,6 +231,9 @@ Require each subagent's first progress update to begin with:
   language.
 - `请求模型`: the exact model requested in the brief and spawn call.
 - `请求推理强度`: the exact requested reasoning-effort value.
+
+Only when the host actually exposes a value, append:
+
 - `生效模型`: the actual model identifier exposed by the spawn result, runtime,
   or agent metadata.
 - `生效推理强度`: the actual reasoning-effort value exposed by the same source.
@@ -210,10 +241,10 @@ Require each subagent's first progress update to begin with:
 When a service tier was explicitly requested or recommended, also require
 `请求速度档位` and `生效速度档位`. Use `Standard`/`Fast` for the user-facing
 mode and retain raw values such as `priority` when the runtime exposes them.
-Unexposed values follow the same no-guessing rule.
+Omit an unexposed effective speed line.
 
 Localize these labels to the user's current language. If a value is not exposed,
-the agent must say `未暴露（已请求 <value>）` or the equivalent in that language.
+omit that effective field completely; never print an unavailable-value placeholder.
 If the spawn actually fell back to parent inheritance, say so explicitly. Never
 infer an effective model or effort from writing style, capability, a generic
 identity prompt, or a configured default that was not confirmed for the child.
@@ -237,8 +268,9 @@ Give each subagent a self-contained brief with:
 - The role-specific requested model and reasoning effort, repeated exactly from
   the spawn call.
 - A compact return shape: `AGENT_NAME`, `REQUESTED_MODEL`, `REQUESTED_REASONING`,
-  `EFFECTIVE_MODEL`, `EFFECTIVE_REASONING`, `STATUS`, `SCOPE`, `EVIDENCE`,
-  `FINDINGS`, `GAPS`.
+  `STATUS`, `SCOPE`, `EVIDENCE`, `FINDINGS`, `GAPS`. Add `EFFECTIVE_MODEL`,
+  `EFFECTIVE_REASONING`, or `EFFECTIVE_SERVICE_TIER` only when the host actually
+  exposes the corresponding value.
 
 Pass file pointers instead of copying large payloads into every brief. If agents
 must write, give them naturally disjoint files or separate worktrees. A branch

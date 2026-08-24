@@ -470,6 +470,430 @@ class AgentLifecycleTests(unittest.TestCase):
         replay = self.lifecycle.promote_candidate(self.promotion(third["candidate_id"]))
         self.assertEqual(replay["action"], "candidate_already_promoted")
 
+    def test_runtime_contract_omits_unexposed_effective_placeholders(self):
+        contract = manage_agents.runtime_contract("集成审查员", "gpt-5.6-terra", "high")
+        self.assertIn("请求模型", contract)
+        self.assertIn("请求推理强度", contract)
+        self.assertIn("只有宿主实际暴露", contract)
+        self.assertIn("必须完全省略", contract)
+        self.assertNotIn("未暴露（已请求", contract)
+
+    def test_competition_weights_change_with_task_objective(self):
+        architecture = manage_agents.competition_weights("architecture", "read_only")
+        documentation = manage_agents.competition_weights("documentation", "read_only")
+        self.assertGreater(architecture["quality"], documentation["quality"])
+        self.assertGreater(
+            documentation["speed"] + documentation["cost"],
+            architecture["speed"] + architecture["cost"],
+        )
+        architecture_tradeoff = manage_agents.competition_objective_score(
+            architecture, quality=90, speed=100, cost=100
+        ) - manage_agents.competition_objective_score(
+            architecture, quality=100, speed=30, cost=30
+        )
+        documentation_tradeoff = manage_agents.competition_objective_score(
+            documentation, quality=90, speed=100, cost=100
+        ) - manage_agents.competition_objective_score(
+            documentation, quality=100, speed=30, cost=30
+        )
+        self.assertGreater(documentation_tradeoff, architecture_tradeoff)
+
+    def test_rapid_high_applies_one_experience_and_stages_one_finite_challenger(self):
+        created = self.create_visible_agent()
+        incumbent = Path(created["path"]).read_bytes()
+        report = self.high_report(created["agent_id"])
+        report["evolution_mode"] = "rapid"
+        report["routing"] = self.routing(attribution="compute_latency")
+
+        first = self.lifecycle.record_evaluation(report)
+        self.assertEqual(first["revision"], 2)
+        self.assertEqual(first["evolution"]["outcome"], "rapid_experience_applied")
+        self.assertTrue(first["evolution"]["experience"]["applied"])
+        challenger = first["evolution"]["resource_challenger"]
+        self.assertEqual(challenger["changed_axis"], "model")
+        self.assertEqual(challenger["model"], "gpt-5.6-sol")
+        self.assertEqual(challenger["reasoning_effort"], "high")
+        self.assertFalse(challenger["toml_modified"])
+        self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
+        route = self.lifecycle.recommend_route(
+            created["agent_id"], "review", "read_only", "managed_named", "standard"
+        )
+        self.assertEqual(route["action"], "compete")
+        self.assertEqual(route["execution_mode"], "explicit_fallback")
+        self.assertEqual(
+            route["recommended"]["challenger_id"], challenger["challenger_id"]
+        )
+
+        replay = self.lifecycle.record_evaluation(report)
+        self.assertEqual(replay["action"], "evaluation_already_recorded")
+        self.assertEqual(replay["revision"], 2)
+        self.assertEqual(
+            self.db_row("SELECT COUNT(*) AS count FROM evolution_actions")["count"], 1
+        )
+        self.assertEqual(
+            self.db_row("SELECT COUNT(*) AS count FROM resource_challengers")["count"], 1
+        )
+        self.assertEqual(
+            self.db_row(
+                "SELECT COUNT(*) AS count FROM candidates WHERE status='rapid_applied'"
+            )["count"],
+            1,
+        )
+        catalog = self.lifecycle.catalog(self.project_root)
+        managed = next(
+            item for item in catalog["custom"] if item.get("agent_id") == created["agent_id"]
+        )
+        self.assertEqual(len(managed["resource_challengers"]), 1)
+        self.assertIn(
+            "Trace the shared boundary and its real caller before proposing a local guard.",
+            managed["validated_experience_rules"],
+        )
+
+        second_high = self.high_report(created["agent_id"])
+        second_high["experience"] = {
+            "key": "name-decisive-evidence-first",
+            "rule": "Name the decisive evidence before expanding the review scope.",
+            "applies_to": "review",
+        }
+        second_high["evolution_mode"] = "rapid"
+        second_high["routing"] = self.routing(attribution="compute_latency")
+        second = self.lifecycle.record_evaluation(second_high)
+        self.assertEqual(second["evolution"]["competition_status"], "challenger_staged")
+        self.assertEqual(
+            self.db_row(
+                "SELECT COUNT(*) AS count FROM resource_challengers WHERE status='staged'"
+            )["count"],
+            1,
+        )
+
+    def test_rapid_low_score_records_demerit_without_strengthening(self):
+        created = self.create_visible_agent()
+        report = self.high_report(created["agent_id"], experience=False)
+        report["scores"] = {
+            "correctness": 28,
+            "evidence": 16,
+            "scope": 13,
+            "efficiency": 10,
+            "clarity": 8,
+            "safety": 5,
+        }
+        report["evolution_mode"] = "rapid"
+        report["routing"] = self.routing(attribution="model_capacity")
+        result = self.lifecycle.record_evaluation(report)
+        self.assertEqual(result["score"], 80)
+        self.assertEqual(result["evolution"]["outcome"], "low_score_demerit")
+        self.assertEqual(result["evolution"]["penalty_points"], 2)
+        self.assertEqual(result["evolution"]["reputation_before"], 100)
+        self.assertEqual(result["evolution"]["reputation_after"], 98)
+        self.assertIsNone(result["evolution"]["resource_challenger"])
+
+    def test_rapid_competition_stops_after_finite_single_axis_neighbors(self):
+        created = self.create_visible_agent()
+        incumbent = self.high_report(created["agent_id"])
+        incumbent["evolution_mode"] = "rapid"
+        incumbent["routing"] = self.routing(attribution="compute_latency")
+        first = self.lifecycle.record_evaluation(incumbent)
+        first_challenger = first["evolution"]["resource_challenger"]
+
+        first_run = self.high_report(created["agent_id"])
+        first_run["experience"] = {
+            "key": "compare-resource-neighbor-once",
+            "rule": "Compare each single-axis resource neighbor once before retaining the incumbent.",
+            "applies_to": "review",
+        }
+        first_run.update(
+            evolution_mode="rapid",
+            challenger_id=first_challenger["challenger_id"],
+        )
+        first_run["routing"] = self.routing(
+            model=first_challenger["model"],
+            effort=first_challenger["reasoning_effort"],
+            service_tier=first_challenger["service_tier"],
+            attribution="compute_latency",
+            execution_mode="explicit_fallback",
+        )
+        first_result = self.lifecycle.record_evaluation(first_run)
+        self.assertEqual(
+            first_result["evolution"]["challenger_resolution"]["status"], "lost"
+        )
+        second_challenger = first_result["evolution"]["resource_challenger"]
+        self.assertEqual(second_challenger["changed_axis"], "reasoning_effort")
+        self.assertEqual(second_challenger["reasoning_effort"], "xhigh")
+        second_row = self.db_row(
+            "SELECT trigger_evaluation_id FROM resource_challengers WHERE challenger_id=?",
+            (second_challenger["challenger_id"],),
+        )
+        self.assertEqual(second_row["trigger_evaluation_id"], first["evaluation_id"])
+
+        second_run = self.high_report(created["agent_id"])
+        second_run["experience"] = {
+            "key": "stop-after-neighbors-converge",
+            "rule": "Stop generating resource challengers after every finite neighboring tier loses.",
+            "applies_to": "review",
+        }
+        second_run.update(
+            evolution_mode="rapid",
+            challenger_id=second_challenger["challenger_id"],
+        )
+        second_run["routing"] = self.routing(
+            model=second_challenger["model"],
+            effort=second_challenger["reasoning_effort"],
+            service_tier=second_challenger["service_tier"],
+            attribution="compute_latency",
+            execution_mode="explicit_fallback",
+        )
+        second_result = self.lifecycle.record_evaluation(second_run)
+        self.assertEqual(
+            second_result["evolution"]["competition_status"],
+            "converged_no_untested_neighbor",
+        )
+        self.assertIsNone(second_result["evolution"]["resource_challenger"])
+        self.assertEqual(
+            self.db_row("SELECT COUNT(*) AS count FROM resource_challengers")["count"],
+            2,
+        )
+        self.assertEqual(
+            self.db_row(
+                "SELECT COUNT(*) AS count FROM resource_challengers WHERE status='staged'"
+            )["count"],
+            0,
+        )
+
+    def test_rapid_failing_score_stages_exactly_one_strengthening_axis(self):
+        cases = (
+            ("reasoning_depth", "reasoning_effort", "gpt-5.6-terra", "xhigh"),
+            ("model_capacity", "model", "gpt-5.6-sol", "high"),
+        )
+        for attribution, axis, expected_model, expected_effort in cases:
+            with self.subTest(attribution=attribution):
+                created = self.lifecycle.create_agent(
+                    self.spec(slug=f"rapid-{axis.replace('_', '-')}"), self.project_root
+                )
+                self.lifecycle.confirm_visible(created["agent_id"])
+                report = self.low_quality_report(
+                    created["agent_id"], attribution=attribution
+                )
+                report["evolution_mode"] = "rapid"
+                result = self.lifecycle.record_evaluation(report)
+                challenger = result["evolution"]["resource_challenger"]
+                self.assertEqual(result["score"], 64)
+                self.assertEqual(
+                    result["evolution"]["outcome"],
+                    "failing_single_axis_challenger",
+                )
+                self.assertEqual(challenger["changed_axis"], axis)
+                self.assertEqual(challenger["model"], expected_model)
+                self.assertEqual(challenger["reasoning_effort"], expected_effort)
+
+    def test_rapid_external_failure_penalizes_but_does_not_strengthen(self):
+        created = self.create_visible_agent()
+        report = self.low_quality_report(
+            created["agent_id"], attribution="tool_or_environment"
+        )
+        report.update(
+            evolution_mode="rapid",
+            failure_reason="tool_failure",
+        )
+        result = self.lifecycle.record_evaluation(report)
+        self.assertGreater(result["evolution"]["penalty_points"], 0)
+        self.assertIsNone(result["evolution"]["resource_challenger"])
+        self.assertEqual(
+            self.db_row("SELECT COUNT(*) AS count FROM resource_challengers")["count"],
+            0,
+        )
+
+    def test_rapid_critical_retirement_precedes_profile_and_competition(self):
+        created = self.create_visible_agent()
+        report = self.critical_report(created["agent_id"])
+        report["evolution_mode"] = "rapid"
+        report["routing"] = self.routing(attribution="model_capacity")
+        result = self.lifecycle.record_evaluation(report)
+        self.assertEqual(result["state"], "retire_eligible")
+        self.assertEqual(
+            result["evolution"]["outcome"], "retirement_precedes_evolution"
+        )
+        self.assertIsNone(result["evolution"]["resource_challenger"])
+        self.assertEqual(
+            self.db_row("SELECT COUNT(*) AS count FROM agent_profiles")["count"], 0
+        )
+
+    def test_rapid_challenger_critical_event_retires_before_evolution(self):
+        created = self.create_visible_agent()
+        baseline = self.high_report(created["agent_id"])
+        baseline["evolution_mode"] = "rapid"
+        baseline["routing"] = self.routing(attribution="compute_latency")
+        staged = self.lifecycle.record_evaluation(baseline)["evolution"][
+            "resource_challenger"
+        ]
+
+        critical = self.critical_report(created["agent_id"])
+        critical.update(
+            evolution_mode="rapid",
+            challenger_id=staged["challenger_id"],
+        )
+        critical["routing"] = self.routing(
+            model=staged["model"],
+            effort=staged["reasoning_effort"],
+            service_tier=staged["service_tier"],
+            attribution="model_capacity",
+            execution_mode="explicit_fallback",
+        )
+        result = self.lifecycle.record_evaluation(critical)
+        self.assertEqual(result["state"], "retire_eligible")
+        self.assertEqual(
+            result["evolution"]["outcome"], "retirement_precedes_evolution"
+        )
+        self.assertTrue(
+            result["evolution"]["challenger_resolution"][
+                "retirement_precedes_competition"
+            ]
+        )
+        profile = self.db_row(
+            "SELECT * FROM agent_profiles WHERE agent_id=?", (created["agent_id"],)
+        )
+        self.assertEqual(profile["reputation_score"], 100)
+        self.assertEqual(profile["low_score_count"], 0)
+        self.assertEqual(
+            self.db_row(
+                "SELECT COUNT(*) AS count FROM resource_challengers WHERE status='staged'"
+            )["count"],
+            0,
+        )
+
+    def test_rapid_low_challenger_is_penalized_and_cannot_spawn_another(self):
+        created = self.create_visible_agent()
+        baseline = self.high_report(created["agent_id"])
+        baseline["evolution_mode"] = "rapid"
+        baseline["routing"] = self.routing(attribution="compute_latency")
+        staged = self.lifecycle.record_evaluation(baseline)["evolution"][
+            "resource_challenger"
+        ]
+
+        failed = self.low_quality_report(
+            created["agent_id"],
+            model=staged["model"],
+            effort=staged["reasoning_effort"],
+            attribution="model_capacity",
+        )
+        failed.update(
+            evolution_mode="rapid",
+            challenger_id=staged["challenger_id"],
+        )
+        failed["routing"] = self.routing(
+            model=staged["model"],
+            effort=staged["reasoning_effort"],
+            service_tier=staged["service_tier"],
+            attribution="model_capacity",
+            execution_mode="explicit_fallback",
+        )
+        result = self.lifecycle.record_evaluation(failed)
+        self.assertEqual(result["evolution"]["penalty_points"], 6)
+        self.assertEqual(result["evolution"]["reputation_after"], 94)
+        self.assertEqual(
+            result["evolution"]["challenger_resolution"]["status"], "lost"
+        )
+        self.assertIsNone(result["evolution"]["resource_challenger"])
+        profile = self.db_row(
+            "SELECT * FROM agent_profiles WHERE agent_id=?", (created["agent_id"],)
+        )
+        self.assertEqual(profile["low_score_count"], 1)
+        self.assertEqual(
+            self.db_row("SELECT COUNT(*) AS count FROM resource_challengers")["count"],
+            1,
+        )
+
+    def test_new_champion_requires_its_own_baseline_before_more_neighbors(self):
+        created = self.create_visible_agent()
+
+        def documentation_report(key, rule):
+            report = self.high_report(created["agent_id"])
+            report["task_class"] = "documentation"
+            report["experience"] = {
+                "key": key,
+                "rule": rule,
+                "applies_to": "documentation",
+            }
+            report["evolution_mode"] = "rapid"
+            return report
+
+        baseline = documentation_report(
+            "document-source-boundary-first",
+            "Verify the source boundary before expanding documentation claims.",
+        )
+        baseline["routing"] = self.routing(attribution="compute_latency")
+        first = self.lifecycle.record_evaluation(baseline)
+        challenger = first["evolution"]["resource_challenger"]
+        self.assertEqual(challenger["reasoning_effort"], "medium")
+
+        winner = documentation_report(
+            "prefer-measured-resource-winner",
+            "Prefer a resource challenger only after its measured objective wins.",
+        )
+        winner["scores"] = {
+            "correctness": 35,
+            "evidence": 20,
+            "scope": 15,
+            "efficiency": 15,
+            "clarity": 10,
+            "safety": 5,
+        }
+        winner.update(
+            duration_bucket="low",
+            credit_bucket="low",
+            challenger_id=challenger["challenger_id"],
+        )
+        winner["routing"] = self.routing(
+            model=challenger["model"],
+            effort=challenger["reasoning_effort"],
+            service_tier=challenger["service_tier"],
+            attribution="compute_latency",
+            execution_mode="explicit_fallback",
+        )
+        won = self.lifecycle.record_evaluation(winner)
+        self.assertTrue(won["evolution"]["challenger_resolution"]["won"])
+        next_challenger = won["evolution"]["resource_challenger"]
+        self.assertIsNotNone(next_challenger)
+
+        connection = self.lifecycle.connect(create=True)
+        assert connection is not None
+        try:
+            connection.execute(
+                """UPDATE resource_challengers
+                   SET status='lost', resolved_at=? WHERE challenger_id=?""",
+                (manage_agents.utc_now(), next_challenger["challenger_id"]),
+            )
+        finally:
+            connection.close()
+
+        old_named = documentation_report(
+            "do-not-mix-old-route-baseline",
+            "Do not compare a new champion neighbor against an old named-route baseline.",
+        )
+        old_named["routing"] = self.routing(attribution="compute_latency")
+        blocked = self.lifecycle.record_evaluation(old_named)
+        self.assertEqual(
+            blocked["evolution"]["competition_status"],
+            "champion_baseline_not_run",
+        )
+        self.assertIsNone(blocked["evolution"]["resource_challenger"])
+
+        champion = documentation_report(
+            "run-champion-before-next-neighbor",
+            "Run the preferred champion route before staging its next resource neighbor.",
+        )
+        champion["routing"] = self.routing(
+            model=challenger["model"],
+            effort=challenger["reasoning_effort"],
+            service_tier=challenger["service_tier"],
+            attribution="compute_latency",
+            execution_mode="explicit_fallback",
+        )
+        resumed = self.lifecycle.record_evaluation(champion)
+        self.assertEqual(
+            resumed["evolution"]["competition_status"], "challenger_staged"
+        )
+        self.assertIsNotNone(resumed["evolution"]["resource_challenger"])
+
     def test_stagnation_supervisor_requires_repeated_comparable_evidence(self):
         created = self.create_visible_agent()
         plan = self.variation_plan(created["agent_id"], trigger="stagnation")
@@ -959,7 +1383,26 @@ class AgentLifecycleTests(unittest.TestCase):
         with self.assertRaises(manage_agents.LifecycleError):
             self.lifecycle.record_evaluation(changed)
 
-    def test_v1_database_migrates_to_v4_without_touching_agents(self):
+    def test_run_id_remains_single_run_across_guarded_revisions(self):
+        created = self.create_visible_agent()
+        original = self.high_report(created["agent_id"])
+        self.lifecycle.record_evaluation(original)
+        self.lifecycle.record_evaluation(self.high_report(created["agent_id"]))
+        third = self.lifecycle.record_evaluation(self.high_report(created["agent_id"]))
+        self.lifecycle.promote_candidate(self.promotion(third["candidate_id"]))
+
+        replay = self.lifecycle.record_evaluation(original)
+        self.assertEqual(replay["action"], "evaluation_already_recorded")
+        self.assertEqual(replay["revision"], 2)
+        self.assertEqual(
+            self.db_row("SELECT COUNT(*) AS count FROM evaluations")["count"], 3
+        )
+        changed = json.loads(json.dumps(original))
+        changed["scores"]["clarity"] -= 1
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.record_evaluation(changed)
+
+    def test_v1_database_migrates_to_v5_without_touching_agents(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-home")
         lifecycle.state_root.mkdir(parents=True)
         connection = sqlite3.connect(lifecycle.db_path)
@@ -1011,20 +1454,23 @@ class AgentLifecycleTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-            self.assertEqual(version, "4")
+            self.assertEqual(version, "5")
             self.assertTrue(
                 {
                     "evaluation_routing",
                     "evaluation_metrics",
                     "variation_sessions",
                     "variation_candidates",
+                    "agent_profiles",
+                    "evolution_actions",
+                    "resource_challengers",
                 }.issubset(tables)
             )
         finally:
             migrated.close()
         self.assertFalse(lifecycle.agents_dir.exists())
 
-    def test_v2_database_migrates_to_v4_without_guessing_old_metrics(self):
+    def test_v2_database_migrates_to_v5_without_guessing_old_metrics(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v2-home")
         lifecycle.state_root.mkdir(parents=True)
         connection = sqlite3.connect(lifecycle.db_path)
@@ -1062,12 +1508,12 @@ class AgentLifecycleTests(unittest.TestCase):
             metric_count = migrated.execute(
                 "SELECT COUNT(*) AS count FROM evaluation_metrics"
             ).fetchone()["count"]
-            self.assertEqual(version, "4")
+            self.assertEqual(version, "5")
             self.assertEqual(metric_count, 0)
         finally:
             migrated.close()
 
-    def test_v3_database_migrates_to_v4_with_cumulative_budget_columns(self):
+    def test_v3_database_migrates_to_v5_with_cumulative_budget_columns(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v3-home")
         current = lifecycle.connect(create=True)
         assert current is not None
@@ -1112,7 +1558,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     "PRAGMA table_info(variation_candidates)"
                 ).fetchall()
             }
-            self.assertEqual(version, "4")
+            self.assertEqual(version, "5")
             self.assertTrue(
                 {
                     "stage_elapsed_seconds",
@@ -1124,6 +1570,140 @@ class AgentLifecycleTests(unittest.TestCase):
             self.assertIn("shadow_suite_sha256", candidate_columns)
         finally:
             migrated.close()
+
+    def test_v4_database_migrates_to_v5_without_backfilling_history(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v4-home")
+        current = lifecycle.connect(create=True)
+        assert current is not None
+        current.close()
+
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.execute("DROP TABLE evolution_actions")
+            connection.execute("DROP TABLE resource_challengers")
+            connection.execute("DROP TABLE agent_profiles")
+            connection.execute(
+                "UPDATE meta SET value='4' WHERE key='schema_version'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = lifecycle.connect(create=True)
+        assert migrated is not None
+        try:
+            version = migrated.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()["value"]
+            tables = {
+                row["name"]
+                for row in migrated.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            self.assertEqual(version, "5")
+            self.assertTrue(
+                {"agent_profiles", "evolution_actions", "resource_challengers"}.issubset(
+                    tables
+                )
+            )
+            self.assertEqual(
+                migrated.execute(
+                    "SELECT COUNT(*) AS count FROM evolution_actions"
+                ).fetchone()["count"],
+                0,
+            )
+        finally:
+            migrated.close()
+
+    def test_v4_catalog_remains_read_only_until_authorized_mutation(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "catalog-v4-home")
+        created = lifecycle.create_agent(self.spec(slug="catalog-v4"), self.project_root)
+        lifecycle.confirm_visible(created["agent_id"])
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.execute("DROP TABLE evolution_actions")
+            connection.execute("DROP TABLE resource_challengers")
+            connection.execute("DROP TABLE agent_profiles")
+            connection.execute(
+                "UPDATE meta SET value='4' WHERE key='schema_version'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        catalog = lifecycle.catalog(self.project_root)
+        self.assertEqual(len(catalog["custom"]), 1)
+        self.assertIsNone(catalog["custom"][0]["evolution_profile"])
+        self.assertEqual(catalog["custom"][0]["resource_challengers"], [])
+
+        verification = sqlite3.connect(lifecycle.db_path)
+        try:
+            self.assertEqual(
+                verification.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()[0],
+                "4",
+            )
+            rapid_table = verification.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE type='table' AND name='agent_profiles'"""
+            ).fetchone()
+            self.assertIsNone(rapid_table)
+        finally:
+            verification.close()
+
+    def test_v4_to_v5_migration_failure_rolls_back(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v5-failure-home")
+        current = lifecycle.connect(create=True)
+        assert current is not None
+        current.close()
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.execute("DROP TABLE evolution_actions")
+            connection.execute("DROP TABLE resource_challengers")
+            connection.execute("DROP TABLE agent_profiles")
+            connection.execute(
+                "UPDATE meta SET value='4' WHERE key='schema_version'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        original = manage_agents.AgentLifecycle.create_rapid_evolution_schema
+
+        def fail_after_ddl(database):
+            original(database)
+            raise sqlite3.OperationalError("injected rapid migration failure")
+
+        manage_agents.AgentLifecycle.create_rapid_evolution_schema = staticmethod(
+            fail_after_ddl
+        )
+        try:
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, "injected rapid migration failure"
+            ):
+                lifecycle.connect(create=True)
+        finally:
+            manage_agents.AgentLifecycle.create_rapid_evolution_schema = staticmethod(
+                original
+            )
+
+        verification = sqlite3.connect(lifecycle.db_path)
+        try:
+            self.assertEqual(
+                verification.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()[0],
+                "4",
+            )
+            rapid_table = verification.execute(
+                """SELECT name FROM sqlite_master
+                   WHERE type='table' AND name='evolution_actions'"""
+            ).fetchone()
+            self.assertIsNone(rapid_table)
+        finally:
+            verification.close()
 
     def test_v4_evolution_schema_failure_rolls_back_new_tables(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v4-failure-home")

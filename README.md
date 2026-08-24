@@ -18,10 +18,12 @@ combines the strongest compatible ideas from Ponytail and pstack:
 - Terminal-state reconciliation that distinguishes a received final from a
   closed host thread, performs one bounded close/check/interrupt sequence, and
   never reruns completed work merely to clear a stale UI card.
-- A guarded custom-agent lifecycle that inventories existing agents, prefers a
+- An adaptive custom-agent lifecycle that inventories existing agents, prefers a
   reusable specialist over a generic built-in, creates a narrow managed agent
-  when that specialty is missing, records evidence, promotes tested experience,
-  and moves confirmed extreme failures to recoverable quarantine.
+  when that specialty is missing, immediately absorbs one bounded high-quality
+  experience in rapid mode, records low-score demerits, runs finite single-axis
+  resource competitions, and moves confirmed extreme failures to recoverable
+  quarantine.
 - Evidence-gated route recommendations that strengthen repeatedly weak agents,
   economize consistently strong but slow agents, and keep Fast/Standard as an
   explicit latency-versus-cost decision.
@@ -115,13 +117,17 @@ $lean-stack explain this subsystem without changing anything.
 
 The skill stays single-agent for trivial work and whenever startup, verification,
 merge, retry, or write-conflict overhead erases the expected benefit. After the
-critical-path gate passes, it normally uses one subagent and no more than two or
-three for clearly separable workstreams, prefers read-only delegation, prevents
+critical-path gate passes, a medium-or-larger task normally uses one subagent when
+a stable non-overlapping read-only slice conservatively saves about 15 seconds
+end to end, and normally uses two when two such slices divide cleanly. A third
+requires a third independent slice and a non-congested merge. The skill prefers
+read-only delegation, prevents
 overlapping writes, requires each child to answer in the user's current language,
 requests a role-specific model and reasoning effort for every child, requires the
-child to disclose both the requested and runtime-effective values at startup
-without guessing missing metadata, and requires the parent to inspect and verify
-the result.
+child to disclose requested values at startup, and includes effective model,
+reasoning, or speed fields only when the host actually exposes them. Missing
+effective fields are omitted completely rather than shown as placeholders. The
+parent still inspects and verifies the result.
 
 A tightly sequential task stays with the parent by default, but it is no longer
 an unconditional single-agent case. If a specialist child owns the only next
@@ -177,6 +183,14 @@ Authorized idempotent publishing uses the normal transport first, retries
 one clearly transient failure once, and then switches to a previously verified
 safe transport instead of repeatedly waiting on the same broken path.
 
+The gate is evaluated again on every continuation, scope expansion, grouped bug
+report, and long-running phase transition. Existing tasks created before the
+plugin refresh may not hot-load the skill, and an older Multi-Agent runtime may
+provide no native collaboration tool at all. In those cases the plugin records a
+capability miss and keeps the parent productive; it does not fabricate a
+subagent or create a user-owned peer task as a substitute. A fresh task is the
+verification boundary for newly installed delegation behavior.
+
 ## Managed agent lifecycle
 
 When delegation is justified, the skill first catalogs the built-in agents and
@@ -204,11 +218,30 @@ Persistent mutation is fail-closed:
   agents are immutable.
 - Hash drift, links, path changes, name conflicts, active leases, or unknown
   report fields stop the operation.
-- Successful experience is first an observation, then a challenger. Three
-  repeated high-quality observations and an independent shadow comparison are
-  required before one narrow rule can be promoted into a versioned external
-  playbook. Promotion never overwrites the stable agent TOML; future briefs
-  receive the validated rules from catalog.
+- A `run_id` names one real run for that managed agent across logical revisions.
+  Identical retries return the original result; changed content under that ID is
+  rejected, so neither rapid nor guarded retries can double-apply state.
+- The installed skill records `evolution_mode=rapid`. A high-quality run must
+  contribute one sanitized experience, which is immediately added to the
+  versioned external playbook for future briefs. A score below 90 immediately
+  records a demerit and lowers reputation; only a score below 65 with model- or
+  reasoning-specific attribution stages a stronger single-axis challenger.
+  Tool, timeout, role, stale-host, and unknown failures are penalized without
+  being misclassified as model weakness.
+- Existing callers remain compatible: omitted or explicit `guarded` mode keeps
+  the three-observation plus independent-shadow promotion workflow.
+- Rapid high performers retain the incumbent and stage at most one logical
+  resource challenger per task/risk class. Each challenger changes exactly one
+  finite neighboring model, reasoning, or host-confirmed speed tier, and every
+  configuration is visited at most once in the agent/task/risk search, including
+  former champions, so a winner cannot recreate the previous incumbent. Once every
+  neighbor loses, the route is converged and high scores no longer produce
+  copies. A winning route starts a new finite search from the new champion.
+  Another neighbor is not staged until a comparable run actually uses that
+  preferred champion configuration; an older named-TOML run may absorb experience
+  but cannot masquerade as the new baseline.
+  Neither path overwrites stable agent TOML; future briefs receive the validated
+  rules and preferred route from catalog.
 - Ordinary failure never deletes an agent. A deterministically confirmed
   critical violation, or repeated independently confirmed extreme failure, can
   move one managed TOML out of the active directory into recoverable quarantine.
@@ -221,9 +254,20 @@ effective model, reasoning effort, service tier, execution mode, and a fixed
 cause code. Unexposed effective values remain `unknown`; old evaluations are not
 backfilled with guesses.
 
+Rapid competition judges quality, speed, and cost together with task-specific
+weights. Architecture uses `75/15/10`; implementation `65/25/10`; review
+`65/20/15`; test `55/30/15`; exploration `45/35/20`; documentation `45/30/25`;
+other tasks `55/25/20`. Workspace-write and external-effect risk shift another
+5 or 10 points toward quality. Correctness, evidence, scope, clarity, and safety
+form the quality component; duration is speed; token and credit buckets are
+cost. Unknown resource values are neutral and never prove an improvement, while
+the high-quality and safety floors remain mandatory regardless of weights.
+
 Before the next comparable task, `recommend-route` separates quality from
 efficiency and returns one of:
 
+- `compete`: run the one open rapid single-axis challenger through an explicit
+  fallback while retaining the incumbent.
 - `watch`: one or two low-quality signals; gather more evidence.
 - `hold`: keep the incumbent configuration.
 - `strengthen`: shadow one higher model or reasoning step after repeated low
@@ -243,8 +287,10 @@ host does not expose a per-agent service-tier field.
 
 ### Bounded variation and stagnation supervision
 
-Schema v4 keeps credits, retries, rework, and enumerated failure reasons separate
-from the existing quality score. `stagnation-status` authorizes a supervisor only
+Schema v5 keeps credits, retries, rework, and enumerated failure reasons separate
+from the existing quality score, adds an idempotent reputation profile and
+finite resource-challenger lineage, and migrates v4 atomically without inventing
+historical actions. `stagnation-status` authorizes a supervisor only
 after a comparable no-improvement streak or the same high-confidence failure
 reason repeats three times. A single poor or slow run never starts self-editing.
 An explicit user can still request a manual variation session.
