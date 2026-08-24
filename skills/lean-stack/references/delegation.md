@@ -77,9 +77,9 @@ the current revision with the same task class, risk tier, execution mode, and
 requested configuration. It must satisfy the lifecycle's high-quality
 contract: total score at least 90, correctness at least 32/35, evidence at least
 16/20, scope at least 13/15, efficiency at least 12/15, safety 5/5, strong
-evidence, no critical event, high-confidence deterministic, independent-model,
-or human judgment, and no user rejection. The agent must be selectable and may
-be `probation` or `active`. Equivalent human-approved score evidence meeting the
+evidence, no critical event, medium-or-high judge confidence, and no user
+rejection. The agent must be selectable with lifecycle state `probation` or
+`active`. Equivalent human-approved score evidence meeting the
 same thresholds may qualify another custom agent explicitly named by the user;
 otherwise missing lifecycle proof fails closed.
 
