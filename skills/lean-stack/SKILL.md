@@ -64,7 +64,12 @@ user's stated priority.
    than replaces the primary playbook.
 6. Keep a task plan only when the work has multiple verifiable steps. Do not
    turn a small edit into ceremony.
-7. Finish with evidence from the real artifact and a concise handoff.
+7. When changing a versioned plugin, package, or application, follow its existing
+   release policy. For this plugin, read [versioning.md](references/versioning.md):
+   a compatible feature bumps minor, a compatible fix bumps patch, and a
+   breaking public change bumps major. The Codex cachebuster is build metadata,
+   not a substitute for that semantic bump.
+8. Finish with evidence from the real artifact and a concise handoff.
 
 ## Minimality ladder
 

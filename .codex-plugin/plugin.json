@@ -1,6 +1,6 @@
 {
   "name": "codex-lean-stack",
-  "version": "0.1.0+codex.20260824064508",
+  "version": "0.2.0+codex.20260824160759",
   "description": "Fast, evidence-driven Codex engineering with critical-path subagents, guarded agent evolution, and bounded-cost speed routing.",
   "author": {
     "name": "Lang45",

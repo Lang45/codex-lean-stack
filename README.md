@@ -56,15 +56,44 @@ does not discover it automatically.
    Personal source, and install **Codex Lean Stack**.
 4. Start a new task so Codex loads the installed skill index.
 
-If the resulting marketplace is named `personal`, the equivalent Codex CLI
-install command after registration is:
+If the resulting marketplace is named `personal` and `codex` resolves to a
+supported standalone CLI or app-execution alias, the equivalent install command
+after registration is:
 
 ```powershell
 codex plugin add codex-lean-stack@personal
 ```
 
+On a Windows Store/MSIX installation, prefer the desktop Plugins Directory.
+Never invoke `WindowsApps\...\app\resources\codex.exe` directly: that package
+resource can grant execute access only to a process carrying the matching package
+identity, even though an ordinary shell can read the file. If no registered
+`codex.exe` app-execution alias exists outside the package, the internal binary
+is not a supported external CLI entry point.
+
 See the official OpenAI documentation for
 [plugin packaging and local marketplaces](https://developers.openai.com/plugins/build/plugins).
+
+## Versioning and local refresh
+
+The numeric SemVer base and `+codex.<timestamp>` have different jobs. A
+backward-compatible feature bumps minor, a compatible fix bumps patch, and a
+breaking public change bumps major. The Codex suffix invalidates the local
+installed cache; changing only that suffix does not communicate a new feature.
+
+Use the atomic release writer for a feature, fix, or breaking release:
+
+```powershell
+py -3 .\skills\lean-stack\scripts\bump_plugin_version.py . `
+  --change feature `
+  --expected-version "0.1.0+codex.previous"
+```
+
+The exact expected version prevents a retry from bumping twice, and the command
+writes one new numeric base plus one cachebuster in a single atomic operation.
+For documentation-only or unchanged-base local iteration, the system
+plugin-creator cachebuster helper remains appropriate. Do not run that helper
+after the semantic release command.
 
 ## Use
 
@@ -220,6 +249,7 @@ codex-lean-stack/
 |-- skills/lean-stack/
 |   |-- SKILL.md
 |   |-- agents/openai.yaml
+|   |-- scripts/bump_plugin_version.py
 |   |-- scripts/manage_agents.py
 |   `-- references/
 |       |-- delegation.md
@@ -228,7 +258,9 @@ codex-lean-stack/
 |       |-- bug-fix.md
 |       |-- build.md
 |       |-- review.md
+|       |-- versioning.md
 |       `-- long-running.md
+|-- tests/test_bump_plugin_version.py
 |-- tests/test_manage_agents.py
 |-- LICENSE
 `-- THIRD_PARTY_NOTICES.md
@@ -241,6 +273,7 @@ From the plugin root:
 ```powershell
 py -3 "$env:USERPROFILE\.codex\skills\.system\skill-creator\scripts\quick_validate.py" ".\skills\lean-stack"
 py -3 "$env:USERPROFILE\.codex\skills\.system\plugin-creator\scripts\validate_plugin.py" "."
+py -3 ".\tests\test_bump_plugin_version.py" -v
 py -3 -m unittest discover -s ".\tests" -v
 ```
 
@@ -248,8 +281,9 @@ During development, run only checks that can fail because of the current change,
 an explicit contract, or a material boundary risk. Run the narrow affected test
 first and one essential broader suite at most once before release unless relevant
 code or environment changes again. Do not run code suites after documentation-only
-edits. The suite is intentionally capped at 20 high-value tests rather than
-preserving every historical edge-case test.
+edits. Keep one focused aggregate test for each independent risk boundary rather
+than preserving every historical edge-case test or repeatedly running unrelated
+test groups.
 
 ## Design sources
 
