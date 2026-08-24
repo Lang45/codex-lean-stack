@@ -14,6 +14,8 @@ behavior.
    give every writer a disjoint output. Keep integration and shared state with
    one owner. Select and request each slice's model and reasoning effort from the
    delegation role matrix instead of applying one configuration to the program.
+   Estimate the critical path: do not fan out when agent startup, duplicate
+   reading, and synthesis are likely to take longer than the work saved.
 4. At each checkpoint, record the decision, evidence, result, and next risk in
    the task plan or a user-requested durable log. Do not accumulate raw agent
    transcripts in the main context.
@@ -21,6 +23,14 @@ behavior.
    same workaround or failed assumption repeats.
 6. Stop at the terminal predicate. Report unresolved gaps honestly; do not add
    adjacent improvements merely because the workflow is still running.
+
+For an authorized, idempotent external transfer such as publishing one verified
+commit, try the normal transport first. After one bounded retry of a clearly
+transient failure, do not keep paying the same timeout: switch to a previously
+verified safe transport when one exists, or report the exact external gap. Reuse
+already completed validation when the artifact bytes are unchanged; run the
+narrow affected check after a small edit and one final broad verification wave
+before handoff.
 
 When blocked, exhaust safe in-scope evidence and alternatives. Ask for user input
 only when a product choice, new authority, or unavailable external state truly

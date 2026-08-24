@@ -3,9 +3,10 @@ name: lean-stack
 description: >
   Deliver software engineering work with the smallest defensible solution,
   evidence-led playbooks, deliberate native Codex subagents, and a guarded
-  custom-agent lifecycle. Use when the user says lean stack, minimal verified
-  change, rigorous workflow, deliberate subagents, evolving agents, YAGNI, or
-  avoid bloat; or when a task combines substantial architecture tradeoffs, a
+  custom-agent lifecycle with evidence-gated quality, latency, and cost routing.
+  Use when the user says lean stack, minimal verified change, rigorous workflow,
+  deliberate subagents, evolving agents, adaptive agent routing, YAGNI, or avoid
+  bloat; or when a task combines substantial architecture tradeoffs, a
   cross-boundary change, complex root-cause diagnosis, a substantial review, or
   multiple independently verifiable workstreams. Do not use for simple factual
   or prose-only work, a single obvious edit, or a routine specialized workflow
@@ -16,6 +17,26 @@ description: >
 
 Deliver the user's outcome with the least new machinery that survives real
 verification. Be lazy about the solution, never about understanding or proof.
+
+## Completion objective
+
+Optimize the whole path to a verified result, not one model call in isolation:
+
+1. Meet the user's correctness, safety, scope, and evidence floor.
+2. Among routes that meet that floor, minimize expected wall-clock time to
+   verified completion, including startup, tools, network waits, retries,
+   synthesis, and rework.
+3. Then minimize total tokens, credits, paid API use, and duplicated work. Count
+   failed cheap attempts and escalations in the total rather than calling the
+   first model alone "low cost".
+4. Use extra speed spend only when its expected latency benefit is worth the
+   explicit cost tradeoff for this task. Fast is a service tier, not a quality
+   score; parallel agents are useful only when they shorten the critical path or
+   materially raise confidence beyond their coordination overhead.
+
+Never trade away the quality floor to make a metric look efficient. When quality,
+speed, and cost cannot all improve, make the conflict visible and follow the
+user's stated priority.
 
 ## Operating contract
 
@@ -82,13 +103,28 @@ any subagent, read [delegation.md](references/delegation.md) and the
 [managed custom-agent lifecycle](references/agent-lifecycle.md) in full.
 
 At the delegation checkpoint, inventory built-in, personal, project, and
-plugin-managed agents before choosing. Reuse the narrowest suitable existing
-agent. Create a managed personal agent only when no existing agent fits, and use
-the lifecycle script as the sole writer; never edit or remove an agent TOML
+plugin-managed agents before choosing. Reuse the narrowest suitable specialized
+agent. For a non-trivial, reusable specialist role that no specialized custom
+agent fits, create a managed personal agent before falling back to the generic
+`worker` or `explorer`; a built-in being broadly capable is not by itself a
+specialist match. Default to at most one new persistent role per top-level task.
+A second is allowed only when the user explicitly requests frequent
+customization or another genuinely distinct reusable specialty also exists;
+never create a third in the same top-level task. Use a built-in fallback for
+one-off roles, exhausted capacity, conflicts, or pending visibility.
+Use the lifecycle script as the sole writer; never edit or remove an agent TOML
 directly. A newly created or restored TOML is not proof of current-session
 visibility, so use an explicit-role fallback until the real Codex surface
 confirms it. Promoted experience stays in the versioned lifecycle playbook and
 is injected into future briefs; promotion never overwrites the stable TOML.
+
+For a previously evaluated managed agent, ask the lifecycle CLI for a
+task-class, risk-tier, execution-mode, and service-tier-specific route
+recommendation before the next comparable run. Treat `WATCH` as evidence to
+observe, not permission to tune. A proposed model, reasoning, or speed change is
+a single-axis shadow candidate; it never edits the stable TOML or global Codex
+configuration. A named custom agent whose file pins model or effort must use an
+explicit-role fallback to test a different pair.
 
 Choose a role for every subagent and explicitly request that role's model and
 reasoning effort in both the spawn call, when supported, and the written brief.
@@ -118,6 +154,16 @@ moving its single TOML to recoverable quarantine. Built-in, project, user-owned,
 externally edited, or currently running agents are never automatically modified
 or deleted. Tell the user whenever this skill causes a persistent create,
 promotion, quarantine, or restore action.
+
+When runtime configuration facts are available, include the requested and
+effective model, reasoning effort, service tier, execution mode, and a bounded
+cause code in that report. Unknown effective values remain unknown. Repeated
+low-quality comparable runs may produce a stronger single-axis recommendation;
+sustained high-quality but slow runs may produce a cheaper/lower-effort
+recommendation. Fast remains recommendation-only unless the current spawn
+surface exposes and validates a per-agent service tier. High-cost configurations
+prefer Standard; a low-cost Fast candidate still requires a cost notice, host
+capability check, and user confirmation.
 
 ## Proof contract
 

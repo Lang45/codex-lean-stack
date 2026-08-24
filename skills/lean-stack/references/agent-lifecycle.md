@@ -19,6 +19,13 @@ Official Codex behavior and current limitations are documented in
   changed, or moved. File existence alone is not proof that the current session
   can use the new revision.
 
+[Codex Speed](https://learn.chatgpt.com/docs/agent-configuration/speed?surface=app)
+documents Standard and Fast as a separate latency/cost choice. The normal Codex
+configuration supports `service_tier`, and current open-source multi-agent code
+may expose it in a spawn schema, but a particular host is allowed to hide that
+field. The lifecycle must inspect the actual tool schema and runtime metadata;
+it never infers per-agent Fast support from a global config key.
+
 ## Safety contract
 
 Never edit, move, or delete an agent TOML directly. Use
@@ -66,7 +73,10 @@ Choose in this order:
 2. An existing agent whose narrow role, capability, sandbox, risk ceiling,
    requested model/effort, and current lifecycle state match the task.
 3. A proven plugin-managed agent for the same task class.
-4. The least-privileged suitable built-in.
+4. A newly created managed personal agent when the task needs a reusable
+   specialty that the preceding agents do not cover.
+5. The least-privileged suitable built-in as the current-session or one-off
+   fallback.
 
 Do not select a custom-name collision, conflict, quarantine, retirement-eligible
 agent, or revision waiting for reload. A degraded agent is lower priority and
@@ -76,10 +86,51 @@ For a selected managed agent, copy its `validated_experience_rules` from catalog
 into a clearly delimited brief section. These rules are versioned playbook data,
 not TOML content. Do not add unpromoted observations or raw task history.
 
-If no existing agent fits, create a narrow managed personal agent. Put only a
-generic role, capability tags, risk ceiling, model/effort, sandbox, and evidence
-contract in its JSON specification. Do not copy the current user prompt, paths,
-URLs, logs, code, secrets, or task-specific facts.
+If the agent already has routing-aware evaluations for the same task class,
+risk tier, execution mode, and requested service tier, request a read-only
+recommendation:
+
+```powershell
+py -3 scripts/manage_agents.py recommend-route `
+  --agent-id <uuid> `
+  --task-class review `
+  --risk-tier read_only `
+  --execution-mode managed_named `
+  --service-tier standard
+```
+
+`watch` means one or more signals deserve observation. `hold` means preserve the
+incumbent. A proposal changes one axis only and is not an accepted configuration.
+For `managed_named`, a different model or effort must be shadowed through an
+explicit-role fallback because the custom TOML value has higher precedence.
+Service-tier proposals are always recommendation-only until the real spawn
+surface exposes and validates that field.
+
+Create a narrow managed personal agent when all of these are true:
+
+- The parent has a real delegated slice under `delegation.md`, not a task invented
+  merely to justify persistence.
+- The role has a stable, reusable specialty such as integration review,
+  documentation verification, architecture, security, performance, migration,
+  or a domain-specific implementation contract.
+- No selectable specialized personal, project, or plugin-managed agent already
+  matches its capability, sandbox, risk ceiling, model/effort, and evidence
+  contract. A generic built-in does not satisfy this specialist-match test.
+- The role can be described without the current prompt, repository path, URL,
+  log, source snippet, credential, or other task-specific state.
+
+Do not require a prior failure or several repeated tasks before the first
+creation. For an ordinary non-trivial top-level task, default to at most one new
+persistent specialist. A second is allowed only when the user requests frequent
+customization or two genuinely distinct specialties are both likely to recur;
+never create a third in the same top-level task. Use a built-in with an explicit
+role brief for a one-off slice, a minor wording variant, a role that differs only
+by display language, exhausted capacity, an ownership conflict, or a new agent
+that is still waiting for visibility.
+
+Put only a generic role, capability tags, risk ceiling, model/effort, sandbox,
+and evidence contract in its JSON specification. Do not copy the current user
+prompt, paths, URLs, logs, code, secrets, or task-specific facts.
 
 Example:
 
@@ -187,6 +238,17 @@ free-form traces are rejected.
   "duration_bucket": "expected",
   "token_bucket": "low",
   "user_verdict": "unknown",
+  "routing": {
+    "requested_model": "gpt-5.6-terra",
+    "requested_reasoning_effort": "high",
+    "requested_service_tier": "standard",
+    "effective_model": "unknown",
+    "effective_reasoning_effort": "unknown",
+    "effective_service_tier": "unknown",
+    "execution_mode": "managed_named",
+    "host_config_status": "request_accepted",
+    "attribution": "unknown"
+  },
   "experience": {
     "key": "trace-shared-boundary-first",
     "rule": "Trace the shared boundary and its real caller before proposing a local guard.",
@@ -208,6 +270,68 @@ An experience is eligible for observation only when the run scores at least 90,
 meets per-dimension floors, is efficient, has strong evidence, has no critical
 event, and was not rejected by the user. One successful run records one
 observation; it does not rewrite the agent.
+
+The optional `routing` object is a bounded configuration fact, not a free-form
+diagnosis. Keep requested and effective values separate. Use `unknown` whenever
+the host does not expose a value. Only `host_config_status=effective_confirmed`
+may carry effective values; `request_accepted`, `unexposed`, and `unknown` must
+leave the full effective triplet unknown. `execution_mode` distinguishes a named
+managed agent from an explicit fallback or built-in; `attribution` is an enum
+such as `model_capacity`, `reasoning_depth`, `compute_latency`,
+`tool_or_environment`, or `role_mismatch`. Old reports without `routing` remain
+valid for the quality lifecycle but cannot drive resource recommendations.
+
+## Adaptive resource recommendation
+
+Schema v2 adds `evaluation_routing`, keyed one-to-one to an evaluation. A v1
+database migrates in one SQLite transaction; historical evaluations are kept and
+receive no fabricated routing facts. The stable agent TOML, its configured model
+and effort, and the existing lifecycle states remain unchanged.
+
+The router compares at most eight recent rows with the same agent revision,
+task class, risk tier, execution mode, requested model/effort, and requested
+service tier. Only high-confidence deterministic, independent-model, or human
+judgments with strong evidence are eligible. Critical events, tool/environment
+failures, role mismatches, unknown attribution, and unconfirmed runtime
+overrides do not trigger tuning. A confirmed effective model, effort, or service
+tier that conflicts with its requested experiment arm is excluded. For this
+comparison only, an effective API tier of `priority` is the canonical Fast result
+of a Fast request; it never matches a Standard request.
+
+Quality is separated from efficiency:
+
+```text
+quality_core = correctness + evidence + scope + clarity + safety  # max 85
+quality_pct = round(100 * quality_core / 85)
+slow = duration_bucket == high
+```
+
+The deterministic first-version gates are:
+
+- One or two low-quality rows produce `watch`, never a change.
+- A stronger model or reasoning proposal needs five comparable rows, at least
+  three below `quality_pct=75`, a median below 78, and two matching
+  `model_capacity` or `reasoning_depth` attributions.
+- An economize or speed proposal needs eight comparable rows, at least six at
+  `quality_pct>=92`, at least five slow rows, median efficiency at most 11, and
+  intact safety, scope, and user-verdict gates in the latest five.
+- A `reasoning_depth` failure raises effort one step before model capacity;
+  `model_capacity` raises the task-class model ladder one step.
+- High-quality slow high/medium-cost configurations lower effort first, then
+  model only when the task/risk floor permits. Architecture does not downgrade.
+- A low-cost high-quality slow configuration may propose Fast only when at least
+  six of eight comparable runs also have `token_bucket=low`; a cheap model with
+  high total token use is not a low-cost run. A high-cost
+  configuration already using Fast proposes Standard. Both are
+  recommendation-only and require a current cost notice and host capability
+  check. A service-tier change also requires the caller to identify the current
+  arm explicitly as `standard` or `fast`; `inherit` and `unknown` fail closed.
+- Every proposal requires at least three sanitized shadow cases. The command
+  never edits a TOML, changes global configuration, or toggles `/fast`.
+
+The model ladders and cost classes are versioned plugin policy, not timeless
+price facts. Unknown models fail closed. User-selected models and service tiers
+take precedence, and `external_effect` routes never apply automatically.
 
 ## Candidate evolution and promotion
 
@@ -311,6 +435,19 @@ py -3 scripts/manage_agents.py restore --agent-id <uuid> --confirm restore:<uuid
 
 ## Open-source evidence behind the gates
 
+- [RouteLLM](https://github.com/lm-sys/RouteLLM) calibrates a cost threshold on
+  representative incoming queries and evaluates strong/weak routes against a
+  quality target. Its transferable lesson is workload calibration, not its
+  benchmark percentage as a Codex guarantee.
+- [FrugalGPT](https://github.com/stanford-futuredata/FrugalGPT) uses a scored
+  cascade: return a cheaper result only when it clears a reliability gate, then
+  escalate otherwise. A real cost comparison must include the failed first call
+  and the cascade's added latency.
+- [LLMRouter](https://github.com/ulab-uiuc/LLMRouter) collects multiple routing
+  families and task/cost evaluation pipelines. It reinforces measuring against
+  fixed-model baselines, but also shows why a learned router needs representative
+  task data; this plugin stays deterministic until its own evidence justifies a
+  more complex policy.
 - [GEPA candidate selection](https://github.com/gepa-ai/gepa/blob/main/docs/docs/guides/candidate-selection.md)
   maintains candidate pools and validation-driven Pareto/current-best/exploration
   strategies instead of immediately overwriting one prompt.

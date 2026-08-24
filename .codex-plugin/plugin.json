@@ -1,7 +1,7 @@
 {
   "name": "codex-lean-stack",
-  "version": "0.1.0+codex.20260824031906",
-  "description": "Minimal, evidence-driven Codex engineering with deliberate subagents and a guarded custom-agent lifecycle.",
+  "version": "0.1.0+codex.20260824045416",
+  "description": "Minimal, evidence-driven Codex engineering with deliberate subagents, guarded agent evolution, and adaptive route advice.",
   "author": {
     "name": "Lang45",
     "url": "https://github.com/Lang45"
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Codex Lean Stack",
     "shortDescription": "Smallest verified change, with deliberate subagents.",
-    "longDescription": "Combines a minimal implementation ladder with evidence-led playbooks, role-specific native subagents, and a fail-closed lifecycle for plugin-managed custom agents.",
+    "longDescription": "Combines a minimal implementation ladder with evidence-led playbooks, role-specific native subagents, fail-closed custom-agent evolution, and quality/latency/cost route recommendations.",
     "developerName": "Lang45",
     "category": "Productivity",
     "capabilities": [

@@ -3,6 +3,10 @@
 Codex Lean Stack is a skills-only personal plugin for software engineering. It
 combines the strongest compatible ideas from Ponytail and pstack:
 
+- A whole-task objective: preserve a quality and safety floor, then reduce
+  verified completion time, total tokens/credits, retries, rework, and duplicate
+  agent effort instead of optimizing one model call in isolation.
+
 - A minimality ladder that prefers reuse, standard libraries, native platform
   features, deletion, and focused diffs.
 - Task-shaped playbooks for investigation, bug fixing, implementation, review,
@@ -10,9 +14,13 @@ combines the strongest compatible ideas from Ponytail and pstack:
 - Evidence on the real surface before a success claim.
 - Eager but bounded native Codex subagents: one useful independent slice by
   default for non-trivial work, and two or three when workstreams divide cleanly.
-- A guarded custom-agent lifecycle that inventories existing agents, creates a
-  narrow managed agent only when needed, records evidence, promotes tested
-  experience, and moves confirmed extreme failures to recoverable quarantine.
+- A guarded custom-agent lifecycle that inventories existing agents, prefers a
+  reusable specialist over a generic built-in, creates a narrow managed agent
+  when that specialty is missing, records evidence, promotes tested experience,
+  and moves confirmed extreme failures to recoverable quarantine.
+- Evidence-gated route recommendations that strengthen repeatedly weak agents,
+  economize consistently strong but slow agents, and keep Fast/Standard as an
+  explicit latency-versus-cost decision.
 
 It intentionally does not ship an MCP server, Node lifecycle hooks, a background
 watcher, or dozens of always-loaded skills. One Python-standard-library CLI is
@@ -94,12 +102,36 @@ An explicit user or project choice overrides this table. Unsupported pairs get
 one disclosed fallback attempt; critical review never silently drops below
 `high` effort.
 
+Standard is the default speed mode. Fast is not a quality upgrade: current
+[OpenAI Speed guidance](https://learn.chatgpt.com/docs/agent-configuration/speed)
+describes roughly 1.5x model speed at a higher credit or API rate. The plugin
+therefore keeps high-cost configurations on Standard and only
+proposes Fast for a low-cost configuration after repeated high-quality but slow
+runs with low observed total-token buckets. A cheap model that needs many tokens,
+retries, or escalation is not treated as a cheap completed task. A speed proposal
+is never applied automatically.
+
+The same accounting applies to delegation and releases. Parallel work must save
+critical-path time or add independent evidence worth its startup and synthesis
+cost. Authorized idempotent publishing uses the normal transport first, retries
+one clearly transient failure once, and then switches to a previously verified
+safe transport instead of repeatedly waiting on the same broken path.
+
 ## Managed agent lifecycle
 
 When delegation is justified, the skill first catalogs the built-in agents and
-personal/project custom agents. Existing suitable agents are reused. If no
-suitable agent exists, the lifecycle CLI can create a collision-resistant
-`lean_*` personal agent with a narrow role, explicit model and reasoning effort,
+personal/project custom agents. Existing suitable specialists are reused. If a
+non-trivial delegated slice has a reusable specialty but no specialized custom
+agent matches it, the lifecycle CLI creates a collision-resistant `lean_*`
+personal agent before using a generic built-in fallback. A broadly capable
+`worker` or `explorer` no longer suppresses customization by itself. The default
+is at most one new persistent specialist per top-level task; a second requires a
+distinct recurring specialty or an explicit request for more frequent
+customization, and the same top-level task never creates a third. One-off roles,
+capacity/conflict cases, and agents awaiting reload still use an explicit-role
+fallback.
+
+Each managed agent has a narrow role, explicit model and reasoning effort,
 Chinese reporting, a Chinese user-visible name, a startup name/model/effort
 disclosure, and a bounded sandbox. The stable internal ID remains an ASCII slug
 because native spawn and filesystem interfaces may restrict identifiers; that
@@ -121,6 +153,33 @@ Persistent mutation is fail-closed:
   critical violation, or repeated independently confirmed extreme failure, can
   move one managed TOML out of the active directory into recoverable quarantine.
 - Permanent purge is not implemented.
+
+### Adaptive route recommendations
+
+Task-end evaluations can optionally record bounded routing facts: requested and
+effective model, reasoning effort, service tier, execution mode, and a fixed
+cause code. Unexposed effective values remain `unknown`; old evaluations are not
+backfilled with guesses.
+
+Before the next comparable task, `recommend-route` separates quality from
+efficiency and returns one of:
+
+- `watch`: one or two low-quality signals; gather more evidence.
+- `hold`: keep the incumbent configuration.
+- `strengthen`: shadow one higher model or reasoning step after repeated low
+  quality.
+- `economize`: shadow one lower effort or model step after sustained high
+  quality with slow execution.
+- `speed_up` / `standardize_speed`: consider Fast for low-cost slow work or
+  Standard for high-cost work.
+
+Recommendations compare only the same agent revision, task class, risk tier,
+execution mode, and requested configuration. They require high-confidence,
+evidence-backed evaluations and change one axis at a time. They do not edit the
+agent TOML, global `config.toml`, or the current session. Named custom agents
+must use an explicit-role fallback to shadow a different model or effort because
+their TOML values take precedence. Fast remains recommendation-only when the
+host does not expose a per-agent service-tier field.
 
 The lifecycle database and quarantine live under
 `~/.codex/lean-stack/`. They do not retain user prompts, repository content,
@@ -184,6 +243,16 @@ py -3 -m unittest discover -s ".\tests" -v
   candidate, evidence, lineage, A/B gate, and rollback/quarantine lifecycle.
   The last project is new and is treated as an engineering pattern rather than
   proof of broad production maturity.
+- [RouteLLM](https://github.com/lm-sys/RouteLLM) informs calibrated,
+  task-distribution-specific strong/weak model thresholds instead of single-run
+  switching.
+- [FrugalGPT](https://arxiv.org/abs/2305.05176) informs quality-gated cascades;
+  its benchmark gains are treated as workload-specific research results, not as
+  guarantees for Codex subagents.
+- [LLMRouter](https://github.com/ulab-uiuc/LLMRouter) reinforces task-aware,
+  quality-and-cost evaluation across multiple routing strategies. Its breadth is
+  evidence for benchmarking routes, not a reason to add a learned router before
+  this plugin has representative task data.
 - The third-party
   [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)
   repository was reviewed for assumption surfacing and surgical-change ideas.

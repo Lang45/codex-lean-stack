@@ -58,6 +58,32 @@ Reserve `max` for the hardest quality-first architecture, security, or migration
 work when the selected model supports it and the expected gain justifies the
 extra time and tokens. Do not request `max` or `ultra` routinely.
 
+## Speed and adaptive route requests
+
+Treat model, reasoning effort, and service tier as independent axes. Fast mode
+does not make a model more capable; it trades higher credits or API price for
+lower service latency. Current OpenAI guidance describes roughly 1.5x speed and,
+for GPT-5.6 in ChatGPT-credit mode, 2.5x Standard credit consumption. Recheck the
+official Speed page before publishing fixed pricing claims.
+
+Use these conservative defaults:
+
+- High-cost model/effort combinations stay on Standard.
+- Low-cost combinations stay on Standard until comparable evidence shows high
+  quality and persistent model-side latency; only then propose Fast.
+- A single low score or slow run never changes any axis.
+- Change one axis per shadow comparison so the cause remains identifiable.
+- A named custom-agent file that pins model or effort cannot be tested with a
+  conflicting spawn override; use an explicit-role fallback or the incumbent.
+- If the current spawn schema omits `service_tier`, Fast is recommendation-only.
+  Never toggle `/fast`, edit global `config.toml`, or claim an effective tier on
+  the user's behalf.
+
+For a managed agent with comparable evaluation history, run the lifecycle
+`recommend-route` command before briefing the next task. A `watch` or `hold`
+result preserves the incumbent. A proposal requires three sanitized shadow
+cases and does not edit the managed TOML.
+
 Include this block in every brief, localized to the user's language:
 
 ```text
@@ -89,6 +115,11 @@ Require each subagent's first progress update to begin with:
 - `生效模型`: the actual model identifier exposed by the spawn result, runtime,
   or agent metadata.
 - `生效推理强度`: the actual reasoning-effort value exposed by the same source.
+
+When a service tier was explicitly requested or recommended, also require
+`请求速度档位` and `生效速度档位`. Use `Standard`/`Fast` for the user-facing
+mode and retain raw values such as `priority` when the runtime exposes them.
+Unexposed values follow the same no-guessing rule.
 
 Localize these labels to the user's current language. If a value is not exposed,
 the agent must say `未暴露（已请求 <value>）` or the equivalent in that language.

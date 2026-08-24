@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import stat
+import statistics
 import sys
 import tempfile
 import time
@@ -26,7 +27,8 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+ROUTING_POLICY_VERSION = 1
 BUILTIN_AGENTS = ("default", "worker", "explorer")
 MANAGED_PREFIX = "lean_"
 MAX_ACTIVE_MANAGED_AGENTS = 8
@@ -78,6 +80,23 @@ ALLOWED_JUDGES = {"parent", "deterministic", "independent_model", "human"}
 ALLOWED_CONFIDENCE = {"low", "medium", "high"}
 ALLOWED_BUCKETS = {"low", "expected", "high", "unknown"}
 ALLOWED_USER_VERDICTS = {"approve", "reject", "unknown"}
+ALLOWED_REQUESTED_SERVICE_TIERS = {"inherit", "standard", "fast", "unknown"}
+ALLOWED_EFFECTIVE_SERVICE_TIERS = {"standard", "fast", "priority", "unknown"}
+ALLOWED_EXECUTION_MODES = {"managed_named", "explicit_fallback", "builtin", "unknown"}
+ALLOWED_HOST_CONFIG_STATUS = {
+    "effective_confirmed",
+    "request_accepted",
+    "unexposed",
+    "unknown",
+}
+ALLOWED_ROUTING_ATTRIBUTIONS = {
+    "model_capacity",
+    "reasoning_depth",
+    "compute_latency",
+    "tool_or_environment",
+    "role_mismatch",
+    "unknown",
+}
 MUTABLE_STATES = {
     "pending_visibility",
     "pending_reload",
@@ -113,6 +132,18 @@ REPORT_KEYS = {
     "token_bucket",
     "user_verdict",
     "experience",
+    "routing",
+}
+ROUTING_KEYS = {
+    "requested_model",
+    "requested_reasoning_effort",
+    "requested_service_tier",
+    "effective_model",
+    "effective_reasoning_effort",
+    "effective_service_tier",
+    "execution_mode",
+    "host_config_status",
+    "attribution",
 }
 SCORE_LIMITS = {
     "correctness": 35,
@@ -145,6 +176,27 @@ UNIX_PATH_RE = re.compile(r"(?:^|[\s\"'])/(?:home|Users|mnt|etc|var|tmp)/")
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(?:api[_-]?key|password|passwd|secret|token|cookie)\s*[:=]"
 )
+
+MODEL_ALIASES = {"gpt-5.6": "gpt-5.6-sol"}
+MODEL_LADDERS_BY_TASK_CLASS = {
+    "documentation": ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"),
+    "exploration": ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"),
+    "test": ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"),
+    "review": ("gpt-5.6-terra", "gpt-5.6-sol"),
+    "implementation": ("gpt-5.6-terra", "gpt-5.6-sol"),
+    "architecture": ("gpt-5.6-sol",),
+    "other": ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"),
+}
+EFFORT_LADDER = ("none", "low", "medium", "high", "xhigh", "max", "ultra")
+MINIMUM_EFFORT_BY_TASK_CLASS = {
+    "documentation": "medium",
+    "exploration": "medium",
+    "test": "medium",
+    "review": "high",
+    "implementation": "high",
+    "architecture": "xhigh",
+    "other": "medium",
+}
 
 
 class LifecycleError(RuntimeError):
@@ -501,8 +553,94 @@ def validate_experience(raw: Any, task_class: str) -> dict[str, str] | None:
     return {"key": key, "rule": rule, "applies_to": applies_to}
 
 
+def validate_optional_model(value: Any, label: str) -> str | None:
+    if value is None or value == "unknown":
+        return None
+    model = validate_text(value, label, maximum=80)
+    if not MODEL_RE.fullmatch(model):
+        raise LifecycleError(f"{label} 含不允许的字符")
+    return model
+
+
+def validate_routing(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    value = require_object(raw, "routing")
+    validate_exact_keys(
+        value,
+        allowed=ROUTING_KEYS,
+        required=ROUTING_KEYS,
+        label="routing",
+    )
+    requested_model = validate_optional_model(value["requested_model"], "routing.requested_model")
+    if requested_model is None:
+        raise LifecycleError("routing.requested_model 必须是明确模型，不能为 unknown")
+    requested_effort = validate_text(
+        value["requested_reasoning_effort"],
+        "routing.requested_reasoning_effort",
+        maximum=12,
+    )
+    if requested_effort not in ALLOWED_EFFORTS:
+        raise LifecycleError("routing.requested_reasoning_effort 不受支持")
+    requested_tier = validate_text(
+        value["requested_service_tier"], "routing.requested_service_tier", maximum=12
+    )
+    if requested_tier not in ALLOWED_REQUESTED_SERVICE_TIERS:
+        raise LifecycleError("routing.requested_service_tier 不受支持")
+
+    effective_model = validate_optional_model(value["effective_model"], "routing.effective_model")
+    effective_effort_raw = value["effective_reasoning_effort"]
+    effective_effort: str | None
+    if effective_effort_raw is None or effective_effort_raw == "unknown":
+        effective_effort = None
+    else:
+        effective_effort = validate_text(
+            effective_effort_raw, "routing.effective_reasoning_effort", maximum=12
+        )
+        if effective_effort not in ALLOWED_EFFORTS:
+            raise LifecycleError("routing.effective_reasoning_effort 不受支持")
+    effective_tier_raw = value["effective_service_tier"]
+    effective_tier: str | None
+    if effective_tier_raw is None or effective_tier_raw == "unknown":
+        effective_tier = None
+    else:
+        effective_tier = validate_text(
+            effective_tier_raw, "routing.effective_service_tier", maximum=12
+        )
+        if effective_tier not in ALLOWED_EFFECTIVE_SERVICE_TIERS:
+            raise LifecycleError("routing.effective_service_tier 不受支持")
+
+    execution_mode = validate_text(value["execution_mode"], "routing.execution_mode", maximum=24)
+    if execution_mode not in ALLOWED_EXECUTION_MODES:
+        raise LifecycleError("routing.execution_mode 不受支持")
+    host_status = validate_text(
+        value["host_config_status"], "routing.host_config_status", maximum=24
+    )
+    if host_status not in ALLOWED_HOST_CONFIG_STATUS:
+        raise LifecycleError("routing.host_config_status 不受支持")
+    attribution = validate_text(value["attribution"], "routing.attribution", maximum=24)
+    if attribution not in ALLOWED_ROUTING_ATTRIBUTIONS:
+        raise LifecycleError("routing.attribution 不受支持")
+    effective_values = (effective_model, effective_effort, effective_tier)
+    if host_status == "effective_confirmed" and any(item is None for item in effective_values):
+        raise LifecycleError("effective_confirmed 必须提供全部生效模型、推理强度和 service tier")
+    if host_status != "effective_confirmed" and any(item is not None for item in effective_values):
+        raise LifecycleError("只有 effective_confirmed 才能填写 effective 值")
+    return {
+        "requested_model": requested_model,
+        "requested_reasoning_effort": requested_effort,
+        "requested_service_tier": requested_tier,
+        "effective_model": effective_model,
+        "effective_reasoning_effort": effective_effort,
+        "effective_service_tier": effective_tier,
+        "execution_mode": execution_mode,
+        "host_config_status": host_status,
+        "attribution": attribution,
+    }
+
+
 def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
-    required = REPORT_KEYS - {"experience"}
+    required = REPORT_KEYS - {"experience", "routing"}
     validate_exact_keys(raw, allowed=REPORT_KEYS, required=required, label="评测报告")
     try:
         agent_id = str(uuid.UUID(validate_text(raw["agent_id"], "agent_id", maximum=36)))
@@ -549,6 +687,7 @@ def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
     if verdict not in ALLOWED_USER_VERDICTS:
         raise LifecycleError("user_verdict 不受支持")
     experience = validate_experience(raw.get("experience"), task_class)
+    routing = validate_routing(raw.get("routing"))
     return {
         "agent_id": agent_id,
         "run_id": run_id,
@@ -565,6 +704,7 @@ def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
         "token_bucket": token,
         "user_verdict": verdict,
         "experience": experience,
+        "routing": routing,
     }
 
 
@@ -617,6 +757,75 @@ def high_quality(report: dict[str, Any]) -> bool:
         and report["judge_confidence"] in {"medium", "high"}
         and report["user_verdict"] != "reject"
     )
+
+
+def canonical_model(model: str) -> str:
+    return MODEL_ALIASES.get(model, model)
+
+
+def routing_cost_class(model: str, effort: str) -> str:
+    normalized = canonical_model(model)
+    if effort in {"max", "ultra"}:
+        return "high"
+    if normalized == "gpt-5.6-sol" and effort in {"high", "xhigh"}:
+        return "high"
+    if normalized in {"gpt-5.6-luna", "gpt-5.6-terra"} and effort in {
+        "none",
+        "low",
+        "medium",
+    }:
+        return "low"
+    return "medium"
+
+
+def service_tier_matches_request(requested: str, effective: str | None) -> bool:
+    if requested == "standard":
+        return effective == "standard"
+    if requested == "fast":
+        return effective in {"fast", "priority"}
+    return False
+
+
+def step_effort(effort: str, direction: int, *, minimum: str | None = None) -> str | None:
+    if effort not in EFFORT_LADDER:
+        return None
+    current = EFFORT_LADDER.index(effort)
+    if direction > 0:
+        maximum = EFFORT_LADDER.index("max")
+        if current >= maximum:
+            return None
+        target = current + 1
+    else:
+        minimum_index = EFFORT_LADDER.index(minimum or "none")
+        if current <= minimum_index:
+            return None
+        target = current - 1
+    if target == current:
+        return None
+    return EFFORT_LADDER[target]
+
+
+def step_model(model: str, task_class: str, direction: int) -> str | None:
+    ladder = MODEL_LADDERS_BY_TASK_CLASS[task_class]
+    normalized = canonical_model(model)
+    if normalized not in ladder:
+        return None
+    current = ladder.index(normalized)
+    target = current + (1 if direction > 0 else -1)
+    if not 0 <= target < len(ladder):
+        return None
+    return ladder[target]
+
+
+def routing_quality_percentage(row: sqlite3.Row) -> int:
+    quality_core = sum(
+        int(row[key]) for key in ("correctness", "evidence", "scope", "clarity", "safety")
+    )
+    return round(100 * quality_core / 85)
+
+
+def routing_row_has_strong_evidence(row: sqlite3.Row) -> bool:
+    return bool(set(json.loads(row["evidence_flags"])) & STRONG_EVIDENCE_FLAGS)
 
 
 class AgentLifecycle:
@@ -679,14 +888,18 @@ class AgentLifecycle:
         if create:
             ensure_plain_directory(self.state_root, create=True)
         connection = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        if create:
-            connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = FULL")
-            self.initialize_schema(connection)
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 5000")
+            if create:
+                connection.execute("PRAGMA journal_mode = WAL")
+                connection.execute("PRAGMA synchronous = FULL")
+                self.initialize_schema(connection)
+            return connection
+        except Exception:
+            connection.close()
+            raise
 
     @staticmethod
     def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -801,13 +1014,54 @@ class AgentLifecycle:
             """
         )
         row = connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-        if row is None:
-            connection.execute(
-                "INSERT INTO meta(key, value) VALUES('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
-        elif int(row["value"]) != SCHEMA_VERSION:
+        current_version = int(row["value"]) if row is not None else None
+        if current_version not in {None, 1, SCHEMA_VERSION}:
             raise LifecycleError("生命周期数据库版本不受当前脚本支持")
+        if current_version in {None, 1}:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                AgentLifecycle.create_routing_schema(connection)
+                if current_version is None:
+                    connection.execute(
+                        "INSERT INTO meta(key, value) VALUES('schema_version', ?)",
+                        (str(SCHEMA_VERSION),),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE meta SET value=? WHERE key='schema_version'",
+                        (str(SCHEMA_VERSION),),
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        else:
+            routing_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='evaluation_routing'"
+            ).fetchone()
+            if routing_table is None:
+                raise LifecycleError("生命周期数据库 v2 缺少 evaluation_routing 表")
+
+    @staticmethod
+    def create_routing_schema(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evaluation_routing (
+                evaluation_id TEXT PRIMARY KEY REFERENCES evaluations(evaluation_id),
+                policy_version INTEGER NOT NULL,
+                requested_model TEXT NOT NULL,
+                requested_reasoning_effort TEXT NOT NULL,
+                requested_service_tier TEXT NOT NULL,
+                effective_model TEXT,
+                effective_reasoning_effort TEXT,
+                effective_service_tier TEXT,
+                execution_mode TEXT NOT NULL,
+                host_config_status TEXT NOT NULL,
+                attribution TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
 
     @staticmethod
     def begin(connection: sqlite3.Connection) -> None:
@@ -1375,6 +1629,374 @@ class AgentLifecycle:
             and bool(flags & STRONG_EVIDENCE_FLAGS)
         )
 
+    @staticmethod
+    def route_application(changed_axis: str, risk_tier: str, execution_mode: str) -> str:
+        if changed_axis == "service_tier" or risk_tier == "external_effect":
+            return "recommendation_only"
+        if execution_mode == "managed_named":
+            return "explicit_role_fallback_after_shadow"
+        if risk_tier == "read_only":
+            return "spawn_fields_after_shadow"
+        return "recommendation_only"
+
+    @staticmethod
+    def route_payload(
+        *,
+        row: sqlite3.Row,
+        task_class: str,
+        risk_tier: str,
+        execution_mode: str,
+        service_tier: str,
+        rows: Sequence[sqlite3.Row],
+        eligible: Sequence[sqlite3.Row],
+        action: str,
+        status: str,
+        reason_codes: list[str],
+        recommended: dict[str, str] | None = None,
+        changed_axis: str | None = None,
+        trigger_rows: Sequence[sqlite3.Row] = (),
+    ) -> dict[str, Any]:
+        quality_values = [routing_quality_percentage(item) for item in eligible]
+        current = {
+            "model": row["model"],
+            "reasoning_effort": row["reasoning_effort"],
+            "service_tier": service_tier,
+            "cost_class": routing_cost_class(row["model"], row["reasoning_effort"]),
+        }
+        confirmed = bool(trigger_rows) and all(
+            item["host_config_status"] == "effective_confirmed" for item in trigger_rows
+        )
+        result: dict[str, Any] = {
+            "ok": True,
+            "action": action,
+            "status": status,
+            "policy_version": ROUTING_POLICY_VERSION,
+            "agent_id": row["agent_id"],
+            "revision": row["revision"],
+            "task_class": task_class,
+            "risk_tier": risk_tier,
+            "execution_mode": execution_mode,
+            "current": current,
+            "recommended": recommended,
+            "changed_axis": changed_axis,
+            "reason_codes": reason_codes,
+            "confidence": "high" if confirmed else "medium" if trigger_rows else "low",
+            "evidence_window": {
+                "routing_rows": len(rows),
+                "comparable_rows": len(eligible),
+                "quality_median": round(statistics.median(quality_values))
+                if quality_values
+                else None,
+                "slow_rows": sum(item["duration_bucket"] == "high" for item in eligible),
+                "low_token_rows": sum(item["token_bucket"] == "low" for item in eligible),
+                "high_token_rows": sum(item["token_bucket"] == "high" for item in eligible),
+            },
+            "application": (
+                AgentLifecycle.route_application(changed_axis, risk_tier, execution_mode)
+                if changed_axis
+                else "none"
+            ),
+            "requires_shadow_cases": 3 if recommended is not None else 0,
+            "requires_user_confirmation": changed_axis == "service_tier",
+            "requires_host_capability_check": changed_axis == "service_tier",
+            "toml_modified": False,
+            "config_modified": False,
+        }
+        if changed_axis == "service_tier":
+            result["cost_notice"] = (
+                "Fast 会提高 credits/API 费率；确认当前计费模式、模型支持和延迟优先级后再手工应用。"
+            )
+        return result
+
+    def _recommend_route(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        task_class: str,
+        risk_tier: str,
+        execution_mode: str,
+        service_tier: str,
+    ) -> dict[str, Any]:
+        rows = connection.execute(
+            """SELECT e.*, r.policy_version, r.requested_model,
+                      r.requested_reasoning_effort, r.requested_service_tier,
+                      r.effective_model, r.effective_reasoning_effort,
+                      r.effective_service_tier, r.execution_mode,
+                      r.host_config_status, r.attribution
+               FROM evaluations AS e
+               JOIN evaluation_routing AS r ON r.evaluation_id=e.evaluation_id
+               WHERE e.agent_id=? AND e.revision=? AND e.task_class=? AND e.risk_tier=?
+                 AND r.execution_mode=? AND r.requested_model=?
+                 AND r.requested_reasoning_effort=? AND r.requested_service_tier=?
+               ORDER BY e.created_at DESC, e.rowid DESC LIMIT 8""",
+            (
+                row["agent_id"],
+                row["revision"],
+                task_class,
+                risk_tier,
+                execution_mode,
+                row["model"],
+                row["reasoning_effort"],
+                service_tier,
+            ),
+        ).fetchall()
+        eligible: list[sqlite3.Row] = []
+        for item in rows:
+            if item["policy_version"] != ROUTING_POLICY_VERSION:
+                continue
+            if item["critical_event"] != "none":
+                continue
+            if item["judge_kind"] not in {"deterministic", "independent_model", "human"}:
+                continue
+            if item["judge_confidence"] != "high" or not routing_row_has_strong_evidence(item):
+                continue
+            if item["attribution"] in {"tool_or_environment", "role_mismatch", "unknown"}:
+                continue
+            if item["host_config_status"] not in {"effective_confirmed", "request_accepted"}:
+                continue
+            if item["host_config_status"] == "effective_confirmed" and (
+                canonical_model(item["effective_model"] or "")
+                != canonical_model(item["requested_model"])
+                or item["effective_reasoning_effort"] != item["requested_reasoning_effort"]
+                or not service_tier_matches_request(
+                    item["requested_service_tier"], item["effective_service_tier"]
+                )
+            ):
+                continue
+            eligible.append(item)
+
+        current_cost = routing_cost_class(row["model"], row["reasoning_effort"])
+        if current_cost == "high" and service_tier == "fast":
+            recommended = {
+                "model": row["model"],
+                "reasoning_effort": row["reasoning_effort"],
+                "service_tier": "standard",
+            }
+            return self.route_payload(
+                row=row,
+                task_class=task_class,
+                risk_tier=risk_tier,
+                execution_mode=execution_mode,
+                service_tier=service_tier,
+                rows=rows,
+                eligible=eligible,
+                action="standardize_speed",
+                status="proposed",
+                reason_codes=["high_cost_standard_policy"],
+                recommended=recommended,
+                changed_axis="service_tier",
+            )
+
+        recent_five = eligible[:5]
+        low_rows = [item for item in recent_five if routing_quality_percentage(item) < 75]
+        if (
+            len(recent_five) == 5
+            and len(low_rows) >= 3
+            and statistics.median(routing_quality_percentage(item) for item in recent_five) < 78
+        ):
+            attribution_counts = {
+                name: sum(item["attribution"] == name for item in low_rows)
+                for name in ("reasoning_depth", "model_capacity")
+            }
+            best_attribution = max(attribution_counts, key=attribution_counts.get)
+            if attribution_counts[best_attribution] >= 2:
+                target_model = row["model"]
+                target_effort = row["reasoning_effort"]
+                changed_axis: str | None = None
+                reason_codes = ["repeated_low_quality", best_attribution]
+                if best_attribution == "reasoning_depth":
+                    stepped_effort = step_effort(target_effort, 1)
+                    if stepped_effort is not None:
+                        target_effort = stepped_effort
+                        changed_axis = "reasoning"
+                    else:
+                        stepped_model = step_model(target_model, task_class, 1)
+                        if stepped_model is not None:
+                            target_model = stepped_model
+                            changed_axis = "model"
+                            reason_codes.append("reasoning_ceiling")
+                else:
+                    stepped_model = step_model(target_model, task_class, 1)
+                    if stepped_model is not None:
+                        target_model = stepped_model
+                        changed_axis = "model"
+                if changed_axis is not None:
+                    recommended = {
+                        "model": target_model,
+                        "reasoning_effort": target_effort,
+                        "service_tier": service_tier,
+                    }
+                    return self.route_payload(
+                        row=row,
+                        task_class=task_class,
+                        risk_tier=risk_tier,
+                        execution_mode=execution_mode,
+                        service_tier=service_tier,
+                        rows=rows,
+                        eligible=eligible,
+                        action="strengthen",
+                        status="proposed",
+                        reason_codes=reason_codes,
+                        recommended=recommended,
+                        changed_axis=changed_axis,
+                        trigger_rows=low_rows,
+                    )
+
+        recent_eight = eligible[:8]
+        high_quality_rows = [
+            item for item in recent_eight if routing_quality_percentage(item) >= 92
+        ]
+        slow_rows = [item for item in recent_eight if item["duration_bucket"] == "high"]
+        low_token_rows = [item for item in recent_eight if item["token_bucket"] == "low"]
+        recent_hard_gate = recent_eight[:5]
+        high_slow = (
+            len(recent_eight) == 8
+            and len(high_quality_rows) >= 6
+            and len(slow_rows) >= 5
+            and statistics.median(int(item["efficiency"]) for item in recent_eight) <= 11
+            and sum(item["attribution"] == "compute_latency" for item in slow_rows) >= 3
+            and all(
+                item["safety"] == 5
+                and item["scope"] >= 13
+                and item["critical_event"] == "none"
+                and item["user_verdict"] != "reject"
+                for item in recent_hard_gate
+            )
+        )
+        if high_slow:
+            if (
+                current_cost == "low"
+                and service_tier == "standard"
+                and len(low_token_rows) >= 6
+            ):
+                recommended = {
+                    "model": row["model"],
+                    "reasoning_effort": row["reasoning_effort"],
+                    "service_tier": "fast",
+                }
+                return self.route_payload(
+                    row=row,
+                    task_class=task_class,
+                    risk_tier=risk_tier,
+                    execution_mode=execution_mode,
+                    service_tier=service_tier,
+                    rows=rows,
+                    eligible=eligible,
+                    action="speed_up",
+                    status="proposed_unverified",
+                    reason_codes=[
+                        "sustained_high_quality_slow",
+                        "low_cost_latency_tradeoff",
+                        "low_total_token_evidence",
+                    ],
+                    recommended=recommended,
+                    changed_axis="service_tier",
+                    trigger_rows=slow_rows,
+                )
+            minimum_effort = MINIMUM_EFFORT_BY_TASK_CLASS[task_class]
+            target_effort = step_effort(row["reasoning_effort"], -1, minimum=minimum_effort)
+            target_model = row["model"]
+            changed_axis: str | None = None
+            if target_effort is not None:
+                changed_axis = "reasoning"
+            elif task_class != "architecture" and risk_tier == "read_only":
+                stepped_model = step_model(row["model"], task_class, -1)
+                if stepped_model is not None:
+                    target_model = stepped_model
+                    target_effort = row["reasoning_effort"]
+                    changed_axis = "model"
+            if changed_axis is not None:
+                recommended = {
+                    "model": target_model,
+                    "reasoning_effort": target_effort or row["reasoning_effort"],
+                    "service_tier": service_tier,
+                }
+                return self.route_payload(
+                    row=row,
+                    task_class=task_class,
+                    risk_tier=risk_tier,
+                    execution_mode=execution_mode,
+                    service_tier=service_tier,
+                    rows=rows,
+                    eligible=eligible,
+                    action="economize",
+                    status="proposed",
+                    reason_codes=["sustained_high_quality_slow", "single_axis_downgrade"],
+                    recommended=recommended,
+                    changed_axis=changed_axis,
+                    trigger_rows=slow_rows,
+                )
+
+        if low_rows:
+            action = "watch"
+            status = "single_or_insufficient_low_quality_signal"
+            reasons = ["low_quality_watch", "minimum_five_comparable_runs"]
+        elif len(eligible) < 8:
+            action = "hold"
+            status = "insufficient_evidence"
+            reasons = ["minimum_five_for_upgrade", "minimum_eight_for_economize"]
+        else:
+            action = "hold"
+            status = "stable"
+            reasons = ["no_threshold_crossed"]
+        return self.route_payload(
+            row=row,
+            task_class=task_class,
+            risk_tier=risk_tier,
+            execution_mode=execution_mode,
+            service_tier=service_tier,
+            rows=rows,
+            eligible=eligible,
+            action=action,
+            status=status,
+            reason_codes=reasons,
+        )
+
+    def recommend_route(
+        self,
+        agent_id: str,
+        task_class: str,
+        risk_tier: str,
+        execution_mode: str,
+        service_tier: str,
+    ) -> dict[str, Any]:
+        if task_class not in ALLOWED_TASK_CLASSES:
+            raise LifecycleError("task_class 不受支持")
+        if risk_tier not in ALLOWED_RISK_CEILINGS:
+            raise LifecycleError("risk_tier 不受支持")
+        if execution_mode not in ALLOWED_EXECUTION_MODES:
+            raise LifecycleError("execution_mode 不受支持")
+        if service_tier not in ALLOWED_REQUESTED_SERVICE_TIERS:
+            raise LifecycleError("service_tier 不受支持")
+        connection = self.connect(create=False)
+        if connection is None:
+            raise LifecycleError("生命周期状态尚不存在；没有可用于路由建议的评测")
+        try:
+            version = connection.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()
+            if version is None or int(version["value"]) != SCHEMA_VERSION:
+                raise LifecycleError("路由建议需要 v2 状态；先通过下一次安全 mutation 完成迁移")
+            row, _, _, _ = self.verified_active_agent(connection, agent_id)
+            if row["state"] == "retire_eligible":
+                return self.route_payload(
+                    row=row,
+                    task_class=task_class,
+                    risk_tier=risk_tier,
+                    execution_mode=execution_mode,
+                    service_tier=service_tier,
+                    rows=(),
+                    eligible=(),
+                    action="hold",
+                    status="retirement_precedes_routing",
+                    reason_codes=["retire_eligible"],
+                )
+            return self._recommend_route(
+                connection, row, task_class, risk_tier, execution_mode, service_tier
+            )
+        finally:
+            connection.close()
+
     def record_evaluation(self, raw_report: dict[str, Any]) -> dict[str, Any]:
         report = validate_report(raw_report)
         agent_id = report["agent_id"]
@@ -1391,6 +2013,14 @@ class AgentLifecycle:
                     raise
                 if self.active_lease_count(connection, agent_id):
                     raise LifecycleError("仍有活动运行租约；必须等子代理结束并释放租约后再评测")
+                routing = report["routing"]
+                if routing is not None and routing["execution_mode"] == "managed_named" and (
+                    routing["requested_model"] != row["model"]
+                    or routing["requested_reasoning_effort"] != row["reasoning_effort"]
+                ):
+                    raise LifecycleError(
+                        "managed_named 评测的请求模型和推理强度必须与受管 TOML 配置一致"
+                    )
                 report_digest = sha256_bytes(json_text(report).encode("utf-8"))
                 existing = connection.execute(
                     """SELECT * FROM evaluations
@@ -1408,6 +2038,18 @@ class AgentLifecycle:
                             (agent_id, row["revision"], experience["key"]),
                         ).fetchone()
                     connection.commit()
+                    recommendation = (
+                        self._recommend_route(
+                            connection,
+                            row,
+                            report["task_class"],
+                            report["risk_tier"],
+                            routing["execution_mode"],
+                            routing["requested_service_tier"],
+                        )
+                        if routing is not None
+                        else None
+                    )
                     return {
                         "ok": True,
                         "action": "evaluation_already_recorded",
@@ -1421,6 +2063,8 @@ class AgentLifecycle:
                             observed["observation_count"] if observed is not None else 0
                         ),
                         "candidate_id": observed["candidate_id"] if observed is not None else None,
+                        "routing_recorded": routing is not None,
+                        "configuration_recommendation": recommendation,
                     }
                 evaluation_id = str(uuid.uuid4())
                 now = utc_now()
@@ -1459,6 +2103,30 @@ class AgentLifecycle:
                         now,
                     ),
                 )
+                if routing is not None:
+                    connection.execute(
+                        """INSERT INTO evaluation_routing(
+                               evaluation_id, policy_version, requested_model,
+                               requested_reasoning_effort, requested_service_tier,
+                               effective_model, effective_reasoning_effort,
+                               effective_service_tier, execution_mode, host_config_status,
+                               attribution, created_at
+                           ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            evaluation_id,
+                            ROUTING_POLICY_VERSION,
+                            routing["requested_model"],
+                            routing["requested_reasoning_effort"],
+                            routing["requested_service_tier"],
+                            routing["effective_model"],
+                            routing["effective_reasoning_effort"],
+                            routing["effective_service_tier"],
+                            routing["execution_mode"],
+                            routing["host_config_status"],
+                            routing["attribution"],
+                            now,
+                        ),
+                    )
 
                 candidate_id: str | None = None
                 observation_count = 0
@@ -1558,6 +2226,30 @@ class AgentLifecycle:
                     "UPDATE agents SET state=?, updated_at=? WHERE agent_id=?",
                     (new_state, now, agent_id),
                 )
+                if routing is None:
+                    recommendation = None
+                elif new_state == "retire_eligible":
+                    recommendation = self.route_payload(
+                        row=row,
+                        task_class=report["task_class"],
+                        risk_tier=report["risk_tier"],
+                        execution_mode=routing["execution_mode"],
+                        service_tier=routing["requested_service_tier"],
+                        rows=(),
+                        eligible=(),
+                        action="hold",
+                        status="retirement_precedes_routing",
+                        reason_codes=["retire_eligible"],
+                    )
+                else:
+                    recommendation = self._recommend_route(
+                        connection,
+                        row,
+                        report["task_class"],
+                        report["risk_tier"],
+                        routing["execution_mode"],
+                        routing["requested_service_tier"],
+                    )
                 connection.commit()
                 return {
                     "ok": True,
@@ -1574,6 +2266,8 @@ class AgentLifecycle:
                     "retirement_reason": retirement_reason,
                     "experience_observation_count": observation_count,
                     "candidate_id": candidate_id,
+                    "routing_recorded": routing is not None,
+                    "configuration_recommendation": recommendation,
                     "next_step": (
                         "执行 retire，将代理从活动目录移入可恢复隔离区。"
                         if new_state == "retire_eligible"
@@ -2005,6 +2699,19 @@ def build_parser() -> argparse.ArgumentParser:
     record = subparsers.add_parser("record", help="记录固定 schema 的任务后评测")
     record.add_argument("--report", type=Path, required=True)
 
+    recommend = subparsers.add_parser(
+        "recommend-route", help="按同类评测只读建议下一次模型、推理强度或速度档位"
+    )
+    recommend.add_argument("--agent-id", required=True)
+    recommend.add_argument("--task-class", choices=sorted(ALLOWED_TASK_CLASSES), required=True)
+    recommend.add_argument("--risk-tier", choices=sorted(ALLOWED_RISK_CEILINGS), required=True)
+    recommend.add_argument(
+        "--execution-mode", choices=sorted(ALLOWED_EXECUTION_MODES), default="managed_named"
+    )
+    recommend.add_argument(
+        "--service-tier", choices=sorted(ALLOWED_REQUESTED_SERVICE_TIERS), default="inherit"
+    )
+
     promote = subparsers.add_parser("promote", help="通过 shadow gate 后晋升候选规则")
     promote.add_argument("--report", type=Path, required=True)
 
@@ -2046,6 +2753,14 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
         return lifecycle.release_lease(arguments.lease_id)
     if arguments.command == "record":
         return lifecycle.record_evaluation(load_bounded_json(arguments.report))
+    if arguments.command == "recommend-route":
+        return lifecycle.recommend_route(
+            normalize_uuid(arguments.agent_id, "agent_id"),
+            arguments.task_class,
+            arguments.risk_tier,
+            arguments.execution_mode,
+            arguments.service_tier,
+        )
     if arguments.command == "promote":
         return lifecycle.promote_candidate(load_bounded_json(arguments.report))
     if arguments.command == "retire":

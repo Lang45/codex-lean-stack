@@ -95,6 +95,77 @@ class AgentLifecycleTests(unittest.TestCase):
         return report
 
     @staticmethod
+    def routing(
+        *,
+        model="gpt-5.6-terra",
+        effort="high",
+        service_tier="standard",
+        attribution="model_capacity",
+        execution_mode="managed_named",
+        host_status="request_accepted",
+        effective=False,
+    ):
+        return {
+            "requested_model": model,
+            "requested_reasoning_effort": effort,
+            "requested_service_tier": service_tier,
+            "effective_model": model if effective else "unknown",
+            "effective_reasoning_effort": effort if effective else "unknown",
+            "effective_service_tier": service_tier if effective else "unknown",
+            "execution_mode": execution_mode,
+            "host_config_status": "effective_confirmed" if effective else host_status,
+            "attribution": attribution,
+        }
+
+    @staticmethod
+    def low_quality_report(
+        agent_id: str,
+        *,
+        model="gpt-5.6-terra",
+        effort="high",
+        task_class="review",
+        attribution="model_capacity",
+    ):
+        report = AgentLifecycleTests.high_report(agent_id, experience=False)
+        report["task_class"] = task_class
+        report["scores"] = {
+            "correctness": 20,
+            "evidence": 10,
+            "scope": 12,
+            "efficiency": 10,
+            "clarity": 7,
+            "safety": 5,
+        }
+        report["routing"] = AgentLifecycleTests.routing(
+            model=model,
+            effort=effort,
+            attribution=attribution,
+        )
+        return report
+
+    @staticmethod
+    def high_quality_slow_report(
+        agent_id: str,
+        *,
+        model,
+        effort,
+        task_class,
+        service_tier="standard",
+    ):
+        report = AgentLifecycleTests.high_report(agent_id, experience=False)
+        report["task_class"] = task_class
+        report["scores"]["efficiency"] = 10
+        report["duration_bucket"] = "high"
+        report["token_bucket"] = "low"
+        report["routing"] = AgentLifecycleTests.routing(
+            model=model,
+            effort=effort,
+            service_tier=service_tier,
+            attribution="compute_latency",
+        )
+        return report
+
+    @staticmethod
     def extreme_report(agent_id: str):
         return {
             "agent_id": agent_id,
@@ -376,6 +447,321 @@ class AgentLifecycleTests(unittest.TestCase):
         replay = self.lifecycle.promote_candidate(self.promotion(third["candidate_id"]))
         self.assertEqual(replay["action"], "candidate_already_promoted")
 
+    def test_routing_facts_preserve_unknown_effective_values(self):
+        created = self.create_visible_agent()
+        report = self.high_report(created["agent_id"], experience=False)
+        report["routing"] = self.routing(
+            attribution="compute_latency", host_status="unexposed"
+        )
+        result = self.lifecycle.record_evaluation(report)
+        self.assertTrue(result["routing_recorded"])
+        self.assertEqual(
+            result["configuration_recommendation"]["status"], "insufficient_evidence"
+        )
+        row = self.db_row(
+            "SELECT * FROM evaluation_routing WHERE evaluation_id=?",
+            (result["evaluation_id"],),
+        )
+        self.assertEqual(row["requested_model"], "gpt-5.6-terra")
+        self.assertIsNone(row["effective_model"])
+        self.assertIsNone(row["effective_reasoning_effort"])
+        self.assertIsNone(row["effective_service_tier"])
+
+    def test_routing_report_rejects_false_effective_values_and_named_mismatch(self):
+        created = self.create_visible_agent()
+        false_effective = self.high_report(created["agent_id"], experience=False)
+        false_effective["routing"] = self.routing(effective=True)
+        false_effective["routing"]["host_config_status"] = "unexposed"
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.record_evaluation(false_effective)
+
+        accepted_only = self.high_report(created["agent_id"], experience=False)
+        accepted_only["routing"] = self.routing(effective=True)
+        accepted_only["routing"]["host_config_status"] = "request_accepted"
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.record_evaluation(accepted_only)
+
+        mismatch = self.high_report(created["agent_id"], experience=False)
+        mismatch["routing"] = self.routing(model="gpt-5.6-luna", effort="medium")
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.record_evaluation(mismatch)
+        self.assertEqual(self.db_row("SELECT COUNT(*) AS count FROM evaluations")["count"], 0)
+
+    def test_single_low_quality_run_only_returns_watch(self):
+        created = self.create_visible_agent()
+        result = self.lifecycle.record_evaluation(
+            self.low_quality_report(created["agent_id"])
+        )
+        recommendation = result["configuration_recommendation"]
+        self.assertEqual(recommendation["action"], "watch")
+        self.assertIsNone(recommendation["recommended"])
+        self.assertEqual(recommendation["changed_axis"], None)
+
+    def test_effort_steps_never_cross_configured_floors_or_ceilings(self):
+        self.assertIsNone(manage_agents.step_effort("ultra", 1))
+        self.assertIsNone(manage_agents.step_effort("max", 1))
+        self.assertIsNone(manage_agents.step_effort("low", -1, minimum="medium"))
+        self.assertEqual(manage_agents.step_effort("xhigh", -1, minimum="high"), "high")
+
+    def test_repeated_low_quality_recommends_one_axis_model_upgrade(self):
+        created = self.create_visible_agent()
+        for _ in range(3):
+            self.lifecycle.record_evaluation(self.low_quality_report(created["agent_id"]))
+        result = None
+        for _ in range(2):
+            report = self.high_report(created["agent_id"], experience=False)
+            report["routing"] = self.routing(attribution="model_capacity")
+            result = self.lifecycle.record_evaluation(report)
+        assert result is not None
+        recommendation = result["configuration_recommendation"]
+        self.assertEqual(recommendation["action"], "strengthen")
+        self.assertEqual(recommendation["changed_axis"], "model")
+        self.assertEqual(recommendation["recommended"]["model"], "gpt-5.6-sol")
+        self.assertEqual(recommendation["recommended"]["reasoning_effort"], "high")
+        self.assertEqual(recommendation["recommended"]["service_tier"], "standard")
+        self.assertTrue(recommendation["toml_modified"] is False)
+
+    def test_high_quality_slow_expensive_agent_recommends_lower_effort(self):
+        created = self.lifecycle.create_agent(
+            self.spec(model="gpt-5.6-sol", model_reasoning_effort="xhigh"),
+            self.project_root,
+        )
+        self.lifecycle.confirm_visible(created["agent_id"])
+        incumbent = Path(created["path"]).read_bytes()
+        result = None
+        for _ in range(8):
+            result = self.lifecycle.record_evaluation(
+                self.high_quality_slow_report(
+                    created["agent_id"],
+                    model="gpt-5.6-sol",
+                    effort="xhigh",
+                    task_class="review",
+                )
+            )
+        assert result is not None
+        recommendation = result["configuration_recommendation"]
+        self.assertEqual(recommendation["action"], "economize")
+        self.assertEqual(recommendation["changed_axis"], "reasoning")
+        self.assertEqual(recommendation["recommended"]["model"], "gpt-5.6-sol")
+        self.assertEqual(recommendation["recommended"]["reasoning_effort"], "high")
+        self.assertEqual(recommendation["recommended"]["service_tier"], "standard")
+        self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
+
+    def test_high_quality_slow_low_cost_agent_recommends_manual_fast(self):
+        created = self.lifecycle.create_agent(
+            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
+            self.project_root,
+        )
+        self.lifecycle.confirm_visible(created["agent_id"])
+        result = None
+        for _ in range(8):
+            result = self.lifecycle.record_evaluation(
+                self.high_quality_slow_report(
+                    created["agent_id"],
+                    model="gpt-5.6-luna",
+                    effort="medium",
+                    task_class="documentation",
+                )
+            )
+        assert result is not None
+        recommendation = result["configuration_recommendation"]
+        self.assertEqual(recommendation["action"], "speed_up")
+        self.assertEqual(recommendation["changed_axis"], "service_tier")
+        self.assertEqual(recommendation["recommended"]["service_tier"], "fast")
+        self.assertEqual(recommendation["application"], "recommendation_only")
+        self.assertTrue(recommendation["requires_user_confirmation"])
+        self.assertTrue(recommendation["requires_host_capability_check"])
+
+    def test_effective_service_tier_mismatch_is_not_comparable(self):
+        created = self.lifecycle.create_agent(
+            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
+            self.project_root,
+        )
+        self.lifecycle.confirm_visible(created["agent_id"])
+        result = None
+        for _ in range(8):
+            report = self.high_quality_slow_report(
+                created["agent_id"],
+                model="gpt-5.6-luna",
+                effort="medium",
+                task_class="documentation",
+                service_tier="standard",
+            )
+            report["routing"].update(
+                effective_model="gpt-5.6-luna",
+                effective_reasoning_effort="medium",
+                effective_service_tier="fast",
+                host_config_status="effective_confirmed",
+            )
+            result = self.lifecycle.record_evaluation(report)
+        assert result is not None
+        recommendation = result["configuration_recommendation"]
+        self.assertNotEqual(recommendation["action"], "speed_up")
+        self.assertEqual(recommendation["evidence_window"]["comparable_rows"], 0)
+
+    def test_priority_is_canonical_fast_only_for_a_fast_request(self):
+        self.assertTrue(manage_agents.service_tier_matches_request("fast", "priority"))
+        self.assertFalse(manage_agents.service_tier_matches_request("standard", "priority"))
+        self.assertFalse(manage_agents.service_tier_matches_request("inherit", "priority"))
+
+        created = self.lifecycle.create_agent(
+            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
+            self.project_root,
+        )
+        self.lifecycle.confirm_visible(created["agent_id"])
+        result = None
+        for _ in range(8):
+            report = self.high_quality_slow_report(
+                created["agent_id"],
+                model="gpt-5.6-luna",
+                effort="medium",
+                task_class="documentation",
+                service_tier="fast",
+            )
+            report["routing"].update(
+                effective_model="gpt-5.6-luna",
+                effective_reasoning_effort="medium",
+                effective_service_tier="priority",
+                host_config_status="effective_confirmed",
+            )
+            result = self.lifecycle.record_evaluation(report)
+        assert result is not None
+        recommendation = result["configuration_recommendation"]
+        self.assertEqual(recommendation["evidence_window"]["comparable_rows"], 8)
+        self.assertNotEqual(recommendation["action"], "speed_up")
+
+    def test_high_cost_fast_policy_recommends_standard_without_mutation(self):
+        created = self.lifecycle.create_agent(
+            self.spec(model="gpt-5.6-sol", model_reasoning_effort="high"),
+            self.project_root,
+        )
+        self.lifecycle.confirm_visible(created["agent_id"])
+        incumbent = Path(created["path"]).read_bytes()
+        recommendation = self.lifecycle.recommend_route(
+            created["agent_id"], "review", "read_only", "managed_named", "fast"
+        )
+        self.assertEqual(recommendation["action"], "standardize_speed")
+        self.assertEqual(recommendation["recommended"]["service_tier"], "standard")
+        self.assertEqual(recommendation["application"], "recommendation_only")
+        self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
+
+    def test_cli_recommend_route_parses_arguments_and_emits_json(self):
+        created = self.lifecycle.create_agent(
+            self.spec(model="gpt-5.6-sol", model_reasoning_effort="high"),
+            self.project_root,
+        )
+        self.lifecycle.confirm_visible(created["agent_id"])
+        incumbent = Path(created["path"]).read_bytes()
+        process = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--codex-home",
+                str(self.codex_home),
+                "recommend-route",
+                "--agent-id",
+                created["agent_id"],
+                "--task-class",
+                "review",
+                "--risk-tier",
+                "read_only",
+                "--execution-mode",
+                "managed_named",
+                "--service-tier",
+                "fast",
+            ],
+            cwd=self.project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        recommendation = json.loads(process.stdout)
+        self.assertEqual(recommendation["action"], "standardize_speed")
+        self.assertEqual(recommendation["recommended"]["service_tier"], "standard")
+        self.assertEqual(recommendation["application"], "recommendation_only")
+        self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
+
+    def test_high_quality_without_slow_signal_does_not_recommend_fast(self):
+        created = self.lifecycle.create_agent(
+            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
+            self.project_root,
+        )
+        self.lifecycle.confirm_visible(created["agent_id"])
+        for _ in range(8):
+            report = self.high_report(created["agent_id"], experience=False)
+            report["task_class"] = "documentation"
+            report["routing"] = self.routing(
+                model="gpt-5.6-luna",
+                effort="medium",
+                attribution="compute_latency",
+            )
+            self.lifecycle.record_evaluation(report)
+        recommendation = self.lifecycle.recommend_route(
+            created["agent_id"],
+            "documentation",
+            "read_only",
+            "managed_named",
+            "standard",
+        )
+        self.assertEqual(recommendation["action"], "hold")
+        self.assertEqual(recommendation["status"], "stable")
+        self.assertIsNone(recommendation["recommended"])
+
+    def test_low_cost_model_with_high_total_tokens_does_not_recommend_fast(self):
+        created = self.lifecycle.create_agent(
+            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
+            self.project_root,
+        )
+        self.lifecycle.confirm_visible(created["agent_id"])
+        result = None
+        for _ in range(8):
+            report = self.high_quality_slow_report(
+                created["agent_id"],
+                model="gpt-5.6-luna",
+                effort="medium",
+                task_class="documentation",
+            )
+            report["token_bucket"] = "high"
+            result = self.lifecycle.record_evaluation(report)
+        assert result is not None
+        recommendation = result["configuration_recommendation"]
+        self.assertNotEqual(recommendation["action"], "speed_up")
+        self.assertEqual(recommendation["evidence_window"]["high_token_rows"], 8)
+        self.assertEqual(recommendation["evidence_window"]["low_token_rows"], 0)
+
+    def test_inherit_and_unknown_service_tiers_never_propose_fast(self):
+        for service_tier in ("inherit", "unknown"):
+            with self.subTest(service_tier=service_tier):
+                created = self.lifecycle.create_agent(
+                    self.spec(
+                        slug=f"{service_tier}-tier-researcher",
+                        model="gpt-5.6-luna",
+                        model_reasoning_effort="medium",
+                    ),
+                    self.project_root,
+                )
+                self.lifecycle.confirm_visible(created["agent_id"])
+                result = None
+                for _ in range(8):
+                    result = self.lifecycle.record_evaluation(
+                        self.high_quality_slow_report(
+                            created["agent_id"],
+                            model="gpt-5.6-luna",
+                            effort="medium",
+                            task_class="documentation",
+                            service_tier=service_tier,
+                        )
+                    )
+                assert result is not None
+                recommendation = result["configuration_recommendation"]
+                self.assertNotEqual(recommendation["action"], "speed_up")
+                self.assertIsNone(recommendation["recommended"])
+                self.assertEqual(
+                    recommendation["evidence_window"]["comparable_rows"], 8
+                )
+
     def test_active_lease_blocks_evaluation_and_promotion(self):
         created = self.create_visible_agent()
         lease = self.lifecycle.acquire_lease(created["agent_id"], 120)
@@ -402,6 +788,21 @@ class AgentLifecycleTests(unittest.TestCase):
         with self.assertRaises(manage_agents.LifecycleError):
             self.lifecycle.retire_agent(created["agent_id"])
         self.assertTrue(Path(created["path"]).exists())
+
+    def test_retirement_precedes_resource_routing(self):
+        created = self.create_visible_agent()
+        result = None
+        for _ in range(3):
+            report = self.extreme_report(created["agent_id"])
+            report["routing"] = self.routing(attribution="model_capacity")
+            result = self.lifecycle.record_evaluation(report)
+        assert result is not None
+        self.assertEqual(result["state"], "retire_eligible")
+        self.assertEqual(
+            result["configuration_recommendation"]["status"],
+            "retirement_precedes_routing",
+        )
+        self.assertIsNone(result["configuration_recommendation"]["recommended"])
 
     def test_repeated_evidence_backed_extreme_failure_quarantines_and_restores(self):
         created = self.create_visible_agent()
@@ -613,6 +1014,110 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertFalse(result["ok"], result)
         self.assertTrue(any("按用户文件保护" in issue for issue in result["issues"]))
         self.assertFalse(self.lifecycle.db_path.exists())
+
+    def test_v1_database_migrates_to_v2_without_touching_agents(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-home")
+        lifecycle.state_root.mkdir(parents=True)
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO meta(key, value) VALUES('schema_version', '1');
+                CREATE TABLE evaluations (
+                    evaluation_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    task_class TEXT NOT NULL,
+                    risk_tier TEXT NOT NULL,
+                    correctness INTEGER NOT NULL,
+                    evidence INTEGER NOT NULL,
+                    scope INTEGER NOT NULL,
+                    efficiency INTEGER NOT NULL,
+                    clarity INTEGER NOT NULL,
+                    safety INTEGER NOT NULL,
+                    total INTEGER NOT NULL,
+                    evidence_flags TEXT NOT NULL,
+                    critical_event TEXT NOT NULL,
+                    confirmations TEXT NOT NULL,
+                    judge_kind TEXT NOT NULL,
+                    judge_confidence TEXT NOT NULL,
+                    duration_bucket TEXT NOT NULL,
+                    token_bucket TEXT NOT NULL,
+                    user_verdict TEXT NOT NULL,
+                    report_sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = lifecycle.connect(create=True)
+        assert migrated is not None
+        try:
+            version = migrated.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()["value"]
+            table = migrated.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='evaluation_routing'"
+            ).fetchone()
+            self.assertEqual(version, "2")
+            self.assertIsNotNone(table)
+        finally:
+            migrated.close()
+        self.assertFalse(lifecycle.agents_dir.exists())
+
+    def test_v1_migration_failure_rolls_back_and_closes_connection(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-failure-home")
+        lifecycle.state_root.mkdir(parents=True)
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO meta(key, value) VALUES('schema_version', '1');
+                INSERT INTO meta(key, value) VALUES('sentinel', 'keep');
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        original = manage_agents.AgentLifecycle.create_routing_schema
+
+        def fail_after_ddl(database):
+            original(database)
+            raise sqlite3.OperationalError("injected migration failure")
+
+        manage_agents.AgentLifecycle.create_routing_schema = staticmethod(fail_after_ddl)
+        try:
+            with self.assertRaisesRegex(sqlite3.OperationalError, "injected migration failure"):
+                lifecycle.connect(create=True)
+        finally:
+            manage_agents.AgentLifecycle.create_routing_schema = staticmethod(original)
+
+        verification = sqlite3.connect(lifecycle.db_path, isolation_level=None)
+        try:
+            version = verification.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()[0]
+            sentinel = verification.execute(
+                "SELECT value FROM meta WHERE key='sentinel'"
+            ).fetchone()[0]
+            routing_table = verification.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='evaluation_routing'"
+            ).fetchone()
+            verification.execute("BEGIN IMMEDIATE")
+            verification.rollback()
+        finally:
+            verification.close()
+        self.assertEqual(version, "1")
+        self.assertEqual(sentinel, "keep")
+        self.assertIsNone(routing_table)
+        self.assertFalse(lifecycle.agents_dir.exists())
 
 
 if __name__ == "__main__":
