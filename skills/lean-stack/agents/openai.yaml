@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lean Stack"
+  short_description: "Smallest verified change with deliberate subagents."
+  default_prompt: "Use $lean-stack; choose the smallest defensible solution and request a model and reasoning effort for each subagent."

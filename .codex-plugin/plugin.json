@@ -1,0 +1,37 @@
+{
+  "name": "codex-lean-stack",
+  "version": "0.1.0+codex.20260824031906",
+  "description": "Minimal, evidence-driven Codex engineering with deliberate subagents and a guarded custom-agent lifecycle.",
+  "author": {
+    "name": "Lang45",
+    "url": "https://github.com/Lang45"
+  },
+  "homepage": "https://github.com/Lang45/codex-lean-stack",
+  "repository": "https://github.com/Lang45/codex-lean-stack",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "engineering",
+    "agent-lifecycle",
+    "multi-agent",
+    "minimalism",
+    "verification"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Lean Stack",
+    "shortDescription": "Smallest verified change, with deliberate subagents.",
+    "longDescription": "Combines a minimal implementation ladder with evidence-led playbooks, role-specific native subagents, and a fail-closed lifecycle for plugin-managed custom agents.",
+    "developerName": "Lang45",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/Lang45/codex-lean-stack",
+    "defaultPrompt": [
+      "Use $lean-stack; choose the smallest defensible solution and give each subagent a localized user-facing name, model, and reasoning effort.",
+      "\u7528 $lean-stack \u5b8c\u6210\u4efb\u52a1\uff1a\u9009\u62e9\u6700\u5c0f\u53ef\u8fa9\u62a4\u89e3\uff0c\u4e3a\u6bcf\u4e2a\u5b50\u4ee3\u7406\u6307\u5b9a\u4e2d\u6587\u7528\u6237\u53ef\u89c1\u540d\u79f0\u3001\u6a21\u578b\u548c\u63a8\u7406\u5f3a\u5ea6\uff0c\u5e76\u7528\u771f\u5b9e\u8bc1\u636e\u9a8c\u8bc1\u3002"
+    ]
+  }
+}
