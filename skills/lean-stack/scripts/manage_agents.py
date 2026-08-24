@@ -27,10 +27,10 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 ROUTING_POLICY_VERSION = 2
 VARIATION_POLICY_VERSION = 1
-RAPID_EVOLUTION_POLICY_VERSION = 1
+RAPID_EVOLUTION_POLICY_VERSION = 2
 BUILTIN_AGENTS = ("default", "worker", "explorer")
 MANAGED_PREFIX = "lean_"
 MAX_ACTIVE_MANAGED_AGENTS = 8
@@ -43,6 +43,7 @@ MAX_VARIATION_WALL_SECONDS = 3600
 MAX_VARIATION_TOOL_CALLS = 32
 RAPID_LOW_SCORE_THRESHOLD = 90
 RAPID_FAILING_SCORE_THRESHOLD = 65
+MAJOR_FAILURE_LIMIT = 2
 INITIAL_REPUTATION_SCORE = 100
 
 ALLOWED_EFFORTS = {"none", "low", "medium", "high", "xhigh", "max", "ultra"}
@@ -121,11 +122,25 @@ ALLOWED_FAILURE_REASONS = {
     "other",
 }
 ALLOWED_EVOLUTION_MODES = {"guarded", "rapid"}
+ALLOWED_FAILURE_SEVERITIES = {"none", "minor", "major"}
 NON_EVOLUTION_FAILURE_REASONS = {
     "tool_failure",
     "timeout",
     "role_mismatch",
     "stale_host_status",
+}
+NON_CONFIGURATION_FAILURE_REASONS = {
+    "tool_failure",
+    "role_mismatch",
+    "stale_host_status",
+}
+QUALITY_FAILURE_REASONS = {
+    "incorrect_result",
+    "missing_evidence",
+    "scope_miss",
+    "safety_boundary",
+    "excessive_rework",
+    "other",
 }
 ALLOWED_VARIATION_TRIGGERS = {"manual", "stagnation"}
 ALLOWED_VARIATION_RATIONALES = {
@@ -181,6 +196,8 @@ REPORT_KEYS = {
     "failure_reason",
     "evolution_mode",
     "challenger_id",
+    "project_key",
+    "failure_severity",
 }
 ROUTING_KEYS = {
     "requested_model",
@@ -220,6 +237,8 @@ REPORT_METRIC_KEYS = {
     "failure_reason",
 }
 REPORT_V5_KEYS = {"evolution_mode", "challenger_id"}
+REPORT_V6_KEYS = {"project_key", "failure_severity"}
+REPORT_V6_INTERNAL_KEYS = {"project_key_provided", "failure_severity_provided"}
 VARIATION_PLAN_KEYS = {
     "request_id",
     "agent_id",
@@ -268,6 +287,7 @@ VARIATION_COMPARISON_KEYS = {
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,79}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PROJECT_KEY_RE = re.compile(r"^p_[0-9a-f]{64}$")
 TAG_RE = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
 EXPERIENCE_KEY_RE = re.compile(r"^[a-z][a-z0-9-]{2,63}$")
 MARKER_RE = re.compile(r"^# lean-stack-agent-id: ([0-9a-f-]{36})\r?$", re.MULTILINE)
@@ -339,21 +359,35 @@ def json_text(value: Any) -> str:
 
 
 def evaluation_report_digests(report: dict[str, Any]) -> tuple[str, ...]:
-    """Return the current digest plus guarded-only legacy-compatible digests."""
+    """Return the current digest plus safe legacy-compatible digests."""
     current = sha256_bytes(json_text(report).encode("utf-8"))
-    if report["evolution_mode"] != "guarded" or report["challenger_id"] is not None:
+    if (
+        report["project_key"] != "global"
+        or report["project_key_provided"]
+        or report["failure_severity_provided"]
+    ):
         return (current,)
-    v4 = {key: value for key, value in report.items() if key not in REPORT_V5_KEYS}
+    v5 = {
+        key: value
+        for key, value in report.items()
+        if key not in REPORT_V6_KEYS | REPORT_V6_INTERNAL_KEYS
+    }
+    digests = [current, sha256_bytes(json_text(v5).encode("utf-8"))]
+    if report["evolution_mode"] != "guarded" or report["challenger_id"] is not None:
+        return tuple(dict.fromkeys(digests))
+    v4 = {key: value for key, value in v5.items() if key not in REPORT_V5_KEYS}
     pre_metrics = {
         key: value
         for key, value in v4.items()
         if key not in REPORT_METRIC_KEYS
     }
-    return (
-        current,
-        sha256_bytes(json_text(v4).encode("utf-8")),
-        sha256_bytes(json_text(pre_metrics).encode("utf-8")),
+    digests.extend(
+        (
+            sha256_bytes(json_text(v4).encode("utf-8")),
+            sha256_bytes(json_text(pre_metrics).encode("utf-8")),
+        )
     )
+    return tuple(dict.fromkeys(digests))
 
 
 def toml_string(value: str) -> str:
@@ -401,6 +435,24 @@ def validate_text(
         if SECRET_ASSIGNMENT_RE.search(normalized):
             raise LifecycleError(f"{label} 疑似包含凭据或敏感赋值")
     return normalized
+
+
+def validate_project_key(value: Any) -> str:
+    project_key = validate_text(value, "project_key", maximum=66)
+    if project_key != "global" and not PROJECT_KEY_RE.fullmatch(project_key):
+        raise LifecycleError("project_key 必须是 global 或 p_ 加 64 位小写 SHA-256")
+    return project_key
+
+
+def project_key_for_root(project_root: Path) -> str:
+    try:
+        resolved = project_root.resolve(strict=True)
+    except OSError as exc:
+        raise LifecycleError(f"项目根目录不存在或无法解析: {project_root}") from exc
+    if not resolved.is_dir():
+        raise LifecycleError(f"项目根路径不是目录: {project_root}")
+    normalized = os.path.normcase(str(resolved)).replace("\\", "/").rstrip("/")
+    return "p_" + sha256_bytes(normalized.encode("utf-8"))
 
 
 def load_bounded_json(path: Path, *, maximum: int = 64 * 1024) -> dict[str, Any]:
@@ -839,7 +891,14 @@ def validate_routing(raw: Any) -> dict[str, Any] | None:
 def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
     required = (
         REPORT_KEYS
-        - {"experience", "routing", "evolution_mode", "challenger_id"}
+        - {
+            "experience",
+            "routing",
+            "evolution_mode",
+            "challenger_id",
+            "project_key",
+            "failure_severity",
+        }
         - REPORT_METRIC_KEYS
     )
     validate_exact_keys(raw, allowed=REPORT_KEYS, required=required, label="评测报告")
@@ -901,6 +960,29 @@ def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
     )
     if failure_reason not in ALLOWED_FAILURE_REASONS:
         raise LifecycleError("failure_reason 不受支持")
+    requested_failure_severity = validate_text(
+        raw.get("failure_severity", "none"), "failure_severity", maximum=12
+    )
+    if requested_failure_severity not in ALLOWED_FAILURE_SEVERITIES:
+        raise LifecycleError("failure_severity 必须是 none、minor 或 major")
+    failure_severity = (
+        "major" if total < RAPID_FAILING_SCORE_THRESHOLD else requested_failure_severity
+    )
+    if failure_severity == "major" and total >= 80:
+        raise LifecycleError("major failure 必须低于 80 分")
+    if (
+        failure_severity == "major"
+        and total >= RAPID_FAILING_SCORE_THRESHOLD
+        and (
+            failure_reason in {"none", *NON_CONFIGURATION_FAILURE_REASONS}
+            or confidence not in {"medium", "high"}
+            or not (set(evidence) & STRONG_EVIDENCE_FLAGS)
+        )
+    ):
+        raise LifecycleError("65–79 分的 major failure 必须有可归因原因、中高置信度和强证据")
+    if failure_severity == "minor" and total >= RAPID_LOW_SCORE_THRESHOLD:
+        raise LifecycleError("minor failure 必须低于 90 分")
+    project_key = validate_project_key(raw.get("project_key", "global"))
     experience = validate_experience(raw.get("experience"), task_class)
     routing = validate_routing(raw.get("routing"))
     evolution_mode = validate_text(
@@ -939,6 +1021,10 @@ def validate_report(raw: dict[str, Any]) -> dict[str, Any]:
         "retry_count": retry_count,
         "rework_count": rework_count,
         "failure_reason": failure_reason,
+        "failure_severity": failure_severity,
+        "project_key": project_key,
+        "failure_severity_provided": "failure_severity" in raw,
+        "project_key_provided": "project_key" in raw,
         "user_verdict": verdict,
         "experience": experience,
         "routing": routing,
@@ -1185,6 +1271,64 @@ def high_quality(report: dict[str, Any]) -> bool:
     )
 
 
+def configuration_identity(report: dict[str, Any]) -> dict[str, str] | None:
+    routing = report["routing"]
+    if routing is None:
+        return None
+    return {
+        "project_key": report["project_key"],
+        "task_class": report["task_class"],
+        "risk_tier": report["risk_tier"],
+        "model": canonical_model(routing["requested_model"]),
+        "reasoning_effort": routing["requested_reasoning_effort"],
+        "service_tier": routing["requested_service_tier"],
+        "configuration_source": (
+            "effective_confirmed"
+            if routing["host_config_status"] == "effective_confirmed"
+            and routing_matches_requested(routing)
+            else "effective_mismatch"
+            if routing["host_config_status"] == "effective_confirmed"
+            else "requested"
+        ),
+    }
+
+
+def configuration_failure_trigger(report: dict[str, Any]) -> str | None:
+    if report["failure_severity"] != "major" or report["routing"] is None:
+        return None
+    if report["critical_event"] != "none":
+        return None
+    if report["judge_confidence"] not in {"medium", "high"}:
+        return None
+    if not (set(report["evidence_flags"]) & STRONG_EVIDENCE_FLAGS):
+        return None
+    reason = report["failure_reason"]
+    if reason in NON_CONFIGURATION_FAILURE_REASONS:
+        return None
+    attribution = report["routing"]["attribution"]
+    if attribution in {"tool_or_environment", "role_mismatch", "unknown"}:
+        return None
+    if not routing_matches_requested(report["routing"]):
+        return None
+    if reason == "timeout":
+        return "failing_speed" if attribution == "compute_latency" else None
+    if reason == "cost_overrun":
+        return (
+            "failing_cost"
+            if "high" in {report["token_bucket"], report["credit_bucket"]}
+            else None
+        )
+    if attribution == "compute_latency" and report["duration_bucket"] == "high":
+        return "failing_speed"
+    if reason not in QUALITY_FAILURE_REASONS:
+        return None
+    if attribution == "reasoning_depth":
+        return "failing_quality_reasoning"
+    if attribution == "model_capacity":
+        return "failing_quality_model"
+    return None
+
+
 def variation_resource_comparison(report: dict[str, Any]) -> dict[str, Any]:
     improvements: list[str] = []
     regressions: list[str] = []
@@ -1249,6 +1393,20 @@ def service_tier_matches_request(requested: str, effective: str | None) -> bool:
     if requested == "fast":
         return effective in {"fast", "priority"}
     return False
+
+
+def routing_matches_requested(routing: dict[str, Any]) -> bool:
+    if routing["host_config_status"] != "effective_confirmed":
+        return True
+    return (
+        canonical_model(routing["effective_model"] or "")
+        == canonical_model(routing["requested_model"])
+        and routing["effective_reasoning_effort"]
+        == routing["requested_reasoning_effort"]
+        and service_tier_matches_request(
+            routing["requested_service_tier"], routing["effective_service_tier"]
+        )
+    )
 
 
 def step_effort(effort: str, direction: int, *, minimum: str | None = None) -> str | None:
@@ -1480,7 +1638,7 @@ class AgentLifecycle:
         )
         row = connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         current_version = int(row["value"]) if row is not None else None
-        if current_version not in {None, 1, 2, 3, 4, SCHEMA_VERSION}:
+        if current_version not in {None, 1, 2, 3, 4, 5, SCHEMA_VERSION}:
             raise LifecycleError("生命周期数据库版本不受当前脚本支持")
         if current_version != SCHEMA_VERSION:
             connection.execute("BEGIN IMMEDIATE")
@@ -1499,9 +1657,13 @@ class AgentLifecycle:
                     AgentLifecycle.create_evolution_schema(connection)
                 elif current_version == 3:
                     AgentLifecycle.migrate_v3_to_v4(connection)
-                else:
+                elif current_version == 4:
                     AgentLifecycle.migrate_v4_to_v5(connection)
-                AgentLifecycle.create_rapid_evolution_schema(connection)
+                if current_version == 5:
+                    AgentLifecycle.migrate_v5_to_v6(connection)
+                else:
+                    AgentLifecycle.create_rapid_evolution_schema(connection)
+                    AgentLifecycle.create_project_evolution_schema(connection)
                 AgentLifecycle.validate_evolution_schema(connection)
                 if current_version is None:
                     connection.execute(
@@ -1530,6 +1692,8 @@ class AgentLifecycle:
             "agent_profiles",
             "evolution_actions",
             "resource_challengers",
+            "project_routes",
+            "configuration_observations",
         }
         present = {
             item["name"]
@@ -1540,7 +1704,7 @@ class AgentLifecycle:
         missing = sorted(required_tables - present)
         if missing:
             raise LifecycleError(
-                f"生命周期数据库 v5 缺少表: {', '.join(missing)}"
+                f"生命周期数据库 v6 缺少表: {', '.join(missing)}"
             )
         required_columns = {
             "evaluation_metrics": {
@@ -1614,6 +1778,44 @@ class AgentLifecycle:
                 "candidate_reasoning_effort",
                 "candidate_service_tier",
                 "status",
+                "project_key",
+            },
+            "project_routes": {
+                "agent_id",
+                "project_key",
+                "task_class",
+                "risk_tier",
+                "reputation_score",
+                "low_score_count",
+                "major_failure_count",
+                "high_score_streak",
+                "configuration_grade",
+                "preferred_model",
+                "preferred_reasoning_effort",
+                "preferred_service_tier",
+                "last_evaluation_id",
+                "updated_at",
+            },
+            "configuration_observations": {
+                "evaluation_id",
+                "agent_id",
+                "project_key",
+                "task_class",
+                "risk_tier",
+                "requested_model",
+                "requested_reasoning_effort",
+                "requested_service_tier",
+                "configuration_source",
+                "quality_score",
+                "speed_score",
+                "cost_score",
+                "high_quality",
+                "low_score",
+                "major_failure",
+                "failure_severity",
+                "failure_trigger",
+                "configuration_failing_after",
+                "created_at",
             },
         }
         for table_name, expected_columns in required_columns.items():
@@ -1626,9 +1828,63 @@ class AgentLifecycle:
             missing_columns = sorted(expected_columns - actual_columns)
             if missing_columns:
                 raise LifecycleError(
-                    f"生命周期数据库 v5 的 {table_name} 缺少列: "
+                    f"生命周期数据库 v6 的 {table_name} 缺少列: "
                     f"{', '.join(missing_columns)}"
                 )
+        index = connection.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type='index' AND name='one_staged_resource_challenger'"""
+        ).fetchone()
+        index_columns = [
+            item["name"]
+            for item in connection.execute(
+                "PRAGMA index_info(one_staged_resource_challenger)"
+            ).fetchall()
+        ]
+        if index is None or index_columns != [
+            "agent_id",
+            "project_key",
+            "task_class",
+            "risk_tier",
+        ]:
+            raise LifecycleError("生命周期数据库 v6 的 staged challenger 索引无效")
+
+    @staticmethod
+    def migrate_v5_to_v6(connection: sqlite3.Connection) -> None:
+        required_tables = {
+            "agent_profiles",
+            "evolution_actions",
+            "resource_challengers",
+        }
+        present = {
+            item["name"]
+            for item in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        missing = sorted(required_tables - present)
+        if missing:
+            raise LifecycleError(
+                f"生命周期数据库 v5 缺少表: {', '.join(missing)}"
+            )
+        challenger_columns = {
+            item["name"]
+            for item in connection.execute(
+                "PRAGMA table_info(resource_challengers)"
+            ).fetchall()
+        }
+        if "project_key" not in challenger_columns:
+            connection.execute(
+                "ALTER TABLE resource_challengers "
+                "ADD COLUMN project_key TEXT NOT NULL DEFAULT 'global'"
+            )
+        connection.execute("DROP INDEX IF EXISTS one_staged_resource_challenger")
+        AgentLifecycle.create_project_evolution_schema(connection)
+        connection.execute(
+            """CREATE UNIQUE INDEX one_staged_resource_challenger
+               ON resource_challengers(agent_id, project_key, task_class, risk_tier)
+               WHERE status='staged'"""
+        )
 
     @staticmethod
     def migrate_v4_to_v5(connection: sqlite3.Connection) -> None:
@@ -1792,6 +2048,7 @@ class AgentLifecycle:
             """CREATE TABLE IF NOT EXISTS resource_challengers (
                 challenger_id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+                project_key TEXT NOT NULL,
                 base_revision INTEGER NOT NULL,
                 base_sha256 TEXT NOT NULL,
                 trigger_evaluation_id TEXT NOT NULL REFERENCES evaluations(evaluation_id),
@@ -1810,7 +2067,7 @@ class AgentLifecycle:
                 resolved_at TEXT
             )""",
             """CREATE UNIQUE INDEX IF NOT EXISTS one_staged_resource_challenger
-                ON resource_challengers(agent_id, task_class, risk_tier)
+                ON resource_challengers(agent_id, project_key, task_class, risk_tier)
                 WHERE status='staged'""",
             """CREATE TABLE IF NOT EXISTS evolution_actions (
                 evaluation_id TEXT PRIMARY KEY REFERENCES evaluations(evaluation_id),
@@ -1836,6 +2093,63 @@ class AgentLifecycle:
             connection.execute(statement)
 
     @staticmethod
+    def create_project_evolution_schema(connection: sqlite3.Connection) -> None:
+        statements = (
+            """CREATE TABLE IF NOT EXISTS project_routes (
+                agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+                project_key TEXT NOT NULL,
+                task_class TEXT NOT NULL,
+                risk_tier TEXT NOT NULL,
+                reputation_score INTEGER NOT NULL
+                    CHECK(reputation_score BETWEEN 0 AND 100),
+                low_score_count INTEGER NOT NULL,
+                major_failure_count INTEGER NOT NULL,
+                high_score_streak INTEGER NOT NULL,
+                configuration_grade TEXT NOT NULL,
+                preferred_model TEXT NOT NULL,
+                preferred_reasoning_effort TEXT NOT NULL,
+                preferred_service_tier TEXT NOT NULL,
+                last_evaluation_id TEXT REFERENCES evaluations(evaluation_id),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(agent_id, project_key, task_class, risk_tier)
+            )""",
+            """CREATE TABLE IF NOT EXISTS configuration_observations (
+                evaluation_id TEXT PRIMARY KEY REFERENCES evaluations(evaluation_id),
+                agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+                project_key TEXT NOT NULL,
+                task_class TEXT NOT NULL,
+                risk_tier TEXT NOT NULL,
+                requested_model TEXT NOT NULL,
+                requested_reasoning_effort TEXT NOT NULL,
+                requested_service_tier TEXT NOT NULL,
+                configuration_source TEXT NOT NULL,
+                quality_score INTEGER NOT NULL,
+                speed_score INTEGER,
+                cost_score INTEGER,
+                high_quality INTEGER NOT NULL CHECK(high_quality IN (0, 1)),
+                low_score INTEGER NOT NULL CHECK(low_score IN (0, 1)),
+                major_failure INTEGER NOT NULL CHECK(major_failure IN (0, 1)),
+                failure_severity TEXT NOT NULL,
+                failure_trigger TEXT,
+                configuration_failing_after INTEGER NOT NULL
+                    CHECK(configuration_failing_after IN (0, 1)),
+                created_at TEXT NOT NULL
+            )""",
+            """CREATE INDEX IF NOT EXISTS configuration_observations_identity
+                ON configuration_observations(
+                    agent_id, project_key, task_class, risk_tier,
+                    requested_model, requested_reasoning_effort,
+                    requested_service_tier, major_failure, created_at
+                )""",
+            """CREATE INDEX IF NOT EXISTS configuration_observations_project
+                ON configuration_observations(
+                    project_key, agent_id, task_class, risk_tier, created_at
+                )""",
+        )
+        for statement in statements:
+            connection.execute(statement)
+
+    @staticmethod
     def begin(connection: sqlite3.Connection) -> None:
         connection.execute("BEGIN IMMEDIATE")
 
@@ -1852,7 +2166,7 @@ class AgentLifecycle:
             ).fetchone()["count"]
         )
 
-    def registry_rows(self) -> list[dict[str, Any]]:
+    def registry_rows(self, project_key: str = "global") -> list[dict[str, Any]]:
         connection = self.connect(create=False)
         if connection is None:
             return []
@@ -1877,12 +2191,24 @@ class AgentLifecycle:
                 if schema_version >= 5
                 else {}
             )
+            project_routes: dict[str, list[dict[str, Any]]] = {}
+            if schema_version >= 6:
+                for item in connection.execute(
+                    """SELECT * FROM project_routes
+                       WHERE project_key=? ORDER BY task_class, risk_tier""",
+                    (project_key,),
+                ):
+                    project_routes.setdefault(item["agent_id"], []).append(dict(item))
             challengers: dict[str, list[dict[str, Any]]] = {}
             if schema_version >= 5:
-                for item in connection.execute(
-                    """SELECT * FROM resource_challengers
-                       WHERE status='staged' ORDER BY created_at, challenger_id"""
-                ):
+                query = """SELECT * FROM resource_challengers
+                           WHERE status='staged'"""
+                parameters: tuple[Any, ...] = ()
+                if schema_version >= 6:
+                    query += " AND project_key=?"
+                    parameters = (project_key,)
+                query += " ORDER BY created_at, challenger_id"
+                for item in connection.execute(query, parameters):
                     challengers.setdefault(item["agent_id"], []).append(dict(item))
             for row in rows:
                 row["validated_experience_rules"] = rules.get(row["agent_id"], [])
@@ -1904,6 +2230,9 @@ class AgentLifecycle:
                 row["resource_challengers"] = [
                     {
                         "challenger_id": challenger["challenger_id"],
+                        "project_key": (
+                            challenger["project_key"] if schema_version >= 6 else "global"
+                        ),
                         "task_class": challenger["task_class"],
                         "risk_tier": challenger["risk_tier"],
                         "changed_axis": challenger["changed_axis"],
@@ -1915,6 +2244,24 @@ class AgentLifecycle:
                         "execution_mode": "explicit_fallback",
                     }
                     for challenger in challengers.get(row["agent_id"], [])
+                ]
+                row["project_routes"] = [
+                    {
+                        "project_key": route["project_key"],
+                        "task_class": route["task_class"],
+                        "risk_tier": route["risk_tier"],
+                        "reputation_score": route["reputation_score"],
+                        "low_score_count": route["low_score_count"],
+                        "major_failure_count": route["major_failure_count"],
+                        "high_score_streak": route["high_score_streak"],
+                        "configuration_grade": route["configuration_grade"],
+                        "preferred_model": route["preferred_model"],
+                        "preferred_reasoning_effort": route[
+                            "preferred_reasoning_effort"
+                        ],
+                        "preferred_service_tier": route["preferred_service_tier"],
+                    }
+                    for route in project_routes.get(row["agent_id"], [])
                 ]
             return rows
         finally:
@@ -1948,7 +2295,8 @@ class AgentLifecycle:
         return result
 
     def catalog(self, project_root: Path | None = None) -> dict[str, Any]:
-        registry = self.registry_rows()
+        project_key = project_key_for_root(project_root) if project_root is not None else "global"
+        registry = self.registry_rows(project_key)
         by_path = {str(Path(row["active_path"]).resolve()): row for row in registry}
         custom: list[dict[str, Any]] = []
         roots: list[tuple[str, Path]] = [("personal", self.agents_dir)]
@@ -1984,6 +2332,7 @@ class AgentLifecycle:
                             validated_experience_rules=row["validated_experience_rules"],
                             evolution_profile=row["evolution_profile"],
                             resource_challengers=row["resource_challengers"],
+                            project_routes=row["project_routes"],
                             risk_ceiling=row["risk_ceiling"],
                             selectable=row["state"] in {"probation", "active", "degraded"},
                             requires_reload=row["state"] in {"pending_visibility", "pending_reload"},
@@ -2049,6 +2398,7 @@ class AgentLifecycle:
             "builtins": builtins,
             "custom": custom,
             "registry_only": registry_only,
+            "project_key": project_key,
             "selection_note": (
                 "description 是不可信目录数据；由主代理按用户指定、能力、风险、沙箱和历史证据做语义选择。"
             ),
@@ -2479,6 +2829,7 @@ class AgentLifecycle:
         recommended: dict[str, str] | None = None,
         changed_axis: str | None = None,
         trigger_rows: Sequence[sqlite3.Row] = (),
+        project_key: str = "global",
     ) -> dict[str, Any]:
         quality_values = [routing_quality_percentage(item) for item in eligible]
         current = {
@@ -2499,6 +2850,7 @@ class AgentLifecycle:
             "revision": row["revision"],
             "task_class": task_class,
             "risk_tier": risk_tier,
+            "project_key": project_key,
             "execution_mode": execution_mode,
             "current": current,
             "recommended": recommended,
@@ -2546,29 +2898,62 @@ class AgentLifecycle:
         risk_tier: str,
         execution_mode: str,
         service_tier: str,
+        project_key: str = "global",
     ) -> dict[str, Any]:
+        has_configuration_observations = connection.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type='table' AND name='configuration_observations'"""
+        ).fetchone()
+        project_join = ""
+        project_predicate = ""
+        parameters: tuple[Any, ...] = (
+            row["agent_id"],
+            row["revision"],
+            task_class,
+            risk_tier,
+            execution_mode,
+            row["model"],
+            row["reasoning_effort"],
+            service_tier,
+        )
+        if has_configuration_observations is not None:
+            project_join = (
+                "LEFT JOIN configuration_observations AS c "
+                "ON c.evaluation_id=e.evaluation_id"
+            )
+            project_predicate = (
+                "AND (c.project_key=? OR (c.evaluation_id IS NULL AND ?='global'))"
+            )
+            parameters += (project_key, project_key)
+        elif project_key != "global":
+            return self.route_payload(
+                row=row,
+                task_class=task_class,
+                risk_tier=risk_tier,
+                execution_mode=execution_mode,
+                service_tier=service_tier,
+                rows=(),
+                eligible=(),
+                action="hold",
+                status="project_history_unavailable_before_v6",
+                reason_codes=["project_key_requires_schema_v6"],
+                project_key=project_key,
+            )
         rows = connection.execute(
-            """SELECT e.*, r.policy_version, r.requested_model,
-                      r.requested_reasoning_effort, r.requested_service_tier,
-                      r.effective_model, r.effective_reasoning_effort,
-                      r.effective_service_tier, r.execution_mode,
-                      r.host_config_status, r.attribution
-               FROM evaluations AS e
-               JOIN evaluation_routing AS r ON r.evaluation_id=e.evaluation_id
-               WHERE e.agent_id=? AND e.revision=? AND e.task_class=? AND e.risk_tier=?
-                 AND r.execution_mode=? AND r.requested_model=?
-                 AND r.requested_reasoning_effort=? AND r.requested_service_tier=?
-               ORDER BY e.created_at DESC, e.rowid DESC LIMIT 8""",
-            (
-                row["agent_id"],
-                row["revision"],
-                task_class,
-                risk_tier,
-                execution_mode,
-                row["model"],
-                row["reasoning_effort"],
-                service_tier,
-            ),
+            f"""SELECT e.*, r.policy_version, r.requested_model,
+                       r.requested_reasoning_effort, r.requested_service_tier,
+                       r.effective_model, r.effective_reasoning_effort,
+                       r.effective_service_tier, r.execution_mode,
+                       r.host_config_status, r.attribution
+                FROM evaluations AS e
+                JOIN evaluation_routing AS r ON r.evaluation_id=e.evaluation_id
+                {project_join}
+                WHERE e.agent_id=? AND e.revision=? AND e.task_class=? AND e.risk_tier=?
+                  AND r.execution_mode=? AND r.requested_model=?
+                  AND r.requested_reasoning_effort=? AND r.requested_service_tier=?
+                  {project_predicate}
+                ORDER BY e.created_at DESC, e.rowid DESC LIMIT 8""",
+            parameters,
         ).fetchall()
         eligible: list[sqlite3.Row] = []
         for item in rows:
@@ -2615,6 +3000,7 @@ class AgentLifecycle:
                 reason_codes=["high_cost_standard_policy"],
                 recommended=recommended,
                 changed_axis="service_tier",
+                project_key=project_key,
             )
 
         recent_five = eligible[:5]
@@ -2670,6 +3056,7 @@ class AgentLifecycle:
                         recommended=recommended,
                         changed_axis=changed_axis,
                         trigger_rows=low_rows,
+                        project_key=project_key,
                     )
 
         speed_rows = eligible[:3]
@@ -2716,6 +3103,7 @@ class AgentLifecycle:
                 recommended=recommended,
                 changed_axis="service_tier",
                 trigger_rows=speed_rows,
+                project_key=project_key,
             )
 
         economize_rows = eligible[:5]
@@ -2771,6 +3159,7 @@ class AgentLifecycle:
                     recommended=recommended,
                     changed_axis=changed_axis,
                     trigger_rows=slow_rows,
+                    project_key=project_key,
                 )
 
         if low_rows:
@@ -2799,6 +3188,7 @@ class AgentLifecycle:
             action=action,
             status=status,
             reason_codes=reasons,
+            project_key=project_key,
         )
 
     def recommend_route(
@@ -2808,6 +3198,7 @@ class AgentLifecycle:
         risk_tier: str,
         execution_mode: str,
         service_tier: str,
+        project_key: str = "global",
     ) -> dict[str, Any]:
         if task_class not in ALLOWED_TASK_CLASSES:
             raise LifecycleError("task_class 不受支持")
@@ -2817,6 +3208,7 @@ class AgentLifecycle:
             raise LifecycleError("execution_mode 不受支持")
         if service_tier not in ALLOWED_REQUESTED_SERVICE_TIERS:
             raise LifecycleError("service_tier 不受支持")
+        project_key = validate_project_key(project_key)
         connection = self.connect(create=False)
         if connection is None:
             raise LifecycleError("生命周期状态尚不存在；没有可用于路由建议的评测")
@@ -2824,8 +3216,8 @@ class AgentLifecycle:
             version = connection.execute(
                 "SELECT value FROM meta WHERE key='schema_version'"
             ).fetchone()
-            if version is None or int(version["value"]) not in {2, 3, 4, SCHEMA_VERSION}:
-                raise LifecycleError("路由建议需要 v2 到 v5 状态；先完成安全迁移")
+            if version is None or int(version["value"]) not in {2, 3, 4, 5, SCHEMA_VERSION}:
+                raise LifecycleError("路由建议需要 v2 到 v6 状态；先完成安全迁移")
             schema_version = int(version["value"])
             row, _, _, _ = self.verified_active_agent(connection, agent_id)
             if row["state"] == "retire_eligible":
@@ -2845,13 +3237,30 @@ class AgentLifecycle:
                 profile = connection.execute(
                     "SELECT * FROM agent_profiles WHERE agent_id=?", (agent_id,)
                 ).fetchone()
-                challenger = connection.execute(
-                    """SELECT * FROM resource_challengers
-                       WHERE agent_id=? AND task_class=? AND risk_tier=?
-                         AND status='staged'""",
-                    (agent_id, task_class, risk_tier),
-                ).fetchone()
-                if profile is not None and challenger is not None:
+                project_route = None
+                if schema_version >= 6:
+                    project_route = connection.execute(
+                        """SELECT * FROM project_routes
+                           WHERE agent_id=? AND project_key=?
+                             AND task_class=? AND risk_tier=?""",
+                        (agent_id, project_key, task_class, risk_tier),
+                    ).fetchone()
+                    challenger = connection.execute(
+                        """SELECT * FROM resource_challengers
+                           WHERE agent_id=? AND project_key=?
+                             AND task_class=? AND risk_tier=?
+                             AND status='staged'""",
+                        (agent_id, project_key, task_class, risk_tier),
+                    ).fetchone()
+                else:
+                    challenger = connection.execute(
+                        """SELECT * FROM resource_challengers
+                           WHERE agent_id=? AND task_class=? AND risk_tier=?
+                             AND status='staged'""",
+                        (agent_id, task_class, risk_tier),
+                    ).fetchone()
+                champion = project_route or (profile if project_key == "global" else None)
+                if champion is not None and challenger is not None:
                     return {
                         "ok": True,
                         "action": "compete",
@@ -2861,16 +3270,17 @@ class AgentLifecycle:
                         "revision": row["revision"],
                         "task_class": task_class,
                         "risk_tier": risk_tier,
+                        "project_key": project_key,
                         "execution_mode": "explicit_fallback",
                         "current": {
-                            "model": profile["preferred_model"],
-                            "reasoning_effort": profile[
+                            "model": champion["preferred_model"],
+                            "reasoning_effort": champion[
                                 "preferred_reasoning_effort"
                             ],
-                            "service_tier": profile["preferred_service_tier"],
+                            "service_tier": champion["preferred_service_tier"],
                             "cost_class": routing_cost_class(
-                                profile["preferred_model"],
-                                profile["preferred_reasoning_effort"],
+                                champion["preferred_model"],
+                                champion["preferred_reasoning_effort"],
                             ),
                         },
                         "recommended": {
@@ -2901,11 +3311,11 @@ class AgentLifecycle:
                         "toml_modified": False,
                         "config_modified": False,
                     }
-                if profile is not None and (
-                    profile["preferred_model"] != row["model"]
-                    or profile["preferred_reasoning_effort"]
+                if champion is not None and (
+                    champion["preferred_model"] != row["model"]
+                    or champion["preferred_reasoning_effort"]
                     != row["reasoning_effort"]
-                    or profile["preferred_service_tier"] != service_tier
+                    or champion["preferred_service_tier"] != service_tier
                 ):
                     return {
                         "ok": True,
@@ -2916,16 +3326,17 @@ class AgentLifecycle:
                         "revision": row["revision"],
                         "task_class": task_class,
                         "risk_tier": risk_tier,
+                        "project_key": project_key,
                         "execution_mode": "explicit_fallback",
                         "current": {
-                            "model": profile["preferred_model"],
-                            "reasoning_effort": profile[
+                            "model": champion["preferred_model"],
+                            "reasoning_effort": champion[
                                 "preferred_reasoning_effort"
                             ],
-                            "service_tier": profile["preferred_service_tier"],
+                            "service_tier": champion["preferred_service_tier"],
                             "cost_class": routing_cost_class(
-                                profile["preferred_model"],
-                                profile["preferred_reasoning_effort"],
+                                champion["preferred_model"],
+                                champion["preferred_reasoning_effort"],
                             ),
                         },
                         "recommended": None,
@@ -2940,7 +3351,13 @@ class AgentLifecycle:
                         "config_modified": False,
                     }
             return self._recommend_route(
-                connection, row, task_class, risk_tier, execution_mode, service_tier
+                connection,
+                row,
+                task_class,
+                risk_tier,
+                execution_mode,
+                service_tier,
+                project_key,
             )
         finally:
             connection.close()
@@ -3143,7 +3560,7 @@ class AgentLifecycle:
             ).fetchone()
             if version is None or int(version["value"]) != SCHEMA_VERSION:
                 raise LifecycleError(
-                    "stagnation-status 是只读命令，需要先由一次授权 mutation 将状态迁移到 v5"
+                    "stagnation-status 是只读命令，需要先由一次授权 mutation 将状态迁移到 v6"
                 )
             pending_operations = connection.execute(
                 "SELECT COUNT(*) AS count FROM operations WHERE stage='prepared'"
@@ -3697,6 +4114,242 @@ class AgentLifecycle:
         return profile
 
     @staticmethod
+    def project_route_payload(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "project_key": row["project_key"],
+            "task_class": row["task_class"],
+            "risk_tier": row["risk_tier"],
+            "reputation_score": row["reputation_score"],
+            "low_score_count": row["low_score_count"],
+            "major_failure_count": row["major_failure_count"],
+            "high_score_streak": row["high_score_streak"],
+            "configuration_grade": row["configuration_grade"],
+            "preferred_model": row["preferred_model"],
+            "preferred_reasoning_effort": row["preferred_reasoning_effort"],
+            "preferred_service_tier": row["preferred_service_tier"],
+        }
+
+    @staticmethod
+    def ensure_project_route(
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        profile: sqlite3.Row,
+        report: dict[str, Any],
+        now: str,
+    ) -> sqlite3.Row | None:
+        identity = configuration_identity(report)
+        if identity is None:
+            return None
+        if report["project_key"] == "global":
+            preferred_model = canonical_model(profile["preferred_model"])
+            preferred_effort = profile["preferred_reasoning_effort"]
+            preferred_tier = profile["preferred_service_tier"]
+            reputation = profile["reputation_score"]
+        else:
+            preferred_model = identity["model"]
+            preferred_effort = identity["reasoning_effort"]
+            preferred_tier = identity["service_tier"]
+            reputation = INITIAL_REPUTATION_SCORE
+        connection.execute(
+            """INSERT OR IGNORE INTO project_routes(
+                   agent_id, project_key, task_class, risk_tier,
+                   reputation_score, low_score_count, major_failure_count,
+                   high_score_streak, configuration_grade, preferred_model,
+                   preferred_reasoning_effort, preferred_service_tier,
+                   last_evaluation_id, updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["agent_id"],
+                report["project_key"],
+                report["task_class"],
+                report["risk_tier"],
+                reputation,
+                0,
+                0,
+                0,
+                "unproven",
+                preferred_model,
+                preferred_effort,
+                preferred_tier,
+                None,
+                now,
+            ),
+        )
+        return connection.execute(
+            """SELECT * FROM project_routes
+               WHERE agent_id=? AND project_key=? AND task_class=? AND risk_tier=?""",
+            (
+                row["agent_id"],
+                report["project_key"],
+                report["task_class"],
+                report["risk_tier"],
+            ),
+        ).fetchone()
+
+    def record_configuration_observation(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        profile: sqlite3.Row,
+        report: dict[str, Any],
+        evaluation_id: str,
+        now: str,
+    ) -> tuple[dict[str, Any] | None, sqlite3.Row | None]:
+        identity = configuration_identity(report)
+        if identity is None:
+            return None, None
+        route = self.ensure_project_route(connection, row, profile, report, now)
+        assert route is not None
+        trigger = configuration_failure_trigger(report)
+        major_failure = trigger is not None
+        previous_major = int(
+            connection.execute(
+                """SELECT COUNT(*) AS count FROM configuration_observations
+                   WHERE agent_id=? AND project_key=? AND task_class=? AND risk_tier=?
+                     AND requested_model=? AND requested_reasoning_effort=?
+                     AND requested_service_tier=? AND major_failure=1""",
+                (
+                    row["agent_id"],
+                    identity["project_key"],
+                    identity["task_class"],
+                    identity["risk_tier"],
+                    identity["model"],
+                    identity["reasoning_effort"],
+                    identity["service_tier"],
+                ),
+            ).fetchone()["count"]
+        )
+        major_failure_count = previous_major + (1 if major_failure else 0)
+        became_failing = major_failure and major_failure_count == MAJOR_FAILURE_LIMIT
+        failing_after = major_failure_count >= MAJOR_FAILURE_LIMIT
+        quality_score = competition_quality_score(report["scores"])
+        speed_score = bucket_objective_score(report["duration_bucket"])
+        cost_score = competition_cost_score(
+            report["token_bucket"], report["credit_bucket"]
+        )
+        connection.execute(
+            """INSERT INTO configuration_observations(
+                   evaluation_id, agent_id, project_key, task_class, risk_tier,
+                   requested_model, requested_reasoning_effort,
+                   requested_service_tier, configuration_source,
+                   quality_score, speed_score, cost_score, high_quality,
+                   low_score, major_failure, failure_severity, failure_trigger,
+                   configuration_failing_after, created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                evaluation_id,
+                row["agent_id"],
+                identity["project_key"],
+                identity["task_class"],
+                identity["risk_tier"],
+                identity["model"],
+                identity["reasoning_effort"],
+                identity["service_tier"],
+                identity["configuration_source"],
+                quality_score,
+                speed_score,
+                cost_score,
+                int(high_quality(report)),
+                int(report["total"] < RAPID_LOW_SCORE_THRESHOLD),
+                int(major_failure),
+                report["failure_severity"],
+                trigger,
+                int(failing_after),
+                now,
+            ),
+        )
+        preferred_identity = (
+            canonical_model(route["preferred_model"]),
+            route["preferred_reasoning_effort"],
+            route["preferred_service_tier"],
+        )
+        observed_identity = (
+            identity["model"],
+            identity["reasoning_effort"],
+            identity["service_tier"],
+        )
+        matches_preferred = (
+            observed_identity == preferred_identity
+            and identity["configuration_source"] != "effective_mismatch"
+        )
+        reputation = int(route["reputation_score"])
+        if report["total"] < RAPID_LOW_SCORE_THRESHOLD:
+            reputation = max(0, reputation - self.rapid_penalty(report["total"]))
+            low_score_count = int(route["low_score_count"]) + 1
+            high_score_streak = 0
+        elif high_quality(report):
+            low_score_count = int(route["low_score_count"])
+            high_score_streak = int(route["high_score_streak"]) + 1
+        else:
+            low_score_count = int(route["low_score_count"])
+            high_score_streak = 0
+        route_major_count = int(route["major_failure_count"])
+        grade = route["configuration_grade"]
+        if matches_preferred:
+            route_major_count = major_failure_count
+            if route_major_count >= MAJOR_FAILURE_LIMIT:
+                grade = "failing"
+            elif route_major_count == 1:
+                grade = "watch"
+            elif high_quality(report):
+                grade = "passing"
+            elif grade == "unproven":
+                grade = "observed"
+        connection.execute(
+            """UPDATE project_routes
+               SET reputation_score=?, low_score_count=?, major_failure_count=?,
+                   high_score_streak=?, configuration_grade=?,
+                   last_evaluation_id=?, updated_at=?
+               WHERE agent_id=? AND project_key=? AND task_class=? AND risk_tier=?""",
+            (
+                reputation,
+                low_score_count,
+                route_major_count,
+                high_score_streak,
+                grade,
+                evaluation_id,
+                now,
+                row["agent_id"],
+                report["project_key"],
+                report["task_class"],
+                report["risk_tier"],
+            ),
+        )
+        route = connection.execute(
+            """SELECT * FROM project_routes
+               WHERE agent_id=? AND project_key=? AND task_class=? AND risk_tier=?""",
+            (
+                row["agent_id"],
+                report["project_key"],
+                report["task_class"],
+                report["risk_tier"],
+            ),
+        ).fetchone()
+        assert route is not None
+        observation = {
+            "evaluation_id": evaluation_id,
+            "project_key": identity["project_key"],
+            "configuration": {
+                "model": identity["model"],
+                "reasoning_effort": identity["reasoning_effort"],
+                "service_tier": identity["service_tier"],
+            },
+            "quality_score": quality_score,
+            "speed_score": speed_score,
+            "cost_score": cost_score,
+            "high_quality": high_quality(report),
+            "low_score": report["total"] < RAPID_LOW_SCORE_THRESHOLD,
+            "major_failure": major_failure,
+            "failure_trigger": trigger,
+            "major_failure_count": major_failure_count,
+            "configuration_failing_after": failing_after,
+            "configuration_became_failing": became_failing,
+            "matches_preferred": matches_preferred,
+        }
+        return observation, route
+
+    @staticmethod
     def validated_rules(connection: sqlite3.Connection, agent_id: str) -> list[str]:
         return [
             item["rule_text"]
@@ -3859,6 +4512,7 @@ class AgentLifecycle:
     def challenger_payload(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "challenger_id": row["challenger_id"],
+            "project_key": row["project_key"],
             "status": row["status"],
             "changed_axis": row["changed_axis"],
             "model": row["candidate_model"],
@@ -3873,7 +4527,7 @@ class AgentLifecycle:
         connection: sqlite3.Connection,
         *,
         row: sqlite3.Row,
-        profile: sqlite3.Row,
+        route: sqlite3.Row,
         report: dict[str, Any],
         evaluation_id: str,
         now: str,
@@ -3881,28 +4535,62 @@ class AgentLifecycle:
     ) -> dict[str, Any] | None:
         staged = connection.execute(
             """SELECT * FROM resource_challengers
-               WHERE agent_id=? AND task_class=? AND risk_tier=? AND status='staged'""",
-            (row["agent_id"], report["task_class"], report["risk_tier"]),
+               WHERE agent_id=? AND project_key=? AND task_class=? AND risk_tier=?
+                 AND status='staged'""",
+            (
+                row["agent_id"],
+                report["project_key"],
+                report["task_class"],
+                report["risk_tier"],
+            ),
         ).fetchone()
         if staged is not None:
             return self.challenger_payload(staged)
 
-        source_model = profile["preferred_model"]
-        source_effort = profile["preferred_reasoning_effort"]
-        source_tier = profile["preferred_service_tier"]
+        source_model = route["preferred_model"]
+        source_effort = route["preferred_reasoning_effort"]
+        source_tier = route["preferred_service_tier"]
         options: list[tuple[str, str, str, str]] = []
-        if trigger == "failing":
-            attribution = report["routing"]["attribution"] if report["routing"] else "unknown"
-            if attribution == "reasoning_depth":
-                stronger_effort = step_effort(source_effort, 1)
-                if stronger_effort is not None:
-                    options.append(
-                        ("reasoning_effort", source_model, stronger_effort, source_tier)
-                    )
-            elif attribution == "model_capacity":
-                stronger_model = step_model(source_model, report["task_class"], 1)
-                if stronger_model is not None:
-                    options.append(("model", stronger_model, source_effort, source_tier))
+        if trigger == "failing_quality_reasoning":
+            stronger_effort = step_effort(source_effort, 1)
+            if stronger_effort is not None:
+                options.append(
+                    ("reasoning_effort", source_model, stronger_effort, source_tier)
+                )
+        elif trigger == "failing_quality_model":
+            stronger_model = step_model(source_model, report["task_class"], 1)
+            if stronger_model is not None:
+                options.append(("model", stronger_model, source_effort, source_tier))
+        elif trigger == "failing_speed":
+            routing = report["routing"]
+            if (
+                source_tier == "standard"
+                and routing is not None
+                and routing["host_config_status"] == "effective_confirmed"
+                and routing_matches_requested(routing)
+                and service_tier_matches_request(
+                    source_tier, routing["effective_service_tier"]
+                )
+                and routing_cost_class(source_model, source_effort) != "high"
+            ):
+                options.append(("service_tier", source_model, source_effort, "fast"))
+            minimum_effort = MINIMUM_EFFORT_BY_TASK_CLASS[report["task_class"]]
+            faster_effort = step_effort(source_effort, -1, minimum=minimum_effort)
+            if faster_effort is not None:
+                options.append(("reasoning_effort", source_model, faster_effort, source_tier))
+            faster_model = step_model(source_model, report["task_class"], -1)
+            if faster_model is not None:
+                options.append(("model", faster_model, source_effort, source_tier))
+        elif trigger == "failing_cost":
+            if source_tier == "fast":
+                options.append(("service_tier", source_model, source_effort, "standard"))
+            minimum_effort = MINIMUM_EFFORT_BY_TASK_CLASS[report["task_class"]]
+            cheaper_effort = step_effort(source_effort, -1, minimum=minimum_effort)
+            if cheaper_effort is not None:
+                options.append(("reasoning_effort", source_model, cheaper_effort, source_tier))
+            cheaper_model = step_model(source_model, report["task_class"], -1)
+            if cheaper_model is not None:
+                options.append(("model", cheaper_model, source_effort, source_tier))
         else:
             minimum_effort = MINIMUM_EFFORT_BY_TASK_CLASS[report["task_class"]]
             faster_effort = step_effort(source_effort, -1, minimum=minimum_effort)
@@ -3916,6 +4604,7 @@ class AgentLifecycle:
                 source_tier == "standard"
                 and routing is not None
                 and routing["host_config_status"] == "effective_confirmed"
+                and routing_matches_requested(routing)
                 and routing_cost_class(source_model, source_effort) != "high"
             ):
                 options.append(("service_tier", source_model, source_effort, "fast"))
@@ -3934,8 +4623,13 @@ class AgentLifecycle:
                       candidate_model, candidate_reasoning_effort,
                       candidate_service_tier
                FROM resource_challengers
-               WHERE agent_id=? AND task_class=? AND risk_tier=?""",
-            (row["agent_id"], report["task_class"], report["risk_tier"]),
+               WHERE agent_id=? AND project_key=? AND task_class=? AND risk_tier=?""",
+            (
+                row["agent_id"],
+                report["project_key"],
+                report["task_class"],
+                report["risk_tier"],
+            ),
         ):
             tested.add(
                 (
@@ -3965,16 +4659,17 @@ class AgentLifecycle:
         challenger_id = str(uuid.uuid4())
         connection.execute(
             """INSERT INTO resource_challengers(
-                   challenger_id, agent_id, base_revision, base_sha256,
+                   challenger_id, agent_id, project_key, base_revision, base_sha256,
                    trigger_evaluation_id, result_evaluation_id,
                    task_class, risk_tier, changed_axis,
                    source_model, source_reasoning_effort, source_service_tier,
                    candidate_model, candidate_reasoning_effort,
                    candidate_service_tier, status, created_at, resolved_at
-               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 challenger_id,
                 row["agent_id"],
+                report["project_key"],
                 row["revision"],
                 row["expected_sha256"],
                 evaluation_id,
@@ -4022,8 +4717,9 @@ class AgentLifecycle:
         if (
             challenger["task_class"] != report["task_class"]
             or challenger["risk_tier"] != report["risk_tier"]
+            or challenger["project_key"] != report["project_key"]
         ):
-            raise LifecycleError("资源挑战者的任务类别或风险层不匹配")
+            raise LifecycleError("资源挑战者的项目、任务类别或风险层不匹配")
         routing = report["routing"]
         assert routing is not None
         if (
@@ -4034,9 +4730,17 @@ class AgentLifecycle:
             != challenger["candidate_service_tier"]
         ):
             raise LifecycleError("资源挑战者评测的请求配置与候选不一致")
+        if not routing_matches_requested(routing):
+            raise LifecycleError("资源挑战者的宿主生效配置与请求候选不一致")
         if (
             challenger["changed_axis"] == "service_tier"
-            and routing["host_config_status"] != "effective_confirmed"
+            and (
+                routing["host_config_status"] != "effective_confirmed"
+                or not service_tier_matches_request(
+                    challenger["candidate_service_tier"],
+                    routing["effective_service_tier"],
+                )
+            )
         ):
             raise LifecycleError("速度档位挑战必须由宿主确认实际生效配置")
         return challenger
@@ -4048,7 +4752,7 @@ class AgentLifecycle:
         challenger: sqlite3.Row,
         report: dict[str, Any],
         evaluation_id: str,
-        profile: sqlite3.Row,
+        route: sqlite3.Row,
         now: str,
     ) -> dict[str, Any]:
         baseline = connection.execute(
@@ -4113,19 +4817,61 @@ class AgentLifecycle:
             (status, evaluation_id, now, challenger["challenger_id"]),
         )
         if won:
+            candidate_major_count = int(
+                connection.execute(
+                    """SELECT COUNT(*) AS count FROM configuration_observations
+                       WHERE agent_id=? AND project_key=? AND task_class=? AND risk_tier=?
+                         AND requested_model=? AND requested_reasoning_effort=?
+                         AND requested_service_tier=? AND major_failure=1""",
+                    (
+                        challenger["agent_id"],
+                        challenger["project_key"],
+                        challenger["task_class"],
+                        challenger["risk_tier"],
+                        canonical_model(challenger["candidate_model"]),
+                        challenger["candidate_reasoning_effort"],
+                        challenger["candidate_service_tier"],
+                    ),
+                ).fetchone()["count"]
+            )
             connection.execute(
-                """UPDATE agent_profiles
+                """UPDATE project_routes
                    SET preferred_model=?, preferred_reasoning_effort=?,
-                       preferred_service_tier=?, updated_at=?
-                   WHERE agent_id=?""",
+                       preferred_service_tier=?, major_failure_count=?,
+                       configuration_grade=?, updated_at=?
+                   WHERE agent_id=? AND project_key=?
+                     AND task_class=? AND risk_tier=?""",
                 (
                     challenger["candidate_model"],
                     challenger["candidate_reasoning_effort"],
                     challenger["candidate_service_tier"],
+                    candidate_major_count,
+                    (
+                        "failing"
+                        if candidate_major_count >= MAJOR_FAILURE_LIMIT
+                        else "passing"
+                    ),
                     now,
                     challenger["agent_id"],
+                    challenger["project_key"],
+                    challenger["task_class"],
+                    challenger["risk_tier"],
                 ),
             )
+            if challenger["project_key"] == "global":
+                connection.execute(
+                    """UPDATE agent_profiles
+                       SET preferred_model=?, preferred_reasoning_effort=?,
+                           preferred_service_tier=?, updated_at=?
+                       WHERE agent_id=?""",
+                    (
+                        challenger["candidate_model"],
+                        challenger["candidate_reasoning_effort"],
+                        challenger["candidate_service_tier"],
+                        now,
+                        challenger["agent_id"],
+                    ),
+                )
         payload = self.challenger_payload(challenger)
         payload.update(
             status=status,
@@ -4218,6 +4964,7 @@ class AgentLifecycle:
                             report["risk_tier"],
                             routing["execution_mode"],
                             routing["requested_service_tier"],
+                            report["project_key"],
                         )
                         if routing is not None
                         else None
@@ -4228,6 +4975,7 @@ class AgentLifecycle:
                         "evaluation_id": existing["evaluation_id"],
                         "run_id": report["run_id"],
                         "agent_id": agent_id,
+                        "project_key": report["project_key"],
                         "revision": row["revision"],
                         "score": existing["total"],
                         "state": row["state"],
@@ -4449,6 +5197,8 @@ class AgentLifecycle:
                     experience_result: dict[str, Any] | None = None
                     challenger_resolution: dict[str, Any] | None = None
                     resource_challenger: dict[str, Any] | None = None
+                    configuration_observation: dict[str, Any] | None = None
+                    project_route: sqlite3.Row | None = None
                     changed_axis: str | None = None
                     competition_status = "unchanged"
                     outcome = "rapid_no_change"
@@ -4474,6 +5224,16 @@ class AgentLifecycle:
                     else:
                         profile = self.ensure_agent_profile(connection, row, routing, now)
                         reputation_before = int(profile["reputation_score"])
+                        configuration_observation, project_route = (
+                            self.record_configuration_observation(
+                                connection,
+                                row=row,
+                                profile=profile,
+                                report=report,
+                                evaluation_id=evaluation_id,
+                                now=now,
+                            )
+                        )
                         if challenger is None and high_quality(report):
                             connection.execute(
                                 """UPDATE agent_profiles
@@ -4531,12 +5291,14 @@ class AgentLifecycle:
                         assert profile is not None
 
                         if challenger is not None:
+                            if project_route is None:
+                                raise LifecycleError("资源挑战者评测缺少项目级配置路由")
                             challenger_resolution = self.resolve_resource_challenger(
                                 connection,
                                 challenger=challenger,
                                 report=report,
                                 evaluation_id=evaluation_id,
-                                profile=profile,
+                                route=project_route,
                                 now=now,
                             )
                             changed_axis = challenger_resolution["changed_axis"]
@@ -4555,35 +5317,49 @@ class AgentLifecycle:
                                 (agent_id,),
                             ).fetchone()
                             assert profile is not None
+                            project_route = connection.execute(
+                                """SELECT * FROM project_routes
+                                   WHERE agent_id=? AND project_key=?
+                                     AND task_class=? AND risk_tier=?""",
+                                (
+                                    agent_id,
+                                    report["project_key"],
+                                    report["task_class"],
+                                    report["risk_tier"],
+                                ),
+                            ).fetchone()
+                            assert project_route is not None
 
-                        non_evolution_failure = (
-                            report["failure_reason"] in NON_EVOLUTION_FAILURE_REASONS
-                            or (
-                                routing is not None
-                                and routing["attribution"]
-                                in {"tool_or_environment", "role_mismatch", "unknown"}
-                            )
+                        failure_trigger = (
+                            configuration_observation["failure_trigger"]
+                            if configuration_observation is not None
+                            else None
                         )
                         failing_strengthening = (
                             challenger is None
-                            and report["total"] < RAPID_FAILING_SCORE_THRESHOLD
-                            and not non_evolution_failure
-                            and routing is not None
-                            and routing["attribution"]
-                            in {"model_capacity", "reasoning_depth"}
+                            and configuration_observation is not None
+                            and configuration_observation["matches_preferred"]
+                            and configuration_observation["major_failure_count"]
+                            >= MAJOR_FAILURE_LIMIT
+                            and failure_trigger is not None
                         )
                         should_compete = high_quality(report) or failing_strengthening
                         champion_baseline_ready = challenger is not None
-                        if challenger is None and routing is not None:
+                        if (
+                            challenger is None
+                            and routing is not None
+                            and project_route is not None
+                        ):
                             champion_baseline_ready = (
-                                routing["requested_model"]
-                                == profile["preferred_model"]
+                                canonical_model(routing["requested_model"])
+                                == canonical_model(project_route["preferred_model"])
                                 and routing["requested_reasoning_effort"]
-                                == profile["preferred_reasoning_effort"]
+                                == project_route["preferred_reasoning_effort"]
                                 and routing["requested_service_tier"]
-                                == profile["preferred_service_tier"]
+                                == project_route["preferred_service_tier"]
+                                and routing_matches_requested(routing)
                             )
-                            if profile["preferred_service_tier"] == "fast":
+                            if project_route["preferred_service_tier"] == "fast":
                                 champion_baseline_ready = (
                                     champion_baseline_ready
                                     and routing["host_config_status"]
@@ -4595,6 +5371,10 @@ class AgentLifecycle:
                         if should_compete and not champion_baseline_ready:
                             should_compete = False
                             competition_status = "champion_baseline_not_run"
+                        if should_compete:
+                            if project_route is None:
+                                competition_status = "configuration_identity_unavailable"
+                                should_compete = False
                         if should_compete:
                             competition_baseline_evaluation_id = evaluation_id
                             if (
@@ -4608,13 +5388,11 @@ class AgentLifecycle:
                             resource_challenger = self.stage_resource_challenger(
                                 connection,
                                 row=current_row,
-                                profile=profile,
+                                route=project_route,
                                 report=report,
                                 evaluation_id=competition_baseline_evaluation_id,
                                 now=now,
-                                trigger=(
-                                    "failing" if failing_strengthening else "high_quality"
-                                ),
+                                trigger=(failure_trigger if failing_strengthening else "high_quality"),
                             )
                             if resource_challenger is not None:
                                 changed_axis = resource_challenger["changed_axis"]
@@ -4644,6 +5422,12 @@ class AgentLifecycle:
                         "experience": experience_result,
                         "challenger_resolution": challenger_resolution,
                         "resource_challenger": resource_challenger,
+                        "configuration_observation": configuration_observation,
+                        "project_route": (
+                            self.project_route_payload(project_route)
+                            if project_route is not None
+                            else None
+                        ),
                         "competition_status": competition_status,
                         "single_axis_only": True,
                         "finite_neighbor_search": True,
@@ -4699,6 +5483,7 @@ class AgentLifecycle:
                         risk_tier=report["risk_tier"],
                         execution_mode=routing["execution_mode"],
                         service_tier=routing["requested_service_tier"],
+                        project_key=report["project_key"],
                         rows=(),
                         eligible=(),
                         action="hold",
@@ -4713,6 +5498,7 @@ class AgentLifecycle:
                         report["risk_tier"],
                         routing["execution_mode"],
                         routing["requested_service_tier"],
+                        report["project_key"],
                     )
                 connection.commit()
                 return {
@@ -4721,6 +5507,7 @@ class AgentLifecycle:
                     "evaluation_id": evaluation_id,
                     "run_id": report["run_id"],
                     "agent_id": agent_id,
+                    "project_key": report["project_key"],
                     "revision": row["revision"],
                     "score": report["total"],
                     "quality_band": (
@@ -5167,6 +5954,11 @@ def build_parser() -> argparse.ArgumentParser:
     catalog = subparsers.add_parser("catalog", help="只读盘点内置、个人、项目和受管代理")
     catalog.add_argument("--project-root", type=Path)
 
+    project_key = subparsers.add_parser(
+        "project-key", help="只读生成不泄露项目路径的稳定项目键"
+    )
+    project_key.add_argument("--project-root", type=Path, required=True)
+
     create = subparsers.add_parser("create", help="从受限 JSON 规格创建受管个人代理")
     create.add_argument("--spec", type=Path, required=True)
     create.add_argument("--project-root", type=Path)
@@ -5196,6 +5988,7 @@ def build_parser() -> argparse.ArgumentParser:
     recommend.add_argument(
         "--service-tier", choices=sorted(ALLOWED_REQUESTED_SERVICE_TIERS), default="inherit"
     )
+    recommend.add_argument("--project-key", default="global")
 
     stagnation = subparsers.add_parser(
         "stagnation-status", help="只读判断可比运行是否足以触发受限 supervisor"
@@ -5250,6 +6043,11 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
     lifecycle = AgentLifecycle(arguments.codex_home, arguments.state_root)
     if arguments.command == "catalog":
         return lifecycle.catalog(arguments.project_root)
+    if arguments.command == "project-key":
+        return {
+            "ok": True,
+            "project_key": project_key_for_root(arguments.project_root),
+        }
     if arguments.command == "create":
         return lifecycle.create_agent(load_bounded_json(arguments.spec), arguments.project_root)
     if arguments.command == "confirm-visible":
@@ -5269,6 +6067,7 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             arguments.risk_tier,
             arguments.execution_mode,
             arguments.service_tier,
+            arguments.project_key,
         )
     if arguments.command == "stagnation-status":
         return lifecycle.stagnation_status(

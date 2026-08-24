@@ -140,6 +140,7 @@ class AgentLifecycleTests(unittest.TestCase):
             effort=effort,
             attribution=attribution,
         )
+        report["failure_reason"] = "incorrect_result"
         return report
 
     @staticmethod
@@ -347,6 +348,7 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertEqual(created_process.returncode, 0, created_process.stderr)
         created = json.loads(created_process.stdout)
         self.assertEqual(created["state"], "pending_visibility")
+
         path = Path(created["path"])
         parsed = tomllib.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(parsed["name"], created["name"])
@@ -379,6 +381,17 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertFalse(catalog["custom"][0]["selectable"])
         visible = self.lifecycle.confirm_visible(created["agent_id"])
         self.assertEqual(visible["state"], "probation")
+
+    def test_project_key_is_stable_opaque_and_project_specific(self):
+        first = manage_agents.project_key_for_root(self.project_root)
+        second = manage_agents.project_key_for_root(self.project_root)
+        other = self.root / "other-project"
+        other.mkdir()
+        third = manage_agents.project_key_for_root(other)
+        self.assertEqual(first, second)
+        self.assertRegex(first, r"^p_[0-9a-f]{64}$")
+        self.assertNotEqual(first, third)
+        self.assertNotIn(str(self.project_root), first)
 
     def test_invalid_or_task_specific_specs_fail_closed(self):
         with self.assertRaises(manage_agents.LifecycleError):
@@ -439,7 +452,7 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), drifted)
         row = self.db_row("SELECT state FROM agents WHERE agent_id=?", (created["agent_id"],))
         self.assertEqual(row["state"], "conflict")
-        catalog = self.lifecycle.catalog(self.project_root)
+        catalog = self.lifecycle.catalog()
         record = next(item for item in catalog["custom"] if item.get("agent_id") == created["agent_id"])
         self.assertEqual(record["source"], "plugin_conflict")
         self.assertFalse(record["selectable"])
@@ -539,7 +552,7 @@ class AgentLifecycleTests(unittest.TestCase):
             )["count"],
             1,
         )
-        catalog = self.lifecycle.catalog(self.project_root)
+        catalog = self.lifecycle.catalog()
         managed = next(
             item for item in catalog["custom"] if item.get("agent_id") == created["agent_id"]
         )
@@ -659,7 +672,7 @@ class AgentLifecycleTests(unittest.TestCase):
             0,
         )
 
-    def test_rapid_failing_score_stages_exactly_one_strengthening_axis(self):
+    def test_second_major_failure_stages_exactly_one_strengthening_axis(self):
         cases = (
             ("reasoning_depth", "reasoning_effort", "gpt-5.6-terra", "xhigh"),
             ("model_capacity", "model", "gpt-5.6-sol", "high"),
@@ -670,11 +683,28 @@ class AgentLifecycleTests(unittest.TestCase):
                     self.spec(slug=f"rapid-{axis.replace('_', '-')}"), self.project_root
                 )
                 self.lifecycle.confirm_visible(created["agent_id"])
-                report = self.low_quality_report(
+                first_report = self.low_quality_report(
                     created["agent_id"], attribution=attribution
                 )
-                report["evolution_mode"] = "rapid"
-                result = self.lifecycle.record_evaluation(report)
+                first_report["evolution_mode"] = "rapid"
+                first = self.lifecycle.record_evaluation(first_report)
+                self.assertIsNone(first["evolution"]["resource_challenger"])
+                self.assertEqual(
+                    first["evolution"]["configuration_observation"][
+                        "major_failure_count"
+                    ],
+                    1,
+                )
+                self.assertEqual(
+                    first["evolution"]["project_route"]["configuration_grade"],
+                    "watch",
+                )
+
+                second_report = self.low_quality_report(
+                    created["agent_id"], attribution=attribution
+                )
+                second_report["evolution_mode"] = "rapid"
+                result = self.lifecycle.record_evaluation(second_report)
                 challenger = result["evolution"]["resource_challenger"]
                 self.assertEqual(result["score"], 64)
                 self.assertEqual(
@@ -684,6 +714,18 @@ class AgentLifecycleTests(unittest.TestCase):
                 self.assertEqual(challenger["changed_axis"], axis)
                 self.assertEqual(challenger["model"], expected_model)
                 self.assertEqual(challenger["reasoning_effort"], expected_effort)
+                self.assertTrue(
+                    result["evolution"]["configuration_observation"][
+                        "configuration_failing_after"
+                    ]
+                )
+                self.assertEqual(
+                    result["evolution"]["project_route"]["major_failure_count"], 2
+                )
+                self.assertEqual(
+                    result["evolution"]["project_route"]["configuration_grade"],
+                    "failing",
+                )
 
     def test_rapid_external_failure_penalizes_but_does_not_strengthen(self):
         created = self.create_visible_agent()
@@ -701,6 +743,19 @@ class AgentLifecycleTests(unittest.TestCase):
             self.db_row("SELECT COUNT(*) AS count FROM resource_challengers")["count"],
             0,
         )
+        second = self.low_quality_report(
+            created["agent_id"], attribution="tool_or_environment"
+        )
+        second.update(evolution_mode="rapid", failure_reason="tool_failure")
+        repeated = self.lifecycle.record_evaluation(second)
+        self.assertIsNone(repeated["evolution"]["resource_challenger"])
+        self.assertEqual(
+            repeated["evolution"]["configuration_observation"]["major_failure_count"],
+            0,
+        )
+        self.assertEqual(
+            repeated["evolution"]["project_route"]["major_failure_count"], 0
+        )
 
     def test_rapid_critical_retirement_precedes_profile_and_competition(self):
         created = self.create_visible_agent()
@@ -715,6 +770,15 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertIsNone(result["evolution"]["resource_challenger"])
         self.assertEqual(
             self.db_row("SELECT COUNT(*) AS count FROM agent_profiles")["count"], 0
+        )
+        self.assertEqual(
+            self.db_row(
+                "SELECT COUNT(*) AS count FROM configuration_observations"
+            )["count"],
+            0,
+        )
+        self.assertEqual(
+            self.db_row("SELECT COUNT(*) AS count FROM project_routes")["count"], 0
         )
 
     def test_rapid_challenger_critical_event_retires_before_evolution(self):
@@ -759,6 +823,346 @@ class AgentLifecycleTests(unittest.TestCase):
             )["count"],
             0,
         )
+        self.assertEqual(
+            self.db_row(
+                "SELECT COUNT(*) AS count FROM configuration_observations"
+            )["count"],
+            1,
+        )
+
+    def test_major_failures_are_isolated_by_project_key(self):
+        created = self.create_visible_agent()
+        project_a = "p_" + "a" * 64
+        project_b = "p_" + "b" * 64
+
+        for project_key in (project_a, project_b):
+            report = self.low_quality_report(created["agent_id"])
+            report.update(evolution_mode="rapid", project_key=project_key)
+            result = self.lifecycle.record_evaluation(report)
+            self.assertIsNone(result["evolution"]["resource_challenger"])
+            self.assertEqual(
+                result["evolution"]["project_route"]["configuration_grade"],
+                "watch",
+            )
+
+        second_a = self.low_quality_report(created["agent_id"])
+        second_a.update(evolution_mode="rapid", project_key=project_a)
+        failed_a = self.lifecycle.record_evaluation(second_a)
+        self.assertEqual(
+            failed_a["evolution"]["project_route"]["configuration_grade"],
+            "failing",
+        )
+        self.assertIsNotNone(failed_a["evolution"]["resource_challenger"])
+        route_b = self.db_row(
+            """SELECT * FROM project_routes
+               WHERE agent_id=? AND project_key=? AND task_class='review'
+                 AND risk_tier='read_only'""",
+            (created["agent_id"], project_b),
+        )
+        self.assertEqual(route_b["major_failure_count"], 1)
+        self.assertEqual(route_b["configuration_grade"], "watch")
+        recommendation_a = self.lifecycle.recommend_route(
+            created["agent_id"],
+            "review",
+            "read_only",
+            "managed_named",
+            "standard",
+            project_a,
+        )
+        recommendation_b = self.lifecycle.recommend_route(
+            created["agent_id"],
+            "review",
+            "read_only",
+            "managed_named",
+            "standard",
+            project_b,
+        )
+        self.assertEqual(recommendation_a["action"], "compete")
+        self.assertNotEqual(recommendation_b["action"], "compete")
+
+    def test_major_failures_are_isolated_by_requested_configuration(self):
+        created = self.create_visible_agent()
+        project_key = "p_" + "9" * 64
+        incumbent = self.low_quality_report(created["agent_id"])
+        incumbent.update(evolution_mode="rapid", project_key=project_key)
+        self.lifecycle.record_evaluation(incumbent)
+
+        other_effort = self.low_quality_report(
+            created["agent_id"], effort="xhigh"
+        )
+        other_effort.update(evolution_mode="rapid", project_key=project_key)
+        other_effort["routing"] = self.routing(
+            effort="xhigh",
+            attribution="model_capacity",
+            execution_mode="explicit_fallback",
+        )
+        separate = self.lifecycle.record_evaluation(other_effort)
+        self.assertIsNone(separate["evolution"]["resource_challenger"])
+        connection = sqlite3.connect(self.lifecycle.db_path)
+        try:
+            counts = [
+                row[0]
+                for row in connection.execute(
+                    """SELECT SUM(major_failure)
+                       FROM configuration_observations
+                       WHERE agent_id=? AND project_key=?
+                       GROUP BY requested_model, requested_reasoning_effort,
+                                requested_service_tier
+                       ORDER BY requested_reasoning_effort""",
+                    (created["agent_id"], project_key),
+                ).fetchall()
+            ]
+        finally:
+            connection.close()
+        self.assertEqual(counts, [1, 1])
+
+        second_incumbent = self.low_quality_report(created["agent_id"])
+        second_incumbent.update(evolution_mode="rapid", project_key=project_key)
+        failed = self.lifecycle.record_evaluation(second_incumbent)
+        self.assertIsNotNone(failed["evolution"]["resource_challenger"])
+
+    def test_high_and_low_runs_share_one_configuration_observation_pool(self):
+        created = self.create_visible_agent()
+        project_key = "p_" + "c" * 64
+        high = self.high_report(created["agent_id"])
+        high.update(
+            evolution_mode="rapid",
+            project_key=project_key,
+            routing=self.routing(attribution="compute_latency"),
+        )
+        self.lifecycle.record_evaluation(high)
+
+        low = self.high_report(created["agent_id"], experience=False)
+        low["scores"] = {
+            "correctness": 28,
+            "evidence": 16,
+            "scope": 13,
+            "efficiency": 10,
+            "clarity": 8,
+            "safety": 5,
+        }
+        low.update(
+            evolution_mode="rapid",
+            project_key=project_key,
+            routing=self.routing(attribution="model_capacity"),
+        )
+        self.lifecycle.record_evaluation(low)
+
+        major = self.low_quality_report(created["agent_id"])
+        major.update(evolution_mode="rapid", project_key=project_key)
+        result = self.lifecycle.record_evaluation(major)
+        self.assertEqual(
+            self.db_row(
+                """SELECT COUNT(*) AS count FROM configuration_observations
+                   WHERE agent_id=? AND project_key=?""",
+                (created["agent_id"], project_key),
+            )["count"],
+            3,
+        )
+        self.assertEqual(
+            self.db_row(
+                """SELECT SUM(high_quality) AS high_count,
+                          SUM(low_score) AS low_count,
+                          SUM(major_failure) AS major_count
+                   FROM configuration_observations
+                   WHERE agent_id=? AND project_key=?""",
+                (created["agent_id"], project_key),
+            )["high_count"],
+            1,
+        )
+        aggregate = self.db_row(
+            """SELECT SUM(low_score) AS low_count,
+                      SUM(major_failure) AS major_count
+               FROM configuration_observations
+               WHERE agent_id=? AND project_key=?""",
+            (created["agent_id"], project_key),
+        )
+        self.assertEqual(aggregate["low_count"], 2)
+        self.assertEqual(aggregate["major_count"], 1)
+        self.assertEqual(
+            result["evolution"]["configuration_observation"]["major_failure_count"],
+            1,
+        )
+
+    def test_major_failure_replay_is_idempotent(self):
+        created = self.create_visible_agent()
+        project_key = "p_" + "d" * 64
+        first = self.low_quality_report(created["agent_id"])
+        first.update(evolution_mode="rapid", project_key=project_key)
+        self.lifecycle.record_evaluation(first)
+        second = self.low_quality_report(created["agent_id"])
+        second.update(evolution_mode="rapid", project_key=project_key)
+        recorded = self.lifecycle.record_evaluation(second)
+        replay = self.lifecycle.record_evaluation(second)
+        self.assertEqual(replay["action"], "evaluation_already_recorded")
+        self.assertEqual(replay["evaluation_id"], recorded["evaluation_id"])
+        self.assertEqual(
+            self.db_row(
+                """SELECT COUNT(*) AS count FROM configuration_observations
+                   WHERE agent_id=? AND project_key=?""",
+                (created["agent_id"], project_key),
+            )["count"],
+            2,
+        )
+        route = self.db_row(
+            """SELECT * FROM project_routes
+               WHERE agent_id=? AND project_key=?""",
+            (created["agent_id"], project_key),
+        )
+        self.assertEqual(route["major_failure_count"], 2)
+        self.assertEqual(route["configuration_grade"], "failing")
+        self.assertEqual(
+            self.db_row(
+                """SELECT COUNT(*) AS count FROM resource_challengers
+                   WHERE agent_id=? AND project_key=?""",
+                (created["agent_id"], project_key),
+            )["count"],
+            1,
+        )
+
+    def test_configuration_stays_failing_after_a_third_major_failure(self):
+        created = self.create_visible_agent()
+        project_key = "p_" + "5" * 64
+        result = None
+        for _ in range(3):
+            report = self.low_quality_report(created["agent_id"])
+            report.update(evolution_mode="rapid", project_key=project_key)
+            result = self.lifecycle.record_evaluation(report)
+        assert result is not None
+        observation = result["evolution"]["configuration_observation"]
+        self.assertEqual(observation["major_failure_count"], 3)
+        self.assertFalse(observation["configuration_became_failing"])
+        self.assertTrue(observation["configuration_failing_after"])
+        self.assertEqual(
+            result["evolution"]["project_route"]["configuration_grade"],
+            "failing",
+        )
+
+    def test_effective_mismatch_cannot_fail_or_win_for_requested_configuration(self):
+        created = self.create_visible_agent()
+        project_key = "p_" + "4" * 64
+        for _ in range(2):
+            report = self.low_quality_report(created["agent_id"])
+            report.update(evolution_mode="rapid", project_key=project_key)
+            report["routing"] = self.routing(
+                attribution="model_capacity", effective=True
+            )
+            report["routing"]["effective_model"] = "gpt-5.6-sol"
+            result = self.lifecycle.record_evaluation(report)
+        self.assertEqual(
+            result["evolution"]["project_route"]["major_failure_count"], 0
+        )
+        self.assertIsNone(result["evolution"]["resource_challenger"])
+
+        baseline = self.high_report(created["agent_id"])
+        baseline.update(
+            evolution_mode="rapid",
+            project_key=project_key,
+            routing=self.routing(attribution="compute_latency"),
+        )
+        staged = self.lifecycle.record_evaluation(baseline)["evolution"][
+            "resource_challenger"
+        ]
+        challenger = self.high_report(created["agent_id"])
+        challenger["experience"] = {
+            "key": "reject-mismatched-effective-challenger",
+            "rule": "Reject a challenger when the confirmed effective route differs from its request.",
+            "applies_to": "review",
+        }
+        challenger.update(
+            evolution_mode="rapid",
+            project_key=project_key,
+            challenger_id=staged["challenger_id"],
+        )
+        challenger["routing"] = self.routing(
+            model=staged["model"],
+            effort=staged["reasoning_effort"],
+            service_tier=staged["service_tier"],
+            attribution="model_capacity",
+            execution_mode="explicit_fallback",
+            effective=True,
+        )
+        challenger["routing"]["effective_model"] = "gpt-5.6-terra"
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.record_evaluation(challenger)
+
+    def test_two_latency_failures_can_stage_a_faster_single_axis_route(self):
+        created = self.create_visible_agent()
+        project_key = "p_" + "e" * 64
+        for ordinal in range(2):
+            report = self.low_quality_report(
+                created["agent_id"],
+                task_class="documentation",
+                attribution="compute_latency",
+            )
+            report.update(
+                evolution_mode="rapid",
+                project_key=project_key,
+                failure_reason="timeout",
+                duration_bucket="high",
+            )
+            result = self.lifecycle.record_evaluation(report)
+            if ordinal == 0:
+                self.assertIsNone(result["evolution"]["resource_challenger"])
+        challenger = result["evolution"]["resource_challenger"]
+        self.assertEqual(challenger["changed_axis"], "reasoning_effort")
+        self.assertEqual(challenger["model"], "gpt-5.6-terra")
+        self.assertEqual(challenger["reasoning_effort"], "medium")
+
+    def test_unknown_failure_reason_does_not_fail_a_configuration(self):
+        created = self.create_visible_agent()
+        project_key = "p_" + "7" * 64
+        for _ in range(2):
+            report = self.low_quality_report(created["agent_id"])
+            report.update(
+                evolution_mode="rapid",
+                project_key=project_key,
+                failure_reason="none",
+            )
+            result = self.lifecycle.record_evaluation(report)
+        self.assertIsNone(result["evolution"]["resource_challenger"])
+        self.assertEqual(
+            result["evolution"]["project_route"]["major_failure_count"], 0
+        )
+
+    def test_cost_failure_requires_high_resource_evidence_before_single_axis_route(self):
+        created = self.create_visible_agent()
+        project_key = "p_" + "8" * 64
+        for _ in range(2):
+            unknown_cost = self.low_quality_report(
+                created["agent_id"], task_class="documentation"
+            )
+            unknown_cost.update(
+                evolution_mode="rapid",
+                project_key=project_key,
+                failure_reason="cost_overrun",
+                token_bucket="unknown",
+                credit_bucket="unknown",
+            )
+            ignored = self.lifecycle.record_evaluation(unknown_cost)
+        self.assertEqual(
+            ignored["evolution"]["project_route"]["major_failure_count"], 0
+        )
+        self.assertIsNone(ignored["evolution"]["resource_challenger"])
+
+        evidenced_key = "p_" + "6" * 64
+        for ordinal in range(2):
+            evidenced = self.low_quality_report(
+                created["agent_id"], task_class="documentation"
+            )
+            evidenced.update(
+                evolution_mode="rapid",
+                project_key=evidenced_key,
+                failure_reason="cost_overrun",
+                token_bucket="high",
+                credit_bucket="high",
+            )
+            result = self.lifecycle.record_evaluation(evidenced)
+            if ordinal == 0:
+                self.assertIsNone(result["evolution"]["resource_challenger"])
+        challenger = result["evolution"]["resource_challenger"]
+        self.assertEqual(challenger["changed_axis"], "reasoning_effort")
+        self.assertEqual(challenger["reasoning_effort"], "medium")
 
     def test_rapid_low_challenger_is_penalized_and_cannot_spawn_another(self):
         created = self.create_visible_agent()
@@ -1402,7 +1806,7 @@ class AgentLifecycleTests(unittest.TestCase):
         with self.assertRaises(manage_agents.LifecycleError):
             self.lifecycle.record_evaluation(changed)
 
-    def test_v1_database_migrates_to_v5_without_touching_agents(self):
+    def test_v1_database_migrates_to_v6_without_touching_agents(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-home")
         lifecycle.state_root.mkdir(parents=True)
         connection = sqlite3.connect(lifecycle.db_path)
@@ -1454,7 +1858,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-            self.assertEqual(version, "5")
+            self.assertEqual(version, "6")
             self.assertTrue(
                 {
                     "evaluation_routing",
@@ -1464,13 +1868,15 @@ class AgentLifecycleTests(unittest.TestCase):
                     "agent_profiles",
                     "evolution_actions",
                     "resource_challengers",
+                    "project_routes",
+                    "configuration_observations",
                 }.issubset(tables)
             )
         finally:
             migrated.close()
         self.assertFalse(lifecycle.agents_dir.exists())
 
-    def test_v2_database_migrates_to_v5_without_guessing_old_metrics(self):
+    def test_v2_database_migrates_to_v6_without_guessing_old_metrics(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v2-home")
         lifecycle.state_root.mkdir(parents=True)
         connection = sqlite3.connect(lifecycle.db_path)
@@ -1508,12 +1914,12 @@ class AgentLifecycleTests(unittest.TestCase):
             metric_count = migrated.execute(
                 "SELECT COUNT(*) AS count FROM evaluation_metrics"
             ).fetchone()["count"]
-            self.assertEqual(version, "5")
+            self.assertEqual(version, "6")
             self.assertEqual(metric_count, 0)
         finally:
             migrated.close()
 
-    def test_v3_database_migrates_to_v5_with_cumulative_budget_columns(self):
+    def test_v3_database_migrates_to_v6_with_cumulative_budget_columns(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v3-home")
         current = lifecycle.connect(create=True)
         assert current is not None
@@ -1558,7 +1964,7 @@ class AgentLifecycleTests(unittest.TestCase):
                     "PRAGMA table_info(variation_candidates)"
                 ).fetchall()
             }
-            self.assertEqual(version, "5")
+            self.assertEqual(version, "6")
             self.assertTrue(
                 {
                     "stage_elapsed_seconds",
@@ -1571,7 +1977,7 @@ class AgentLifecycleTests(unittest.TestCase):
         finally:
             migrated.close()
 
-    def test_v4_database_migrates_to_v5_without_backfilling_history(self):
+    def test_v4_database_migrates_to_v6_without_backfilling_history(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v4-home")
         current = lifecycle.connect(create=True)
         assert current is not None
@@ -1601,11 +2007,15 @@ class AgentLifecycleTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-            self.assertEqual(version, "5")
+            self.assertEqual(version, "6")
             self.assertTrue(
-                {"agent_profiles", "evolution_actions", "resource_challengers"}.issubset(
-                    tables
-                )
+                {
+                    "agent_profiles",
+                    "evolution_actions",
+                    "resource_challengers",
+                    "project_routes",
+                    "configuration_observations",
+                }.issubset(tables)
             )
             self.assertEqual(
                 migrated.execute(
@@ -1613,8 +2023,215 @@ class AgentLifecycleTests(unittest.TestCase):
                 ).fetchone()["count"],
                 0,
             )
+            self.assertEqual(
+                migrated.execute(
+                    "SELECT COUNT(*) AS count FROM configuration_observations"
+                ).fetchone()["count"],
+                0,
+            )
         finally:
             migrated.close()
+
+    def test_v5_database_migrates_to_v6_without_backfill_and_replays_rapid_digest(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v5-home")
+        created = lifecycle.create_agent(self.spec(slug="migration-v5"), self.project_root)
+        lifecycle.confirm_visible(created["agent_id"])
+        report = self.high_report(created["agent_id"])
+        report.update(
+            evolution_mode="rapid",
+            routing=self.routing(attribution="compute_latency"),
+        )
+        recorded = lifecycle.record_evaluation(report)
+        normalized = manage_agents.validate_report(report)
+        v5_digest = manage_agents.evaluation_report_digests(normalized)[1]
+
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.execute(
+                "UPDATE evaluations SET report_sha256=? WHERE evaluation_id=?",
+                (v5_digest, recorded["evaluation_id"]),
+            )
+            connection.execute("DROP TABLE configuration_observations")
+            connection.execute("DROP TABLE project_routes")
+            connection.execute("DROP INDEX one_staged_resource_challenger")
+            connection.execute(
+                "ALTER TABLE resource_challengers DROP COLUMN project_key"
+            )
+            connection.execute(
+                """CREATE UNIQUE INDEX one_staged_resource_challenger
+                   ON resource_challengers(agent_id, task_class, risk_tier)
+                   WHERE status='staged'"""
+            )
+            connection.execute(
+                "UPDATE meta SET value='5' WHERE key='schema_version'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = lifecycle.connect(create=True)
+        assert migrated is not None
+        try:
+            self.assertEqual(
+                migrated.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()["value"],
+                "6",
+            )
+            self.assertEqual(
+                migrated.execute(
+                    "SELECT COUNT(*) AS count FROM configuration_observations"
+                ).fetchone()["count"],
+                0,
+            )
+            old_challenger = migrated.execute(
+                "SELECT project_key FROM resource_challengers"
+            ).fetchone()
+            self.assertEqual(old_challenger["project_key"], "global")
+        finally:
+            migrated.close()
+
+        replay = lifecycle.record_evaluation(report)
+        self.assertEqual(replay["action"], "evaluation_already_recorded")
+        explicit_v6_default = json.loads(json.dumps(report))
+        explicit_v6_default["failure_severity"] = "none"
+        with self.assertRaises(manage_agents.LifecycleError):
+            lifecycle.record_evaluation(explicit_v6_default)
+        changed_project = json.loads(json.dumps(report))
+        changed_project["project_key"] = "p_" + "f" * 64
+        with self.assertRaises(manage_agents.LifecycleError):
+            lifecycle.record_evaluation(changed_project)
+        check = sqlite3.connect(lifecycle.db_path)
+        try:
+            self.assertEqual(
+                check.execute(
+                    "SELECT COUNT(*) FROM configuration_observations"
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            check.close()
+
+    def test_v5_to_v6_migration_failure_rolls_back_column_tables_and_index(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v5-failure-home")
+        current = lifecycle.connect(create=True)
+        assert current is not None
+        current.close()
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.execute("DROP TABLE configuration_observations")
+            connection.execute("DROP TABLE project_routes")
+            connection.execute("DROP INDEX one_staged_resource_challenger")
+            connection.execute(
+                "ALTER TABLE resource_challengers DROP COLUMN project_key"
+            )
+            connection.execute(
+                """CREATE UNIQUE INDEX one_staged_resource_challenger
+                   ON resource_challengers(agent_id, task_class, risk_tier)
+                   WHERE status='staged'"""
+            )
+            connection.execute(
+                "UPDATE meta SET value='5' WHERE key='schema_version'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        original = manage_agents.AgentLifecycle.create_project_evolution_schema
+
+        def fail_after_project_ddl(database):
+            original(database)
+            raise sqlite3.OperationalError("injected project migration failure")
+
+        manage_agents.AgentLifecycle.create_project_evolution_schema = staticmethod(
+            fail_after_project_ddl
+        )
+        try:
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, "injected project migration failure"
+            ):
+                lifecycle.connect(create=True)
+        finally:
+            manage_agents.AgentLifecycle.create_project_evolution_schema = staticmethod(
+                original
+            )
+
+        verification = sqlite3.connect(lifecycle.db_path)
+        try:
+            self.assertEqual(
+                verification.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()[0],
+                "5",
+            )
+            columns = {
+                row[1]
+                for row in verification.execute(
+                    "PRAGMA table_info(resource_challengers)"
+                ).fetchall()
+            }
+            self.assertNotIn("project_key", columns)
+            self.assertIsNone(
+                verification.execute(
+                    """SELECT name FROM sqlite_master
+                       WHERE type='table' AND name='project_routes'"""
+                ).fetchone()
+            )
+            index_columns = [
+                row[2]
+                for row in verification.execute(
+                    "PRAGMA index_info(one_staged_resource_challenger)"
+                ).fetchall()
+            ]
+            self.assertEqual(
+                index_columns, ["agent_id", "task_class", "risk_tier"]
+            )
+        finally:
+            verification.close()
+
+    def test_v5_catalog_remains_read_only_until_authorized_mutation(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "catalog-v5-home")
+        created = lifecycle.create_agent(self.spec(slug="catalog-v5"), self.project_root)
+        lifecycle.confirm_visible(created["agent_id"])
+        connection = sqlite3.connect(lifecycle.db_path)
+        try:
+            connection.execute("DROP TABLE configuration_observations")
+            connection.execute("DROP TABLE project_routes")
+            connection.execute("DROP INDEX one_staged_resource_challenger")
+            connection.execute(
+                "ALTER TABLE resource_challengers DROP COLUMN project_key"
+            )
+            connection.execute(
+                """CREATE UNIQUE INDEX one_staged_resource_challenger
+                   ON resource_challengers(agent_id, task_class, risk_tier)
+                   WHERE status='staged'"""
+            )
+            connection.execute(
+                "UPDATE meta SET value='5' WHERE key='schema_version'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        catalog = lifecycle.catalog(self.project_root)
+        self.assertEqual(len(catalog["custom"]), 1)
+        self.assertEqual(catalog["custom"][0]["project_routes"], [])
+        verification = sqlite3.connect(lifecycle.db_path)
+        try:
+            self.assertEqual(
+                verification.execute(
+                    "SELECT value FROM meta WHERE key='schema_version'"
+                ).fetchone()[0],
+                "5",
+            )
+            self.assertIsNone(
+                verification.execute(
+                    """SELECT name FROM sqlite_master
+                       WHERE type='table' AND name='project_routes'"""
+                ).fetchone()
+            )
+        finally:
+            verification.close()
 
     def test_v4_catalog_remains_read_only_until_authorized_mutation(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "catalog-v4-home")
@@ -1653,8 +2270,8 @@ class AgentLifecycleTests(unittest.TestCase):
         finally:
             verification.close()
 
-    def test_v4_to_v5_migration_failure_rolls_back(self):
-        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v5-failure-home")
+    def test_v4_to_v6_migration_failure_rolls_back(self):
+        lifecycle = manage_agents.AgentLifecycle(self.root / "migration-v6-failure-home")
         current = lifecycle.connect(create=True)
         assert current is not None
         current.close()

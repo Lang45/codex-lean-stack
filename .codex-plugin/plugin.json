@@ -1,7 +1,7 @@
 {
   "name": "codex-lean-stack",
-  "version": "0.4.0+codex.20260824221755",
-  "description": "Fast, evidence-driven Codex engineering with eager subagents, rapid experience evolution, and finite resource competition.",
+  "version": "0.5.0+codex.20260824234451",
+  "description": "Fast, evidence-driven Codex engineering with eager subagents and project-scoped adaptive resource competition.",
   "author": {
     "name": "Lang45",
     "url": "https://github.com/Lang45"
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Codex Lean Stack",
     "shortDescription": "Fast verified work with critical-path subagents.",
-    "longDescription": "Combines minimal verified changes with eager non-blocking subagents, immediate high-score experience absorption, low-score demerits, task-weighted finite model/reasoning/speed competition, and fail-closed lifecycle ownership.",
+    "longDescription": "Combines minimal verified changes with eager non-blocking subagents, immediate experience absorption, two-major-failure project routing, and finite single-axis model/reasoning/speed competition.",
     "developerName": "Lang45",
     "category": "Productivity",
     "capabilities": [

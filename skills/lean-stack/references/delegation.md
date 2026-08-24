@@ -179,12 +179,19 @@ Use these speed-biased, bounded-cost defaults:
 - Three high-quality slow runs can propose Fast for low- or medium-cost
   combinations when the user accepts some extra cost.
 - In `rapid` lifecycle mode, every score below 90 immediately records a demerit
-  and lowers routing reputation. Only a score below 65 with attributable
-  `model_capacity` or `reasoning_depth` evidence stages one stronger neighboring
-  axis. Tool/environment, timeout, role mismatch, stale-host, and unknown causes
-  never trigger resource strengthening.
+  and lowers routing reputation. High and low runs share one configuration
+  observation pool scoped by agent, opaque project key, task, risk, requested
+  model, effort, and service tier. The first evidence-backed attributable major
+  failure marks that exact configuration `watch`; the second cumulative major
+  failure marks it `failing` and may stage one neighboring axis. A quality cause
+  raises only the attributed reasoning or model axis. A model-compute timeout or
+  latency cause tries one faster axis; a cost overrun with a known high token or
+  credit bucket tries one cheaper axis. Tool/environment, role mismatch,
+  stale-host, unproven timeout, missing failure reason, unknown cost, and unknown
+  causes receive the demerit but do not increment the configuration failure count.
 - High-quality rapid runs immediately absorb one sanitized experience and retain
-  the incumbent while trying at most one untested single-axis resource neighbor.
+  the incumbent while trying at most one untested project-scoped single-axis
+  resource neighbor.
   The finite search stops after every adjacent model, effort, or exposed speed
   tier has been tried without improvement. `guarded` mode retains the repeated-
   evidence routing gates below.

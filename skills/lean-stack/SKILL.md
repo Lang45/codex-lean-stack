@@ -195,13 +195,23 @@ an evidence-scored report with `evolution_mode=rapid`. A run that satisfies the
 existing high-quality contract must include one bounded sanitized experience;
 the lifecycle immediately adds that one rule to the versioned injected playbook.
 A score below 90 immediately records one demerit and lowers the routing reputation;
-only a score below 65 may stage one stronger model or reasoning neighbor, and only
-when evidence attributes the failure to that axis. Tool/environment, timeout,
-role-mismatch, stale-host, and unknown-attribution failures are penalized but do
-not masquerade as model weakness.
+every routed high, low, and major result also enters the same project-scoped
+configuration observation pool. The first evidence-backed attributable major
+failure for one exact project/task/risk/model/effort/speed configuration marks it
+`watch`; the second cumulative major failure marks only that configuration
+`failing` and may stage one causal single-axis neighbor. Quality failures raise
+the attributed model or reasoning axis. Model-compute latency or timeout may try
+an exposed faster tier, then lower effort or model within the task floor; cost
+overrun with a known high token or credit bucket moves one cost axis downward.
+Tool/environment, role-mismatch, stale-host, unproven timeout, missing failure
+reason, unknown cost, and unknown-attribution failures are penalized but do not
+count toward configuration failure. Generate or reuse the opaque
+`project_key` returned by `catalog --project-root` (or `project-key`) and include
+it in both route recommendations and evaluation reports; never persist the real
+project path.
 
 Every high-quality incumbent is retained while the lifecycle stages at most one
-resource challenger for the same task/risk class. A challenger is a logical copy
+resource challenger for the same project/task/risk class. A challenger is a logical copy
 of the incumbent route and changes exactly one model, reasoning, or exposed speed
 tier. Each finite neighboring configuration is tried at most once. A proven winner
 becomes the preferred route; when all adjacent single-axis tiers have been tested

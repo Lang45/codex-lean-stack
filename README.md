@@ -224,16 +224,20 @@ Persistent mutation is fail-closed:
 - The installed skill records `evolution_mode=rapid`. A high-quality run must
   contribute one sanitized experience, which is immediately added to the
   versioned external playbook for future briefs. A score below 90 immediately
-  records a demerit and lowers reputation; only a score below 65 with model- or
-  reasoning-specific attribution stages a stronger single-axis challenger.
-  Tool, timeout, role, stale-host, and unknown failures are penalized without
-  being misclassified as model weakness.
+  records a demerit and lowers reputation. Routed high and low runs share one
+  project-scoped configuration history. The first attributable major failure
+  marks an exact configuration `watch`; the second marks it `failing` and may
+  stage one causal single-axis challenger. Quality failures strengthen model or
+  reasoning; model-compute latency/timeout can try a faster axis; cost overrun
+  with a known high token or credit bucket can try a cheaper axis. Tool, role,
+  stale-host, unproven timeout, missing reason, unknown cost, and unknown failures
+  are penalized without being misclassified as configuration weakness.
 - Existing callers remain compatible: omitted or explicit `guarded` mode keeps
   the three-observation plus independent-shadow promotion workflow.
 - Rapid high performers retain the incumbent and stage at most one logical
-  resource challenger per task/risk class. Each challenger changes exactly one
+  resource challenger per project/task/risk class. Each challenger changes exactly one
   finite neighboring model, reasoning, or host-confirmed speed tier, and every
-  configuration is visited at most once in the agent/task/risk search, including
+  configuration is visited at most once in the agent/project/task/risk search, including
   former champions, so a winner cannot recreate the previous incumbent. Once every
   neighbor loses, the route is converged and high scores no longer produce
   copies. A winning route starts a new finite search from the new champion.
@@ -252,7 +256,10 @@ Persistent mutation is fail-closed:
 Task-end evaluations can optionally record bounded routing facts: requested and
 effective model, reasoning effort, service tier, execution mode, and a fixed
 cause code. Unexposed effective values remain `unknown`; old evaluations are not
-backfilled with guesses.
+backfilled with guesses. `catalog --project-root` returns an opaque `project_key`
+that new reports and `recommend-route --project-key` reuse; the lifecycle never
+stores the repository path. Reports that omit the key remain in the compatible
+`global` pool.
 
 Rapid competition judges quality, speed, and cost together with task-specific
 weights. Architecture uses `75/15/10`; implementation `65/25/10`; review
@@ -287,10 +294,11 @@ host does not expose a per-agent service-tier field.
 
 ### Bounded variation and stagnation supervision
 
-Schema v5 keeps credits, retries, rework, and enumerated failure reasons separate
-from the existing quality score, adds an idempotent reputation profile and
-finite resource-challenger lineage, and migrates v4 atomically without inventing
-historical actions. `stagnation-status` authorizes a supervisor only
+Schema v6 retains v5 credits, retries, rework, reputation, and finite challenger
+lineage, then adds project-scoped routes and a single shared high/low
+configuration-observation pool. It migrates v5 atomically without fabricating
+historical configuration facts; old rapid digests replay only through the
+compatible global path. `stagnation-status` authorizes a supervisor only
 after a comparable no-improvement streak or the same high-confidence failure
 reason repeats three times. A single poor or slow run never starts self-editing.
 An explicit user can still request a manual variation session.
