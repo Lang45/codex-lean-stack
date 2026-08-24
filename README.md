@@ -78,15 +78,28 @@ $lean-stack review this branch and delegate independent review axes.
 $lean-stack explain this subsystem without changing anything.
 ```
 
-The skill stays single-agent for trivial or tightly sequential work, and also
-when startup plus merge overhead would erase the expected parallel gain. After
-the critical-path gate passes, it normally uses one subagent and no more than two
-or three for clearly separable workstreams, prefers read-only delegation, prevents
+The skill stays single-agent for trivial work and whenever startup, verification,
+merge, retry, or write-conflict overhead erases the expected benefit. After the
+critical-path gate passes, it normally uses one subagent and no more than two or
+three for clearly separable workstreams, prefers read-only delegation, prevents
 overlapping writes, requires each child to answer in the user's current language,
 requests a role-specific model and reasoning effort for every child, requires the
 child to disclose both the requested and runtime-effective values at startup
 without guessing missing metadata, and requires the parent to inspect and verify
 the result.
+
+A tightly sequential task stays with the parent by default, but it is no longer
+an unconditional single-agent case. If a specialist child owns the only next
+step, it may be used as a sequential route only through an existing selectable
+custom agent with at least one comparable high-quality evaluation on its current
+revision. A probationary agent may qualify through that precedent; built-ins,
+new or unscored, degraded, and pending agents are ineligible. Even then, evidence must support the
+same quality floor and show that the complete child route is both faster and
+cheaper than the parent route. The estimate counts startup,
+result transfer, verification, retries, escalation, and merge work; a failed
+cheap call followed by an expensive fallback is not reported as a saving. One
+bounded immediate wait is allowed for this route because there is no parent work
+to overlap, but it is explicitly not called parallel acceleration.
 
 Default role routing:
 
@@ -115,6 +128,9 @@ The same accounting applies to delegation and releases. After spawning, the
 parent immediately continues independent work and waits only at a predeclared
 merge point. A late non-essential child is dropped; an essential child gets one
 finish-now request and then becomes an explicit gap instead of blocking forever.
+Every brief declares whether the route is parallel or sequential, its criticality
+and deadline, and either the concurrent parent slice and merge point or the
+evidence supporting the sequential quality/time/cost gate.
 Authorized idempotent publishing uses the normal transport first, retries
 one clearly transient failure once, and then switches to a previously verified
 safe transport instead of repeatedly waiting on the same broken path.
@@ -228,10 +244,12 @@ py -3 "$env:USERPROFILE\.codex\skills\.system\plugin-creator\scripts\validate_pl
 py -3 -m unittest discover -s ".\tests" -v
 ```
 
-During development, run the narrow affected test only. Run this essential suite
-once before release; do not repeat it after documentation-only edits. The suite
-is intentionally capped at 20 high-value tests rather than preserving every
-historical edge-case test.
+During development, run only checks that can fail because of the current change,
+an explicit contract, or a material boundary risk. Run the narrow affected test
+first and one essential broader suite at most once before release unless relevant
+code or environment changes again. Do not run code suites after documentation-only
+edits. The suite is intentionally capped at 20 high-value tests rather than
+preserving every historical edge-case test.
 
 ## Design sources
 

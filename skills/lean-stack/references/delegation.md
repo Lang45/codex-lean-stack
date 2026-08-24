@@ -11,8 +11,9 @@ Delegate only when all are true:
 1. The task is non-trivial and has at least one bounded exploration,
    documentation, test, analysis, or review slice with a clear done predicate.
 2. That slice is large enough to repay startup and synthesis overhead and can
-   proceed while the parent does different useful work, or can provide genuinely
-   independent verification of the parent's result.
+   proceed while the parent does different useful work, can provide genuinely
+   independent verification of the parent's result, or clears every sequential
+   specialist-routing gate below.
 3. The work can use separate outputs, or one agent remains the sole writer.
 4. The parent can verify the returned evidence without replaying all raw work.
 
@@ -20,8 +21,8 @@ Good first uses are codebase mapping, documentation checks, log or test analysis
 independent review axes, and tests that can run without competing for the same
 state. For a typical non-trivial change, one read-only explorer or reviewer is
 enough to satisfy the eager gate while the parent owns implementation. Avoid
-delegation for a one-function edit, a single linear debugging chain with no
-independent check, or several agents writing the same files.
+delegation for a one-function edit, a single linear debugging chain that fails
+the sequential specialist gate, or several agents writing the same files.
 
 ## Shape
 
@@ -59,9 +60,68 @@ evidence is worth the bounded delay. Then follow these rules:
 4. If a non-essential child is late, continue with available evidence and mark
    it dropped. If an essential child is late, send one narrow finish-now request;
    if it still misses the budget, interrupt it and report the verification gap.
-5. Never spawn a child whose result is the only possible next step while the
-   parent has no independent work. That is a sequential call with agent startup
-   overhead and should stay in the parent.
+5. When the child result is the only possible next step and the parent has no
+   independent work, do not call it parallelism. Evaluate it only under the
+   sequential specialist-routing gate below.
+
+## Sequential specialist routing
+
+Keep an only-next-step task in the parent by default. Only an existing custom
+specialist with at least one comparable high-scoring precedent may be considered
+for an exception; built-ins, newly created or unscored agents, degraded agents,
+and pending agents are ineligible. A selectable probationary custom agent can
+qualify through that precedent.
+
+For a plugin-managed agent, precedent means at least one recent evaluation on
+the current revision with the same task class, risk tier, execution mode, and
+requested configuration. It must satisfy the lifecycle's high-quality
+contract: total score at least 90, correctness at least 32/35, evidence at least
+16/20, scope at least 13/15, efficiency at least 12/15, safety 5/5, strong
+evidence, no critical event, high-confidence deterministic, independent-model,
+or human judgment, and no user rejection. The agent must be selectable and may
+be `probation` or `active`. Equivalent human-approved score evidence meeting the
+same thresholds may qualify another custom agent explicitly named by the user;
+otherwise missing lifecycle proof fails closed.
+
+After that precedent gate passes, compare whether the specialist offers a faster
+and cheaper route without weakening quality:
+
+```text
+parent_time = parent_slice + parent_verification + expected_parent_rework
+child_time  = startup + child_slice + transfer + merge + child_verification
+              + expected_child_retry + expected_escalation
+
+parent_cost = parent_model_charge + parent_tool_charge
+              + expected_parent_rework_charge
+child_cost  = child_model_charge + child_tool_charge + coordination_charge
+              + expected_child_retry_charge + expected_escalation_charge
+```
+
+Delegate the only next step only when all are true:
+
+1. The specialist's role matches the task, the precedent gate above has passed,
+   and a cheap current deterministic check supports the same correctness,
+   safety, scope, and evidence floor as the parent route. A child's
+   self-assessment is insufficient.
+2. `child_time` is plausibly lower than `parent_time` after startup, transfer,
+   verification, retry, escalation, and merge are included.
+3. `child_cost` is plausibly lower than `parent_cost`, using one comparable
+   billing unit: ChatGPT credits, API charges, or another explicitly declared
+   proxy. Never add raw tokens, credits, and currency together. Include a failed
+   cheap attempt before escalation.
+4. Inputs are stable, the result can stay compact, and the parent can verify it
+   without replaying the entire task.
+5. Materially unknown quality, latency, retry, or billing assumptions fail the
+   gate. High-risk architecture, security, permission, data-loss, migration, and
+   external-effect work stays with the parent unless comparable evidence proves
+   the specialist route preserves its higher floor.
+
+This is sequential specialization, not parallel acceleration. Because the parent
+has no other useful work, one bounded wait immediately after spawning is allowed
+and expected. Do not poll repeatedly. If the child misses its budget or fails the
+quality check, stop it and use at most one disclosed parent fallback when needed
+to finish safely; record the failed attempt, added time, and cost so the same
+route is not falsely treated as efficient later.
 
 ## Model and reasoning requests
 
@@ -167,6 +227,10 @@ Give each subagent a self-contained brief with:
 - Relevant constraints and authority limits.
 - Evidence to collect or checks to run.
 - A done predicate, time budget, and stopping condition.
+- Whether the route is parallel or sequential, the child's criticality and
+  deadline, and either the parent-owned concurrent slice plus named merge point
+  or the evidence that clears the sequential quality/time/cost gates and their
+  routing preconditions.
 - The user's current response language. Require the entire report in that
   language unless the user explicitly requests another one; code, paths,
   identifiers, quoted source text, and raw errors may stay in their original form.

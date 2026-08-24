@@ -34,7 +34,11 @@ Optimize the whole path to a verified result, not one model call in isolation:
    medium-cost routes with repeated model-side latency, while keeping high-cost
    routes on Standard unless the user explicitly accepts that larger multiplier.
    Parallel agents are useful only when they shorten the critical path or
-   materially raise confidence beyond their coordination overhead.
+   materially raise confidence beyond their coordination overhead. A sequential
+   specialist may own the only next step only when an existing custom agent has
+   at least one comparable high-scoring precedent, and evidence predicts the same
+   quality floor, lower end-to-end time, and lower total cost after startup,
+   transfer, verification, retry, escalation, and merge overhead are counted.
 
 Never trade away the quality floor to make a metric look efficient. When quality,
 speed, and cost cannot all improve, make the conflict visible and follow the
@@ -98,13 +102,20 @@ as boundaries that require their own evidence.
 
 This skill explicitly requests an eager but bounded native Codex subagent
 workflow. For every non-trivial engineering task, look for at least one bounded
-child slice that can independently improve evidence, speed, or review quality
-while the parent continues useful work. Delegate one such slice by default only
-when its startup and merge overhead are plausibly lower than the serial work;
-delegate two or three when distinct workstreams divide cleanly. After spawning,
-continue independent parent work and wait only at the named merge point. Before
-spawning any subagent, read [delegation.md](references/delegation.md) and the
-[managed custom-agent lifecycle](references/agent-lifecycle.md) in full.
+child route that can improve evidence, speed, quality, or total cost. Prefer a
+parallel slice that overlaps useful parent work, and delegate one by default only
+when startup and merge overhead are plausibly lower than the serial work;
+delegate two or three when distinct workstreams divide cleanly. After spawning a
+parallel child, continue independent parent work and wait only at the named merge
+point. If the child result is the only next step, allow a sequential specialist
+route only for an existing custom agent with at least one comparable high-scoring precedent,
+and only when the quality, end-to-end-time, and total-cost gates in
+[delegation.md](references/delegation.md) all pass. A built-in, newly created,
+degraded, pending, or unscored agent cannot take this exception; a selectable
+probationary custom agent can qualify through its high-scoring precedent.
+One bounded immediate wait is then expected and must not be described as
+parallelism. Before spawning any subagent, read that reference and the [managed custom-agent
+lifecycle](references/agent-lifecycle.md) in full.
 
 At the delegation checkpoint, inventory built-in, personal, project, and
 plugin-managed agents before choosing. Reuse the narrowest suitable specialized
@@ -144,10 +155,11 @@ when its API forbids localized names; do not present that technical identifier a
 the user-facing name. If an effective value is unavailable, report it as not
 exposed and name the requested value; never guess from behavior or identity text.
 
-Stay single-agent only for a trivial task, a tightly sequential chain with no
-independent verification slice, or work whose overlapping writes and startup
-cost clearly exceed the expected benefit. Increased delegation frequency does
-not authorize redundant agents, duplicated scopes, or shared-file races.
+Stay single-agent for a trivial task, work whose overlapping writes and startup
+cost exceed the expected benefit, or a tightly sequential chain that does not
+clear all three sequential-route gates. Increased delegation frequency does not
+authorize redundant agents, duplicated scopes, shared-file races, or a cheap
+first attempt whose expected retry and escalation erase the claimed savings.
 
 After every managed-agent run, release its lifecycle lease and submit an
 evidence-scored report. High-quality and efficient runs may contribute one
@@ -175,9 +187,11 @@ user confirmation.
 
 - Define what observable result would prove success before editing.
 - Prefer a failing-then-passing reproduction for defects when a cheap path exists.
-- Run the narrowest meaningful check after an edit. Run one broader essential
-  suite only at the final code boundary when the changed behavior justifies it;
-  do not repeat broad suites or reviews after documentation-only edits.
+- Run only checks that can fail because of the changed behavior, an explicit
+  contract, or a material boundary risk. Start with the narrowest meaningful
+  check. Run one broader essential suite only at the final code boundary when the
+  changed behavior justifies it; do not repeat broad suites or reviews after
+  documentation-only edits or while the relevant artifact bytes are unchanged.
 - Inspect the final diff and working tree. Preserve unrelated user changes.
 - Require every coherent group of changed lines to trace to the user goal, a
   confirmed constraint, or verification needed for that goal. Remove an

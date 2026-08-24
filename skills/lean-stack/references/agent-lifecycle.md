@@ -106,6 +106,21 @@ explicit-role fallback because the custom TOML value has higher precedence.
 Service-tier proposals are always recommendation-only until the real spawn
 surface exposes and validates that field.
 
+An only-next-step sequential route has a stricter reuse gate than ordinary
+parallel delegation. It may automatically select only an existing selectable
+custom agent with at least one recent comparable evaluation on the current
+revision meeting the `high_quality` contract defined below. The comparison
+must match task class, risk tier, execution mode, requested model/effort, and
+service tier. A probationary agent can qualify through that high-quality
+precedent. Built-ins, newly created or unscored agents, degraded agents, pending
+or conflicting agents, and agents whose score history is not available are not
+eligible. Equivalent explicit human-approved score evidence meeting the same
+thresholds may qualify a custom agent named by the user; otherwise unknown
+evidence keeps the task in the parent.
+This precedent proves only capability. The main agent must still separately
+show that the complete sequential route preserves the quality floor and is both
+faster and cheaper under `delegation.md`.
+
 Create a narrow managed personal agent when all of these are true:
 
 - The parent has a real delegated slice under `delegation.md`, not a task invented
