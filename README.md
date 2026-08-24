@@ -12,8 +12,9 @@ combines the strongest compatible ideas from Ponytail and pstack:
 - Task-shaped playbooks for investigation, bug fixing, implementation, review,
   and long-running work.
 - Evidence on the real surface before a success claim.
-- Eager but bounded native Codex subagents: one useful independent slice by
-  default for non-trivial work, and two or three when workstreams divide cleanly.
+- Critical-path native Codex subagents: start independent work early, keep the
+  parent moving, and wait only once at a named merge point when the result is
+  actually required.
 - A guarded custom-agent lifecycle that inventories existing agents, prefers a
   reusable specialist over a generic built-in, creates a narrow managed agent
   when that specialty is missing, records evidence, promotes tested experience,
@@ -77,10 +78,10 @@ $lean-stack review this branch and delegate independent review axes.
 $lean-stack explain this subsystem without changing anything.
 ```
 
-The skill stays single-agent only for trivial or tightly sequential work with no
-useful independent verification slice. It normally uses one subagent for an
-ordinary non-trivial task and no more than two or three for clearly separable
-workstreams, prefers read-only delegation, prevents
+The skill stays single-agent for trivial or tightly sequential work, and also
+when startup plus merge overhead would erase the expected parallel gain. After
+the critical-path gate passes, it normally uses one subagent and no more than two
+or three for clearly separable workstreams, prefers read-only delegation, prevents
 overlapping writes, requires each child to answer in the user's current language,
 requests a role-specific model and reasoning effort for every child, requires the
 child to disclose both the requested and runtime-effective values at startup
@@ -102,18 +103,19 @@ An explicit user or project choice overrides this table. Unsupported pairs get
 one disclosed fallback attempt; critical review never silently drops below
 `high` effort.
 
-Standard is the default speed mode. Fast is not a quality upgrade: current
+Fast is not a quality upgrade: current
 [OpenAI Speed guidance](https://learn.chatgpt.com/docs/agent-configuration/speed)
 describes roughly 1.5x model speed at a higher credit or API rate. The plugin
-therefore keeps high-cost configurations on Standard and only
-proposes Fast for a low-cost configuration after repeated high-quality but slow
-runs with low observed total-token buckets. A cheap model that needs many tokens,
-retries, or escalation is not treated as a cheap completed task. A speed proposal
-is never applied automatically.
+therefore uses a bounded speed bias: three high-quality slow runs can propose
+Fast for low- or medium-cost configurations when the user accepts some extra
+cost. High-cost configurations remain on Standard unless the user explicitly
+accepts the larger multiplier. A speed proposal is never applied automatically.
 
-The same accounting applies to delegation and releases. Parallel work must save
-critical-path time or add independent evidence worth its startup and synthesis
-cost. Authorized idempotent publishing uses the normal transport first, retries
+The same accounting applies to delegation and releases. After spawning, the
+parent immediately continues independent work and waits only at a predeclared
+merge point. A late non-essential child is dropped; an essential child gets one
+finish-now request and then becomes an explicit gap instead of blocking forever.
+Authorized idempotent publishing uses the normal transport first, retries
 one clearly transient failure once, and then switches to a previously verified
 safe transport instead of repeatedly waiting on the same broken path.
 
@@ -170,8 +172,8 @@ efficiency and returns one of:
   quality.
 - `economize`: shadow one lower effort or model step after sustained high
   quality with slow execution.
-- `speed_up` / `standardize_speed`: consider Fast for low-cost slow work or
-  Standard for high-cost work.
+- `speed_up` / `standardize_speed`: consider Fast for low- or medium-cost slow
+  work, or Standard for high-cost work.
 
 Recommendations compare only the same agent revision, task class, risk tier,
 execution mode, and requested configuration. They require high-confidence,
@@ -225,6 +227,11 @@ py -3 "$env:USERPROFILE\.codex\skills\.system\skill-creator\scripts\quick_valida
 py -3 "$env:USERPROFILE\.codex\skills\.system\plugin-creator\scripts\validate_plugin.py" "."
 py -3 -m unittest discover -s ".\tests" -v
 ```
+
+During development, run the narrow affected test only. Run this essential suite
+once before release; do not repeat it after documentation-only edits. The suite
+is intentionally capped at 20 high-value tests rather than preserving every
+historical edge-case test.
 
 ## Design sources
 

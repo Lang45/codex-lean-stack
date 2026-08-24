@@ -29,9 +29,11 @@ Optimize the whole path to a verified result, not one model call in isolation:
 3. Then minimize total tokens, credits, paid API use, and duplicated work. Count
    failed cheap attempts and escalations in the total rather than calling the
    first model alone "low cost".
-4. Use extra speed spend only when its expected latency benefit is worth the
-   explicit cost tradeoff for this task. Fast is a service tier, not a quality
-   score; parallel agents are useful only when they shorten the critical path or
+4. Bias toward lower latency when the user accepts a bounded cost increase.
+   Fast is a service tier, not a quality score; use it readily for low- and
+   medium-cost routes with repeated model-side latency, while keeping high-cost
+   routes on Standard unless the user explicitly accepts that larger multiplier.
+   Parallel agents are useful only when they shorten the critical path or
    materially raise confidence beyond their coordination overhead.
 
 Never trade away the quality floor to make a metric look efficient. When quality,
@@ -97,9 +99,11 @@ as boundaries that require their own evidence.
 This skill explicitly requests an eager but bounded native Codex subagent
 workflow. For every non-trivial engineering task, look for at least one bounded
 child slice that can independently improve evidence, speed, or review quality
-while the parent continues useful work. Delegate one such slice by default;
-delegate two or three when distinct workstreams divide cleanly. Before spawning
-any subagent, read [delegation.md](references/delegation.md) and the
+while the parent continues useful work. Delegate one such slice by default only
+when its startup and merge overhead are plausibly lower than the serial work;
+delegate two or three when distinct workstreams divide cleanly. After spawning,
+continue independent parent work and wait only at the named merge point. Before
+spawning any subagent, read [delegation.md](references/delegation.md) and the
 [managed custom-agent lifecycle](references/agent-lifecycle.md) in full.
 
 At the delegation checkpoint, inventory built-in, personal, project, and
@@ -161,15 +165,19 @@ cause code in that report. Unknown effective values remain unknown. Repeated
 low-quality comparable runs may produce a stronger single-axis recommendation;
 sustained high-quality but slow runs may produce a cheaper/lower-effort
 recommendation. Fast remains recommendation-only unless the current spawn
-surface exposes and validates a per-agent service tier. High-cost configurations
-prefer Standard; a low-cost Fast candidate still requires a cost notice, host
-capability check, and user confirmation.
+surface exposes and validates a per-agent service tier. Three high-quality slow
+runs are enough to propose Fast for a low- or medium-cost configuration when the
+user accepts a bounded cost increase. High-cost configurations prefer Standard;
+every Fast candidate still requires a cost notice, host capability check, and
+user confirmation.
 
 ## Proof contract
 
 - Define what observable result would prove success before editing.
 - Prefer a failing-then-passing reproduction for defects when a cheap path exists.
-- Run the narrowest meaningful check first, then the broader relevant check.
+- Run the narrowest meaningful check after an edit. Run one broader essential
+  suite only at the final code boundary when the changed behavior justifies it;
+  do not repeat broad suites or reviews after documentation-only edits.
 - Inspect the final diff and working tree. Preserve unrelated user changes.
 - Require every coherent group of changed lines to trace to the user goal, a
   confirmed constraint, or verification needed for that goal. Remove an

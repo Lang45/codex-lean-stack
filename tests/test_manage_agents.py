@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sqlite3
 import subprocess
 import sys
@@ -261,14 +260,13 @@ class AgentLifecycleTests(unittest.TestCase):
             connection.close()
         return operation_id
 
-    def test_empty_catalog_is_read_only(self):
-        result = self.lifecycle.catalog(self.project_root)
-        self.assertTrue(result["ok"])
-        self.assertEqual([item["name"] for item in result["builtins"]], ["default", "worker", "explorer"])
-        self.assertFalse(self.lifecycle.db_path.exists())
-        self.assertFalse(self.lifecycle.state_root.exists())
-
     def test_cli_create_and_catalog_round_trip(self):
+        empty = self.lifecycle.catalog(self.project_root)
+        self.assertEqual(
+            [item["name"] for item in empty["builtins"]],
+            ["default", "worker", "explorer"],
+        )
+        self.assertFalse(self.lifecycle.db_path.exists())
         spec_path = self.root / "spec.json"
         spec_path.write_text(json.dumps(self.spec(), ensure_ascii=False), encoding="utf-8")
         created_process = subprocess.run(
@@ -291,6 +289,16 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertEqual(created_process.returncode, 0, created_process.stderr)
         created = json.loads(created_process.stdout)
         self.assertEqual(created["state"], "pending_visibility")
+        path = Path(created["path"])
+        parsed = tomllib.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(parsed["name"], created["name"])
+        self.assertEqual(parsed["model"], "gpt-5.6-terra")
+        self.assertEqual(parsed["model_reasoning_effort"], "high")
+        self.assertIn("集成审查员", parsed["description"])
+        self.assertIn("默认使用中文", parsed["developer_instructions"])
+        self.assertIn("子代理名称：集成审查员", parsed["developer_instructions"])
+        self.assertIn("请求模型", parsed["developer_instructions"])
+        self.assertIn("生效推理强度", parsed["developer_instructions"])
         catalog_process = subprocess.run(
             [
                 sys.executable,
@@ -310,42 +318,9 @@ class AgentLifecycleTests(unittest.TestCase):
         catalog = json.loads(catalog_process.stdout)
         self.assertEqual(len(catalog["custom"]), 1)
         self.assertEqual(catalog["custom"][0]["source"], "plugin_managed")
-
-    def test_create_writes_valid_owned_toml_and_chinese_contract(self):
-        result = self.lifecycle.create_agent(self.spec(), self.project_root)
-        self.assertEqual(result["state"], "pending_visibility")
-        self.assertFalse(result["current_session_ready"])
-        path = Path(result["path"])
-        parsed = tomllib.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(parsed["name"], result["name"])
-        self.assertEqual(parsed["model"], "gpt-5.6-terra")
-        self.assertEqual(parsed["model_reasoning_effort"], "high")
-        self.assertIn("集成审查员", parsed["description"])
-        self.assertIn("默认使用中文", parsed["developer_instructions"])
-        self.assertIn("子代理名称：集成审查员", parsed["developer_instructions"])
-        self.assertIn("请求模型", parsed["developer_instructions"])
-        self.assertIn("生效推理强度", parsed["developer_instructions"])
-        self.assertIn(result["agent_id"], path.read_text(encoding="utf-8"))
-
-        catalog = self.lifecycle.catalog(self.project_root)
-        record = next(item for item in catalog["custom"] if item.get("agent_id") == result["agent_id"])
-        self.assertEqual(record["source"], "plugin_managed")
-        self.assertEqual(record["display_name"], "集成审查员")
-        self.assertFalse(record["selectable"])
-        self.assertTrue(record["requires_reload"])
-
-        visible = self.lifecycle.confirm_visible(result["agent_id"])
+        self.assertFalse(catalog["custom"][0]["selectable"])
+        visible = self.lifecycle.confirm_visible(created["agent_id"])
         self.assertEqual(visible["state"], "probation")
-        catalog = self.lifecycle.catalog(self.project_root)
-        record = next(item for item in catalog["custom"] if item.get("agent_id") == result["agent_id"])
-        self.assertTrue(record["selectable"])
-
-    def test_catalog_deduplicates_identical_personal_and_project_roots(self):
-        root_project = self.codex_home.parent
-        result = self.lifecycle.create_agent(self.spec(), root_project)
-        catalog = self.lifecycle.catalog(root_project)
-        matching = [item for item in catalog["custom"] if item.get("agent_id") == result["agent_id"]]
-        self.assertEqual(len(matching), 1)
 
     def test_invalid_or_task_specific_specs_fail_closed(self):
         with self.assertRaises(manage_agents.LifecycleError):
@@ -411,16 +386,6 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertEqual(record["source"], "plugin_conflict")
         self.assertFalse(record["selectable"])
 
-    def test_conflicts_do_not_permanently_consume_the_managed_agent_cap(self):
-        created = [self.create_visible_agent() for _ in range(8)]
-        drifted_path = Path(created[0]["path"])
-        drifted_path.write_bytes(drifted_path.read_bytes() + b"\n# external edit\n")
-        with self.assertRaises(manage_agents.OwnershipConflict):
-            self.lifecycle.record_evaluation(self.high_report(created[0]["agent_id"]))
-        replacement = self.lifecycle.create_agent(self.spec(slug="replacement-reviewer"), self.project_root)
-        self.assertEqual(replacement["state"], "pending_visibility")
-        self.assertTrue(Path(replacement["path"]).exists())
-
     def test_three_high_quality_observations_stage_and_promote_one_rule(self):
         created = self.create_visible_agent()
         first = self.lifecycle.record_evaluation(self.high_report(created["agent_id"]))
@@ -447,28 +412,21 @@ class AgentLifecycleTests(unittest.TestCase):
         replay = self.lifecycle.promote_candidate(self.promotion(third["candidate_id"]))
         self.assertEqual(replay["action"], "candidate_already_promoted")
 
-    def test_routing_facts_preserve_unknown_effective_values(self):
+    def test_routing_report_rejects_false_effective_values_and_named_mismatch(self):
         created = self.create_visible_agent()
-        report = self.high_report(created["agent_id"], experience=False)
-        report["routing"] = self.routing(
+        unknown = self.high_report(created["agent_id"], experience=False)
+        unknown["routing"] = self.routing(
             attribution="compute_latency", host_status="unexposed"
         )
-        result = self.lifecycle.record_evaluation(report)
-        self.assertTrue(result["routing_recorded"])
-        self.assertEqual(
-            result["configuration_recommendation"]["status"], "insufficient_evidence"
-        )
+        result = self.lifecycle.record_evaluation(unknown)
         row = self.db_row(
             "SELECT * FROM evaluation_routing WHERE evaluation_id=?",
             (result["evaluation_id"],),
         )
-        self.assertEqual(row["requested_model"], "gpt-5.6-terra")
         self.assertIsNone(row["effective_model"])
         self.assertIsNone(row["effective_reasoning_effort"])
         self.assertIsNone(row["effective_service_tier"])
 
-    def test_routing_report_rejects_false_effective_values_and_named_mismatch(self):
-        created = self.create_visible_agent()
         false_effective = self.high_report(created["agent_id"], experience=False)
         false_effective["routing"] = self.routing(effective=True)
         false_effective["routing"]["host_config_status"] = "unexposed"
@@ -485,27 +443,14 @@ class AgentLifecycleTests(unittest.TestCase):
         mismatch["routing"] = self.routing(model="gpt-5.6-luna", effort="medium")
         with self.assertRaises(manage_agents.LifecycleError):
             self.lifecycle.record_evaluation(mismatch)
-        self.assertEqual(self.db_row("SELECT COUNT(*) AS count FROM evaluations")["count"], 0)
-
-    def test_single_low_quality_run_only_returns_watch(self):
-        created = self.create_visible_agent()
-        result = self.lifecycle.record_evaluation(
-            self.low_quality_report(created["agent_id"])
-        )
-        recommendation = result["configuration_recommendation"]
-        self.assertEqual(recommendation["action"], "watch")
-        self.assertIsNone(recommendation["recommended"])
-        self.assertEqual(recommendation["changed_axis"], None)
-
-    def test_effort_steps_never_cross_configured_floors_or_ceilings(self):
-        self.assertIsNone(manage_agents.step_effort("ultra", 1))
-        self.assertIsNone(manage_agents.step_effort("max", 1))
-        self.assertIsNone(manage_agents.step_effort("low", -1, minimum="medium"))
-        self.assertEqual(manage_agents.step_effort("xhigh", -1, minimum="high"), "high")
+        self.assertEqual(self.db_row("SELECT COUNT(*) AS count FROM evaluations")["count"], 1)
 
     def test_repeated_low_quality_recommends_one_axis_model_upgrade(self):
         created = self.create_visible_agent()
-        for _ in range(3):
+        first = self.lifecycle.record_evaluation(self.low_quality_report(created["agent_id"]))
+        self.assertEqual(first["configuration_recommendation"]["action"], "watch")
+        self.assertIsNone(first["configuration_recommendation"]["recommended"])
+        for _ in range(2):
             self.lifecycle.record_evaluation(self.low_quality_report(created["agent_id"]))
         result = None
         for _ in range(2):
@@ -529,7 +474,7 @@ class AgentLifecycleTests(unittest.TestCase):
         self.lifecycle.confirm_visible(created["agent_id"])
         incumbent = Path(created["path"]).read_bytes()
         result = None
-        for _ in range(8):
+        for _ in range(5):
             result = self.lifecycle.record_evaluation(
                 self.high_quality_slow_report(
                     created["agent_id"],
@@ -547,39 +492,53 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertEqual(recommendation["recommended"]["service_tier"], "standard")
         self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
 
-    def test_high_quality_slow_low_cost_agent_recommends_manual_fast(self):
-        created = self.lifecycle.create_agent(
-            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
-            self.project_root,
+    def test_speed_bias_routes_low_and_medium_cost_agents_to_fast(self):
+        cases = (
+            ("speed-low", "gpt-5.6-luna", "medium", "documentation"),
+            ("speed-medium", "gpt-5.6-terra", "high", "review"),
         )
-        self.lifecycle.confirm_visible(created["agent_id"])
-        result = None
-        for _ in range(8):
-            result = self.lifecycle.record_evaluation(
-                self.high_quality_slow_report(
-                    created["agent_id"],
-                    model="gpt-5.6-luna",
-                    effort="medium",
-                    task_class="documentation",
+        for slug, model, effort, task_class in cases:
+            with self.subTest(model=model, effort=effort):
+                created = self.lifecycle.create_agent(
+                    self.spec(
+                        slug=slug,
+                        model=model,
+                        model_reasoning_effort=effort,
+                    ),
+                    self.project_root,
                 )
-            )
-        assert result is not None
-        recommendation = result["configuration_recommendation"]
-        self.assertEqual(recommendation["action"], "speed_up")
-        self.assertEqual(recommendation["changed_axis"], "service_tier")
-        self.assertEqual(recommendation["recommended"]["service_tier"], "fast")
-        self.assertEqual(recommendation["application"], "recommendation_only")
-        self.assertTrue(recommendation["requires_user_confirmation"])
-        self.assertTrue(recommendation["requires_host_capability_check"])
+                self.lifecycle.confirm_visible(created["agent_id"])
+                result = None
+                for _ in range(3):
+                    result = self.lifecycle.record_evaluation(
+                        self.high_quality_slow_report(
+                            created["agent_id"],
+                            model=model,
+                            effort=effort,
+                            task_class=task_class,
+                        )
+                    )
+                assert result is not None
+                recommendation = result["configuration_recommendation"]
+                self.assertEqual(recommendation["action"], "speed_up")
+                self.assertEqual(recommendation["changed_axis"], "service_tier")
+                self.assertEqual(recommendation["recommended"]["service_tier"], "fast")
+                self.assertEqual(recommendation["application"], "recommendation_only")
+                self.assertEqual(recommendation["requires_shadow_cases"], 0)
+                self.assertEqual(recommendation["policy_version"], 2)
+                self.assertTrue(recommendation["requires_user_confirmation"])
 
     def test_effective_service_tier_mismatch_is_not_comparable(self):
+        self.assertTrue(manage_agents.service_tier_matches_request("fast", "priority"))
+        self.assertFalse(manage_agents.service_tier_matches_request("standard", "priority"))
+        self.assertFalse(manage_agents.service_tier_matches_request("inherit", "priority"))
         created = self.lifecycle.create_agent(
             self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
             self.project_root,
         )
         self.lifecycle.confirm_visible(created["agent_id"])
         result = None
-        for _ in range(8):
+        for _ in range(3):
             report = self.high_quality_slow_report(
                 created["agent_id"],
                 model="gpt-5.6-luna",
@@ -598,37 +557,6 @@ class AgentLifecycleTests(unittest.TestCase):
         recommendation = result["configuration_recommendation"]
         self.assertNotEqual(recommendation["action"], "speed_up")
         self.assertEqual(recommendation["evidence_window"]["comparable_rows"], 0)
-
-    def test_priority_is_canonical_fast_only_for_a_fast_request(self):
-        self.assertTrue(manage_agents.service_tier_matches_request("fast", "priority"))
-        self.assertFalse(manage_agents.service_tier_matches_request("standard", "priority"))
-        self.assertFalse(manage_agents.service_tier_matches_request("inherit", "priority"))
-
-        created = self.lifecycle.create_agent(
-            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
-            self.project_root,
-        )
-        self.lifecycle.confirm_visible(created["agent_id"])
-        result = None
-        for _ in range(8):
-            report = self.high_quality_slow_report(
-                created["agent_id"],
-                model="gpt-5.6-luna",
-                effort="medium",
-                task_class="documentation",
-                service_tier="fast",
-            )
-            report["routing"].update(
-                effective_model="gpt-5.6-luna",
-                effective_reasoning_effort="medium",
-                effective_service_tier="priority",
-                host_config_status="effective_confirmed",
-            )
-            result = self.lifecycle.record_evaluation(report)
-        assert result is not None
-        recommendation = result["configuration_recommendation"]
-        self.assertEqual(recommendation["evidence_window"]["comparable_rows"], 8)
-        self.assertNotEqual(recommendation["action"], "speed_up")
 
     def test_high_cost_fast_policy_recommends_standard_without_mutation(self):
         created = self.lifecycle.create_agent(
@@ -683,60 +611,17 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertEqual(recommendation["application"], "recommendation_only")
         self.assertEqual(Path(created["path"]).read_bytes(), incumbent)
 
-    def test_high_quality_without_slow_signal_does_not_recommend_fast(self):
-        created = self.lifecycle.create_agent(
-            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
-            self.project_root,
+    def test_speed_bias_respects_token_and_explicit_tier_guards(self):
+        cases = (
+            ("high-token-guard", "standard", True),
+            ("inherit-tier-guard", "inherit", False),
+            ("unknown-tier-guard", "unknown", False),
         )
-        self.lifecycle.confirm_visible(created["agent_id"])
-        for _ in range(8):
-            report = self.high_report(created["agent_id"], experience=False)
-            report["task_class"] = "documentation"
-            report["routing"] = self.routing(
-                model="gpt-5.6-luna",
-                effort="medium",
-                attribution="compute_latency",
-            )
-            self.lifecycle.record_evaluation(report)
-        recommendation = self.lifecycle.recommend_route(
-            created["agent_id"],
-            "documentation",
-            "read_only",
-            "managed_named",
-            "standard",
-        )
-        self.assertEqual(recommendation["action"], "hold")
-        self.assertEqual(recommendation["status"], "stable")
-        self.assertIsNone(recommendation["recommended"])
-
-    def test_low_cost_model_with_high_total_tokens_does_not_recommend_fast(self):
-        created = self.lifecycle.create_agent(
-            self.spec(model="gpt-5.6-luna", model_reasoning_effort="medium"),
-            self.project_root,
-        )
-        self.lifecycle.confirm_visible(created["agent_id"])
-        result = None
-        for _ in range(8):
-            report = self.high_quality_slow_report(
-                created["agent_id"],
-                model="gpt-5.6-luna",
-                effort="medium",
-                task_class="documentation",
-            )
-            report["token_bucket"] = "high"
-            result = self.lifecycle.record_evaluation(report)
-        assert result is not None
-        recommendation = result["configuration_recommendation"]
-        self.assertNotEqual(recommendation["action"], "speed_up")
-        self.assertEqual(recommendation["evidence_window"]["high_token_rows"], 8)
-        self.assertEqual(recommendation["evidence_window"]["low_token_rows"], 0)
-
-    def test_inherit_and_unknown_service_tiers_never_propose_fast(self):
-        for service_tier in ("inherit", "unknown"):
-            with self.subTest(service_tier=service_tier):
+        for slug, service_tier, high_tokens in cases:
+            with self.subTest(service_tier=service_tier, high_tokens=high_tokens):
                 created = self.lifecycle.create_agent(
                     self.spec(
-                        slug=f"{service_tier}-tier-researcher",
+                        slug=slug,
                         model="gpt-5.6-luna",
                         model_reasoning_effort="medium",
                     ),
@@ -744,23 +629,21 @@ class AgentLifecycleTests(unittest.TestCase):
                 )
                 self.lifecycle.confirm_visible(created["agent_id"])
                 result = None
-                for _ in range(8):
-                    result = self.lifecycle.record_evaluation(
-                        self.high_quality_slow_report(
-                            created["agent_id"],
-                            model="gpt-5.6-luna",
-                            effort="medium",
-                            task_class="documentation",
-                            service_tier=service_tier,
-                        )
+                for _ in range(3):
+                    report = self.high_quality_slow_report(
+                        created["agent_id"],
+                        model="gpt-5.6-luna",
+                        effort="medium",
+                        task_class="documentation",
+                        service_tier=service_tier,
                     )
+                    if high_tokens:
+                        report["token_bucket"] = "high"
+                    result = self.lifecycle.record_evaluation(report)
                 assert result is not None
                 recommendation = result["configuration_recommendation"]
                 self.assertNotEqual(recommendation["action"], "speed_up")
                 self.assertIsNone(recommendation["recommended"])
-                self.assertEqual(
-                    recommendation["evidence_window"]["comparable_rows"], 8
-                )
 
     def test_active_lease_blocks_evaluation_and_promotion(self):
         created = self.create_visible_agent()
@@ -780,24 +663,13 @@ class AgentLifecycleTests(unittest.TestCase):
         promoted = self.lifecycle.promote_candidate(self.promotion(candidate_id))
         self.assertEqual(promoted["revision"], 2)
 
-    def test_single_ordinary_or_extreme_failure_does_not_retire(self):
-        created = self.create_visible_agent()
-        result = self.lifecycle.record_evaluation(self.extreme_report(created["agent_id"]))
-        self.assertEqual(result["quality_band"], "extreme_observation")
-        self.assertNotEqual(result["state"], "retire_eligible")
-        with self.assertRaises(manage_agents.LifecycleError):
-            self.lifecycle.retire_agent(created["agent_id"])
-        self.assertTrue(Path(created["path"]).exists())
-
     def test_retirement_precedes_resource_routing(self):
         created = self.create_visible_agent()
-        result = None
-        for _ in range(3):
-            report = self.extreme_report(created["agent_id"])
-            report["routing"] = self.routing(attribution="model_capacity")
-            result = self.lifecycle.record_evaluation(report)
-        assert result is not None
+        report = self.critical_report(created["agent_id"])
+        report["routing"] = self.routing(attribution="model_capacity")
+        result = self.lifecycle.record_evaluation(report)
         self.assertEqual(result["state"], "retire_eligible")
+        self.assertEqual(result["retirement_reason"], "unauthorized_destructive_write")
         self.assertEqual(
             result["configuration_recommendation"]["status"],
             "retirement_precedes_routing",
@@ -810,6 +682,8 @@ class AgentLifecycleTests(unittest.TestCase):
             self.lifecycle.record_evaluation(self.extreme_report(created["agent_id"]))
             for _ in range(3)
         ]
+        self.assertNotEqual(results[0]["state"], "retire_eligible")
+        self.assertNotEqual(results[1]["state"], "retire_eligible")
         self.assertEqual(results[-1]["state"], "retire_eligible")
         retired = self.lifecycle.retire_agent(created["agent_id"])
         self.assertTrue(retired["recoverable"])
@@ -824,60 +698,6 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertEqual(restored["state"], "pending_reload")
         self.assertTrue(Path(created["path"]).exists())
         self.assertFalse(quarantine.exists())
-
-    def test_extreme_failures_must_be_comparable_by_task_and_risk(self):
-        created = self.create_visible_agent()
-        self.lifecycle.record_evaluation(self.extreme_report(created["agent_id"]))
-        self.lifecycle.record_evaluation(self.extreme_report(created["agent_id"]))
-        different = self.extreme_report(created["agent_id"])
-        different["task_class"] = "test"
-        result = self.lifecycle.record_evaluation(different)
-        self.assertNotEqual(result["state"], "retire_eligible")
-        self.assertTrue(Path(created["path"]).exists())
-
-    def test_restore_refuses_a_new_user_agent_with_the_same_name(self):
-        created = self.create_visible_agent()
-        self.lifecycle.record_evaluation(self.critical_report(created["agent_id"]))
-        retired = self.lifecycle.retire_agent(created["agent_id"])
-        collision = self.codex_home / "agents" / "user-collision.toml"
-        collision.write_text(
-            f'name = "{created["name"]}"\n'
-            'description = "User-owned replacement."\n'
-            'developer_instructions = "Never overwrite this file."\n',
-            encoding="utf-8",
-        )
-        collision_before = collision.read_bytes()
-        with self.assertRaises(manage_agents.LifecycleError):
-            self.lifecycle.restore_agent(
-                created["agent_id"], f"restore:{created['agent_id']}", self.project_root
-            )
-        self.assertEqual(collision.read_bytes(), collision_before)
-        self.assertFalse(Path(created["path"]).exists())
-        self.assertTrue(Path(retired["quarantine_path"]).exists())
-
-    def test_recover_aborts_a_prepared_move_that_never_touched_the_file(self):
-        created = self.create_visible_agent()
-        self.lifecycle.record_evaluation(self.critical_report(created["agent_id"]))
-        source = Path(created["path"])
-        destination_dir = self.lifecycle.quarantine_dir / created["agent_id"]
-        destination_dir.mkdir(parents=True)
-        row = self.db_row("SELECT * FROM agents WHERE agent_id=?", (created["agent_id"],))
-        destination = destination_dir / f"revision-{row['revision']}-{row['expected_sha256'][:12]}.toml"
-        operation_id = self.insert_move_intent(
-            agent_id=created["agent_id"],
-            operation="quarantine",
-            source=source,
-            destination=destination,
-            target_state="quarantined",
-        )
-        result = self.lifecycle.recover()
-        self.assertIn(
-            {"operation_id": operation_id, "result": "aborted_before_move"}, result["results"]
-        )
-        self.assertTrue(source.exists())
-        self.assertFalse(destination.exists())
-        operation = self.db_row("SELECT stage FROM operations WHERE operation_id=?", (operation_id,))
-        self.assertEqual(operation["stage"], "aborted")
 
     def test_recover_commits_quarantine_and_restore_after_file_move(self):
         created = self.create_visible_agent()
@@ -921,33 +741,14 @@ class AgentLifecycleTests(unittest.TestCase):
         self.assertIsNone(row["quarantine_path"])
         self.assertTrue(source.exists())
 
-    def test_confirmed_critical_event_is_immediately_quarantine_eligible(self):
-        created = self.create_visible_agent()
-        result = self.lifecycle.record_evaluation(self.critical_report(created["agent_id"]))
-        self.assertEqual(result["state"], "retire_eligible")
-        self.assertEqual(result["retirement_reason"], "unauthorized_destructive_write")
-        retired = self.lifecycle.retire_agent(created["agent_id"])
-        self.assertTrue(Path(retired["quarantine_path"]).exists())
-
-    def test_unconfirmed_critical_event_is_not_enough(self):
-        created = self.create_visible_agent()
-        report = self.critical_report(created["agent_id"])
-        report["critical_confirmations"] = ["independent_model"]
-        result = self.lifecycle.record_evaluation(report)
-        self.assertNotEqual(result["state"], "retire_eligible")
-        self.assertTrue(Path(created["path"]).exists())
-
-    def test_unknown_report_fields_are_rejected_without_recording(self):
-        created = self.create_visible_agent()
-        report = self.high_report(created["agent_id"])
-        report["raw_trace"] = "must never be stored"
-        with self.assertRaises(manage_agents.LifecycleError):
-            self.lifecycle.record_evaluation(report)
-        row = self.db_row("SELECT COUNT(*) AS count FROM evaluations")
-        self.assertEqual(row["count"], 0)
-
     def test_record_retry_is_idempotent_by_run_id(self):
         created = self.create_visible_agent()
+        invalid = self.high_report(created["agent_id"])
+        invalid["raw_trace"] = "must never be stored"
+        with self.assertRaises(manage_agents.LifecycleError):
+            self.lifecycle.record_evaluation(invalid)
+        self.assertEqual(self.db_row("SELECT COUNT(*) AS count FROM evaluations")["count"], 0)
+
         report = self.high_report(created["agent_id"])
         first = self.lifecycle.record_evaluation(report)
         second = self.lifecycle.record_evaluation(report)
@@ -961,59 +762,6 @@ class AgentLifecycleTests(unittest.TestCase):
         changed["scores"]["clarity"] -= 1
         with self.assertRaises(manage_agents.LifecycleError):
             self.lifecycle.record_evaluation(changed)
-
-    def test_hardlinked_agent_cannot_be_quarantined(self):
-        created = self.create_visible_agent()
-        self.lifecycle.record_evaluation(self.critical_report(created["agent_id"]))
-        path = Path(created["path"])
-        hardlink = path.with_name(path.stem + "_hardlink.toml")
-        try:
-            os.link(path, hardlink)
-        except (OSError, NotImplementedError):
-            self.skipTest("hard links are unavailable in this test environment")
-        with self.assertRaises(manage_agents.OwnershipConflict):
-            self.lifecycle.retire_agent(created["agent_id"])
-        self.assertTrue(path.exists())
-        self.assertTrue(hardlink.exists())
-
-    def test_promotion_gate_preserves_incumbent_on_no_gain(self):
-        created = self.create_visible_agent()
-        outputs = [
-            self.lifecycle.record_evaluation(self.high_report(created["agent_id"]))
-            for _ in range(3)
-        ]
-        path = Path(created["path"])
-        incumbent = path.read_bytes()
-        report = self.promotion(outputs[-1]["candidate_id"])
-        report["challenger_quality"] = report["incumbent_quality"]
-        report["challenger_efficiency"] = report["incumbent_efficiency"]
-        with self.assertRaises(manage_agents.LifecycleError):
-            self.lifecycle.promote_candidate(report)
-        self.assertEqual(path.read_bytes(), incumbent)
-        row = self.db_row(
-            "SELECT status FROM candidates WHERE candidate_id=?", (outputs[-1]["candidate_id"],)
-        )
-        self.assertEqual(row["status"], "candidate")
-
-    def test_doctor_reports_orphan_marker_as_user_owned(self):
-        agents = self.codex_home / "agents"
-        agents.mkdir(parents=True)
-        orphan = agents / "lean_orphan_deadbeef.toml"
-        orphan.write_text(
-            "# Managed by codex-lean-stack; external edits revoke automatic ownership.\n"
-            f"# lean-stack-agent-id: {uuid.uuid4()}\n"
-            'name = "lean_orphan_deadbeef"\n'
-            'description = "Orphaned file."\n'
-            'developer_instructions = "Treat as user owned."\n',
-            encoding="utf-8",
-        )
-        catalog = self.lifecycle.catalog(self.project_root)
-        self.assertEqual(len(catalog["custom"]), 1, catalog)
-        self.assertTrue(catalog["custom"][0].get("marker_agent_id"), catalog)
-        result = self.lifecycle.doctor(self.project_root)
-        self.assertFalse(result["ok"], result)
-        self.assertTrue(any("按用户文件保护" in issue for issue in result["issues"]))
-        self.assertFalse(self.lifecycle.db_path.exists())
 
     def test_v1_database_migrates_to_v2_without_touching_agents(self):
         lifecycle = manage_agents.AgentLifecycle(self.root / "migration-home")

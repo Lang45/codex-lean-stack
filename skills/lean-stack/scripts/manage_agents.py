@@ -28,7 +28,7 @@ from typing import Any, Iterator, Sequence
 
 
 SCHEMA_VERSION = 2
-ROUTING_POLICY_VERSION = 1
+ROUTING_POLICY_VERSION = 2
 BUILTIN_AGENTS = ("default", "worker", "explorer")
 MANAGED_PREFIX = "lean_"
 MAX_ACTIVE_MANAGED_AGENTS = 8
@@ -1696,7 +1696,13 @@ class AgentLifecycle:
                 if changed_axis
                 else "none"
             ),
-            "requires_shadow_cases": 3 if recommended is not None else 0,
+            "requires_shadow_cases": (
+                0
+                if changed_axis == "service_tier"
+                else 2
+                if recommended is not None
+                else 0
+            ),
             "requires_user_confirmation": changed_axis == "service_tier",
             "requires_host_capability_check": changed_axis == "service_tier",
             "toml_modified": False,
@@ -1842,57 +1848,73 @@ class AgentLifecycle:
                         trigger_rows=low_rows,
                     )
 
-        recent_eight = eligible[:8]
-        high_quality_rows = [
-            item for item in recent_eight if routing_quality_percentage(item) >= 92
-        ]
-        slow_rows = [item for item in recent_eight if item["duration_bucket"] == "high"]
-        low_token_rows = [item for item in recent_eight if item["token_bucket"] == "low"]
-        recent_hard_gate = recent_eight[:5]
-        high_slow = (
-            len(recent_eight) == 8
-            and len(high_quality_rows) >= 6
-            and len(slow_rows) >= 5
-            and statistics.median(int(item["efficiency"]) for item in recent_eight) <= 11
-            and sum(item["attribution"] == "compute_latency" for item in slow_rows) >= 3
+        speed_rows = eligible[:3]
+        speed_ready = (
+            len(speed_rows) == 3
+            and all(routing_quality_percentage(item) >= 90 for item in speed_rows)
+            and sum(item["duration_bucket"] == "high" for item in speed_rows) >= 2
+            and statistics.median(int(item["efficiency"]) for item in speed_rows) <= 12
+            and sum(item["attribution"] == "compute_latency" for item in speed_rows) >= 2
+            and sum(item["token_bucket"] != "high" for item in speed_rows) >= 2
             and all(
                 item["safety"] == 5
                 and item["scope"] >= 13
                 and item["critical_event"] == "none"
                 and item["user_verdict"] != "reject"
-                for item in recent_hard_gate
+                for item in speed_rows
+            )
+        )
+        if (
+            speed_ready
+            and current_cost in {"low", "medium"}
+            and service_tier == "standard"
+        ):
+            recommended = {
+                "model": row["model"],
+                "reasoning_effort": row["reasoning_effort"],
+                "service_tier": "fast",
+            }
+            return self.route_payload(
+                row=row,
+                task_class=task_class,
+                risk_tier=risk_tier,
+                execution_mode=execution_mode,
+                service_tier=service_tier,
+                rows=rows,
+                eligible=eligible,
+                action="speed_up",
+                status="proposed_unverified",
+                reason_codes=[
+                    "latency_priority",
+                    "three_high_quality_runs",
+                    "bounded_extra_cost",
+                ],
+                recommended=recommended,
+                changed_axis="service_tier",
+                trigger_rows=speed_rows,
+            )
+
+        economize_rows = eligible[:5]
+        high_quality_rows = [
+            item for item in economize_rows if routing_quality_percentage(item) >= 92
+        ]
+        slow_rows = [item for item in economize_rows if item["duration_bucket"] == "high"]
+        high_slow = (
+            len(economize_rows) == 5
+            and len(high_quality_rows) >= 4
+            and all(routing_quality_percentage(item) >= 85 for item in economize_rows)
+            and len(slow_rows) >= 3
+            and statistics.median(int(item["efficiency"]) for item in economize_rows) <= 11
+            and sum(item["attribution"] == "compute_latency" for item in slow_rows) >= 2
+            and all(
+                item["safety"] == 5
+                and item["scope"] >= 13
+                and item["critical_event"] == "none"
+                and item["user_verdict"] != "reject"
+                for item in economize_rows
             )
         )
         if high_slow:
-            if (
-                current_cost == "low"
-                and service_tier == "standard"
-                and len(low_token_rows) >= 6
-            ):
-                recommended = {
-                    "model": row["model"],
-                    "reasoning_effort": row["reasoning_effort"],
-                    "service_tier": "fast",
-                }
-                return self.route_payload(
-                    row=row,
-                    task_class=task_class,
-                    risk_tier=risk_tier,
-                    execution_mode=execution_mode,
-                    service_tier=service_tier,
-                    rows=rows,
-                    eligible=eligible,
-                    action="speed_up",
-                    status="proposed_unverified",
-                    reason_codes=[
-                        "sustained_high_quality_slow",
-                        "low_cost_latency_tradeoff",
-                        "low_total_token_evidence",
-                    ],
-                    recommended=recommended,
-                    changed_axis="service_tier",
-                    trigger_rows=slow_rows,
-                )
             minimum_effort = MINIMUM_EFFORT_BY_TASK_CLASS[task_class]
             target_effort = step_effort(row["reasoning_effort"], -1, minimum=minimum_effort)
             target_model = row["model"]
@@ -1931,10 +1953,13 @@ class AgentLifecycle:
             action = "watch"
             status = "single_or_insufficient_low_quality_signal"
             reasons = ["low_quality_watch", "minimum_five_comparable_runs"]
-        elif len(eligible) < 8:
+        elif len(eligible) < 5:
             action = "hold"
             status = "insufficient_evidence"
-            reasons = ["minimum_five_for_upgrade", "minimum_eight_for_economize"]
+            reasons = [
+                "minimum_three_for_speed",
+                "minimum_five_for_quality_routing",
+            ]
         else:
             action = "hold"
             status = "stable"

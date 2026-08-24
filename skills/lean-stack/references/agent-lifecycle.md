@@ -306,28 +306,34 @@ quality_pct = round(100 * quality_core / 85)
 slow = duration_bucket == high
 ```
 
-The deterministic first-version gates are:
+The deterministic routing-policy-v2 gates are:
 
 - One or two low-quality rows produce `watch`, never a change.
 - A stronger model or reasoning proposal needs five comparable rows, at least
   three below `quality_pct=75`, a median below 78, and two matching
   `model_capacity` or `reasoning_depth` attributions.
-- An economize or speed proposal needs eight comparable rows, at least six at
-  `quality_pct>=92`, at least five slow rows, median efficiency at most 11, and
-  intact safety, scope, and user-verdict gates in the latest five.
+- A speed proposal needs three comparable rows, all at `quality_pct>=90`, at
+  least two slow/model-latency rows, median efficiency at most 12, and at least
+  two rows without a high token bucket. It is available to low- and medium-cost
+  configurations when the current arm is explicitly Standard.
+- An economize proposal needs five comparable rows, at least four at
+  `quality_pct>=92`, none below 85, at least three slow rows, median efficiency
+  at most 11, and intact safety, scope, and user-verdict gates.
 - A `reasoning_depth` failure raises effort one step before model capacity;
   `model_capacity` raises the task-class model ladder one step.
 - High-quality slow high/medium-cost configurations lower effort first, then
   model only when the task/risk floor permits. Architecture does not downgrade.
-- A low-cost high-quality slow configuration may propose Fast only when at least
-  six of eight comparable runs also have `token_bucket=low`; a cheap model with
-  high total token use is not a low-cost run. A high-cost
-  configuration already using Fast proposes Standard. Both are
+- A low- or medium-cost high-quality slow configuration may propose Fast after
+  the three-row speed gate. A high-cost configuration already using Fast
+  proposes Standard. Both are
   recommendation-only and require a current cost notice and host capability
   check. A service-tier change also requires the caller to identify the current
   arm explicitly as `standard` or `fast`; `inherit` and `unknown` fail closed.
-- Every proposal requires at least three sanitized shadow cases. The command
-  never edits a TOML, changes global configuration, or toggles `/fast`.
+- A model or reasoning proposal requests two focused shadow cases. A
+  service-tier proposal requests no duplicate quality case because it preserves
+  the model, but it still requires user confirmation and a real host capability
+  check. The command never edits a TOML, changes global configuration, or
+  toggles `/fast`.
 
 The model ladders and cost classes are versioned plugin policy, not timeless
 price facts. Unknown models fail closed. User-selected models and service tiers

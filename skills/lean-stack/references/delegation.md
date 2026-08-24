@@ -25,7 +25,7 @@ independent check, or several agents writing the same files.
 
 ## Shape
 
-- Default to one subagent for an ordinary non-trivial task and two or three for
+- After the gate passes, default to one subagent and use two or three only for
   genuinely distinct workstreams. Respect the runtime limit and never create
   more agents than useful, non-overlapping slices.
 - Prefer read-only exploration and review agents. Keep one implementation owner
@@ -34,6 +34,34 @@ independent check, or several agents writing the same files.
   and a worker for bounded implementation. Otherwise state the role in the brief.
 - Do not allow recursive delegation unless the parent assigns a real orchestration
   subproblem with its own bounded fan-out.
+
+## Critical-path parallelism
+
+Subagents must overlap useful work instead of turning parallelism into a serial
+queue. Before spawning, estimate:
+
+```text
+parallel_time = startup + max(parent_slice, child_slice) + merge
+serial_time   = parent_slice + child_slice
+```
+
+Delegate only when `parallel_time` is plausibly lower, or when independent
+evidence is worth the bounded delay. Then follow these rules:
+
+1. Spawn as soon as the child's inputs are stable, and immediately continue the
+   parent-owned slice that does not depend on the child. Do not call `wait`
+   directly after spawning merely because the child exists.
+2. Name the merge point in advance. Wait only when the parent reaches that point
+   and the result is genuinely needed for integration or the final claim.
+3. Prefer one result-ready notification or one bounded wait at the merge point;
+   do not repeatedly poll unchanged status. Keep child output compact so result
+   transfer and synthesis do not erase the parallel gain.
+4. If a non-essential child is late, continue with available evidence and mark
+   it dropped. If an essential child is late, send one narrow finish-now request;
+   if it still misses the budget, interrupt it and report the verification gap.
+5. Never spawn a child whose result is the only possible next step while the
+   parent has no independent work. That is a sequential call with agent startup
+   overhead and should stay in the parent.
 
 ## Model and reasoning requests
 
@@ -66,11 +94,11 @@ lower service latency. Current OpenAI guidance describes roughly 1.5x speed and,
 for GPT-5.6 in ChatGPT-credit mode, 2.5x Standard credit consumption. Recheck the
 official Speed page before publishing fixed pricing claims.
 
-Use these conservative defaults:
+Use these speed-biased, bounded-cost defaults:
 
 - High-cost model/effort combinations stay on Standard.
-- Low-cost combinations stay on Standard until comparable evidence shows high
-  quality and persistent model-side latency; only then propose Fast.
+- Three high-quality slow runs can propose Fast for low- or medium-cost
+  combinations when the user accepts some extra cost.
 - A single low score or slow run never changes any axis.
 - Change one axis per shadow comparison so the cause remains identifiable.
 - A named custom-agent file that pins model or effort cannot be tested with a
@@ -81,8 +109,11 @@ Use these conservative defaults:
 
 For a managed agent with comparable evaluation history, run the lifecycle
 `recommend-route` command before briefing the next task. A `watch` or `hold`
-result preserves the incumbent. A proposal requires three sanitized shadow
-cases and does not edit the managed TOML.
+result preserves the incumbent. A model or reasoning proposal requests two
+focused shadow cases. A service-tier proposal needs no duplicate quality run
+because Fast does not change the model; it still requires a current host
+capability check, cost notice, and user confirmation. No proposal edits the
+managed TOML.
 
 Include this block in every brief, localized to the user's language:
 
@@ -153,10 +184,10 @@ under one owner.
 ## Parent responsibilities
 
 The parent owns requirements, architecture, integration, and the final claim.
-Wait for every required slice, note dropouts, deduplicate findings, inspect any
-diff, and rerun the decisive check. Agreement raises confidence but does not turn
-an unsupported claim into evidence. Stop fan-out once the required coverage is
-complete.
+At the named merge point, collect every still-required slice, note dropouts,
+deduplicate findings, inspect any diff, and rerun the decisive check. Agreement
+raises confidence but does not turn an unsupported claim into evidence. Stop
+fan-out once the required coverage is complete.
 
 Do not wait indefinitely. If a child exceeds its stated budget or stops making
 progress, steer it once with a narrow finish-now request. If it still does not

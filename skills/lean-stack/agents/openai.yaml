@@ -1,4 +1,4 @@
 interface:
   display_name: "Lean Stack"
-  short_description: "Smallest verified change with adaptive subagent routing."
-  default_prompt: "Use $lean-stack; choose the smallest defensible solution, request a model and reasoning effort for each subagent, and use evidence-gated route advice when available."
+  short_description: "Fast verified work with critical-path subagents."
+  default_prompt: "Use $lean-stack; keep the parent moving while subagents run, prefer bounded-cost speed, and run only the essential checks."
