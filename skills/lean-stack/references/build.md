@@ -1,29 +1,20 @@
-# Build or refactor
+# 构建或重构
 
-Use for features, behavior changes, refactors, and migrations.
+用于新增功能、行为变化、重构和迁移。
 
-1. Describe the user-visible outcome and name the authoritative data shape or
-   contract before writing logic.
-2. Trace the existing ownership and search for reusable code, standard-library
-   support, native platform behavior, and installed dependencies.
-3. Apply the minimality ladder and write down the first rung that fully satisfies
-   the request. Remove dead weight before adding a replacement when safe.
-4. If the change crosses a public boundary, changes shared state, or has no local
-   precedent, compare two genuinely different shapes. Prefer established patterns
-   when they already answer the question; do not create design theater. Request
-   `gpt-5.6-sol` with `xhigh` effort for an architecture candidate only when this
-   design branch is necessary.
-5. Apply the delegation gate. Parallelize disjoint exploration, validation, or
-   independent files. Keep one owner for coupled code and shared writes. Use
-   `gpt-5.6-terra` / `medium` for exploration, `gpt-5.6-luna` / `low` for
-   mechanical isolated work, and `gpt-5.6-sol` / `high` for implementation.
-6. Implement the smallest coherent slice. Migrate real callers and remove a
-   superseded internal API in the same verified wave when compatibility is not a
-   requirement.
-7. Verify the user-visible outcome on the matching surface, run relevant tests,
-   and audit the diff for added dependencies, files, configuration, and public
-   surface that did not earn their place.
+1. 写清用户可见结果和权威数据形状或契约，再开始实现。
+2. 追踪现有所有权，依次寻找可复用代码、标准库、原生平台行为和已安装依赖。
+3. 应用最小方案阶梯，记录第一个完整满足请求的位置；安全时先删除负担，再增加替代。
+4. 先按工作价值分流。迁移、公共契约、安全、权限、数据完整性和重大架构属于高价值
+   工作，质量与证据优先；普通机械改动在验收底线内速度优先。
+5. 只有重要公共边界或共享状态没有兼容先例和明确最小路径时，才比较两个真正可行的
+   形状。已有模式能回答时直接复用，不为形式制造第二方案。
+6. 先排除短命令和确定性工具工作，再对独立探索、语义审查或天然分离的文件应用核心
+   分派判断。父任务继续架构和集成，耦合代码和共享写入保持一个所有者。
+7. 实现最小完整切片。兼容性不要求保留时，在同一验证波次迁移真实调用方并删除已被
+   替代的内部接口。
+8. 在匹配表面验证用户可见结果。迭代中的窄测试由父任务直接运行；关闭可能推动修改
+   的语义审查并冻结代码后，才运行一次必要的最终验证。
 
-Done means the requested behavior works, existing behavior remains supported by
-relevant checks, and every new layer or dependency has a present caller and a
-specific reason.
+完成条件是请求行为可用、相关检查支持既有行为，而且每个新层或依赖都有当前调用方
+和具体理由。

@@ -1,27 +1,19 @@
-# Review or audit
+# 审查或审计
 
-Use for a diff, branch, file set, or repository review. This playbook is
-read-only unless the user separately asks for fixes.
+用于差异、分支、文件集或仓库审查。除非用户另行请求修复，本手册保持只读。
 
-1. Establish the intended behavior and review boundary. Compare against the
-   correct base, not an assumed branch name.
-2. For a trivial diff, review locally. For an ordinary non-trivial diff, use at
-   least one independent read-only subagent on the highest-risk axis. For a
-   substantial or cross-cutting diff, use two or three with distinct axes:
-   - Correctness, security, concurrency, and data-loss risk. Request
-     `gpt-5.6-sol` with `xhigh` effort.
-   - Integration boundaries, tests, and behavior regressions. Request
-     `gpt-5.6-terra` with `high` effort.
-   - Minimality, dependencies, dead flexibility, and reader load. Request
-     `gpt-5.6-terra` with `medium` effort.
-3. Require every finding to include a location, causal mechanism, impact,
-   evidence or reproduction path, and the smallest credible mitigation.
-4. Deduplicate results and verify high-impact claims against the code or runtime.
-   Consensus is useful signal; it is not proof. Reject style-only preferences and
-   findings that depend on invented requirements.
-5. Lead with actionable findings ordered by severity. Then list assumptions,
-   test gaps, and a brief verdict. If there are no material findings, say so
-   plainly and name any validation boundary.
+1. 确认预期行为和审查边界，与正确基线比较，不猜测分支名称。
+2. 极小差异由父任务直接审查。高价值或范围较大的审查，可按相互独立的风险轴应用
+   核心分派判断，同时父任务审查主路径。可用风险轴包括：
+   - 正确性、安全、并发和数据丢失；
+   - 集成边界、测试和行为回归；
+   - 最小性、依赖、无调用方的灵活性和阅读负担。
+3. 子代理必须立即有真实代码边界可读，只接收最小上下文。完整覆盖且来源未变化时，
+   父任务不重复完整阅读。
+4. 每个发现都要包含位置、因果机制、影响、证据或复现路径，以及最小可信处理办法。
+5. 合并时去重，并针对代码或运行行为核验高影响主张。多个代理同意只是信号，不是
+   证据；拒绝纯风格偏好和依赖虚构要求的发现。
+6. 先列按严重度排序的可行动发现，再列假设、验证缺口和简短结论。没有重要发现时
+   直接说明，并写清验证边界。
 
-Do not apply fixes, post comments, or create external issues unless the user
-explicitly expands the request.
+未经用户明确扩展，不应用修复、不发布评论，也不创建外部问题。

@@ -1,282 +1,160 @@
 ---
 name: lean-stack
 description: >
-  Deliver software engineering work with the smallest defensible solution,
-  evidence-led playbooks, deliberate native Codex subagents, and an adaptive
-  custom-agent lifecycle with evidence-gated quality, latency, and cost routing.
-  Use when the user says lean stack, minimal verified change, rigorous workflow,
-  deliberate subagents, evolving agents, adaptive agent routing, YAGNI, or avoid
-  bloat; or when a task combines substantial architecture tradeoffs, a
-  cross-boundary change, complex root-cause diagnosis, a substantial review, or
-  multiple independently verifiable workstreams. Do not use for simple factual
-  or prose-only work, a single obvious edit, or a routine specialized workflow
-  already fully covered by another skill.
+  按工作价值动态排列质量、总时间和总成本，并把真正独立、有净收益的工作交给
+  0 至 3 个专门子代理。适用于有意使用子代理、并行实现、复杂诊断、架构、重要
+  审查或跨边界工作。跳过简单事实、一眼可完成的单点修改和短命令。
 ---
 
-# Lean Stack
+# 精益任务栈
 
-Deliver the user's outcome with the least new machinery that survives real
-verification. Be lazy about the solution, never about understanding or proof.
+用最小且经过验证的完整方案完成用户的真实任务。子代理必须直接交付成果，
+不能只审批计划、运行仪式或维护代理管理层。
 
-## Completion objective
+## 先判工作价值，再排三项原则
 
-Optimize the whole path to a verified result, not one model call in isolation:
+安全、权限、数据完整性、明确验收条件和诚实证据是所有工作的共同底线。
+三项原则不是所有工作的固定排序，先判断当前工作属于哪一类：
 
-1. Meet the user's correctness, safety, scope, and evidence floor.
-2. Among routes that meet that floor, minimize expected wall-clock time to
-   verified completion, including startup, tools, network waits, retries,
-   synthesis, and rework.
-3. Then minimize total tokens, credits, paid API use, and duplicated work. Count
-   failed cheap attempts and escalations in the total rather than calling the
-   first model alone "low cost".
-4. Bias toward lower latency when the user accepts a bounded cost increase.
-   Fast is a service tier, not a quality score; use it readily for low- and
-   medium-cost routes with repeated model-side latency, while keeping high-cost
-   routes on Standard unless the user explicitly accepts that larger multiplier.
-   Parallel agents are useful only when they shorten the critical path or
-   materially raise confidence beyond their coordination overhead. A sequential
-   specialist may own the only next step only when an existing custom agent has
-   at least one comparable high-scoring precedent, and evidence predicts the same
-   quality floor, lower end-to-end time, and lower total cost after startup,
-   transfer, verification, retry, escalation, and merge overhead are counted.
+- **高价值工作：质量优先。** 错误可能造成重大返工、公共契约破坏、安全或
+  权限问题、数据丢失、迁移损坏、不可逆外部影响，或者任务需要复杂语义判断时，
+  先提高正确性、证据和独立复核强度；可靠性相当时再选总时间更短的路线，仍相当
+  时再选总成本更低的路线。
+- **普通工作：速度优先。** 对可逆、确定、低风险且验收清楚的工作，先选达到
+  质量底线后总完成时间最短的路线；时间接近时再选总成本更低的路线，不为很小的
+  额外润色增加明显等待和模型成本。
 
-Never trade away the quality floor to make a metric look efficient. When quality,
-speed, and cost cannot all improve, make the conflict visible and follow the
-user's stated priority.
+总时间包括启动、上下文传递、父子工作、汇合、验证、重试、升级和返工；总成本
+包括父任务和子代理的全部模型消耗及上述附带工作。没有实际遥测时，只能说明这是
+基于任务形状的保守判断，不得声称已经实测省时或省钱。
 
-## Operating contract
+不要按模型调用次数比较成本，也不要因为父任务已掌握上下文就自动否决委派。
+应比较父子模型各自的当前单位额度、速度档位、实际输入、缓存输入、输出与推理令牌，
+以及最小上下文传递和汇合开销。较低单位成本的合适子代理即使多用一些令牌，完整
+路线仍可能比高成本父模型独自完成更便宜。
 
-1. Preserve the user's requested scope, permissions, tools, and stopping
-   conditions. Delegation never grants extra authority.
-2. Trace the affected flow before choosing a small change. Read callers,
-   boundaries, tests, and the running surface relevant to the request.
-3. Surface a material ambiguity before editing when competing interpretations
-   would change scope, interfaces, data safety, or the success criterion. Resolve
-   it from authoritative context when possible; otherwise present the tradeoff
-   and ask. For reversible low-risk details, state the assumption and continue.
-4. Classify the task type and read exactly one primary playbook:
-   - Read-only explanation or decision: [investigation.md](references/investigation.md)
-   - Reported defect: [bug-fix.md](references/bug-fix.md)
-   - Feature, refactor, migration, or other code change: [build.md](references/build.md)
-   - Diff or repository review: [review.md](references/review.md)
-5. If that task is also multi-phase or unattended, additionally read the
-   [long-running overlay](references/long-running.md). It supplements rather
-   than replaces the primary playbook.
-6. Keep a task plan only when the work has multiple verifiable steps. Do not
-   turn a small edit into ceremony.
-7. When changing a versioned plugin, package, or application, follow its existing
-   release policy. For this plugin, read [versioning.md](references/versioning.md):
-   a compatible feature bumps minor, a compatible fix bumps patch, and a
-   breaking public change bumps major. The Codex cachebuster is build metadata,
-   not a substitute for that semantic bump.
-8. Finish with evidence from the real artifact and a concise handoff.
+模型候选不能锁定在 5.6 系列。宿主以后暴露更强或更合适的模型时，自动把它纳入
+候选，并使用当时真实可用性、质量证据、官方单位额度、速度档位和任务令牌形状重新
+比较；旧模型示例不能成为白名单或永久路由表。
 
-## Minimality ladder
+## 工具先于子代理
 
-After understanding the flow, stop at the first option that fully meets the
-request:
+先问候选工作是否需要持续模型语义判断：
 
-1. Do not build behavior the request does not need.
-2. Reuse the repository's existing helper, type, convention, or tool.
-3. Prefer the language standard library.
-4. Prefer the platform's native capability.
-5. Prefer an already-installed dependency.
-6. Prefer deletion, inlining, or one focused change over a new layer.
-7. Only then add the minimum new code and files.
+1. 不需要时，不启动模型子代理。
+   - 几秒能完成的本地命令由父任务直接运行。
+   - 多个互不依赖的短命令放进一次工具调用并发运行。
+   - 长时间但步骤确定的命令放入持续终端或后台会话，父任务继续其他工作。
+2. 只有独立代码阅读、诊断、实现、设计判断、来源核对或语义审查，才进入子代理
+   判断。
+3. 约十五秒只是普通工作的快速经验边界：扣除启动、传递、汇合和核验后仍能明显
+   节省时间，才值得委派；不要把它变成评分表。
+4. 子代理启动时必须立即有真实、已就绪的工作，禁止提前启动后空等。
 
-When two options are similarly small, choose the one that is easier to read,
-more correct at the edges, and cheaper to remove. Do not add an interface with
-one implementation, a factory with one product, configuration nobody can vary,
-or compatibility code with no current caller.
+需要详细判断或验证调度时，读取
+[执行路由](references/execution-routing.md)。
 
-## Rigor floor
+## 核心分派链
 
-Never minimize away:
+每条新的用户消息、继续指令、方向调整、队列新增、范围扩展或阶段边界都重新判断；
+若新消息没有改变工作块、依赖、风险和可用代理，才复用已有判断。没有完成具体候选
+工作块核对前，不在回合开头把“零个子代理”宣布为整轮固定结论。
 
-- Validation at trust boundaries.
-- Error handling needed to prevent data loss or silent corruption.
-- Security, privacy, authorization, accessibility, or explicit user requirements.
-- Calibration and uncertainty needed for real hardware or external systems.
-- A cheap check that would catch regression in non-trivial logic.
+1. 保留用户的权限、工具、停止条件和外部影响边界；委派不增加权限。
+2. 找出现在已经就绪、稳定、互不重叠、可独立验收且需要语义判断的工作块。
+3. 已知当前可见的定制代理确实匹配时直接复用；否则把最小专门任务说明交给当前
+   可见的通用执行子代理或代码探索子代理，不等待目录扫描、新配置或重新加载。
+4. 一次决定使用 `0`、`1`、`2` 或 `3` 个子代理。数量等于真正有净收益的独立
+   工作块数，不默认派一个，也不为第三个代理增加单独仪式。
+5. 派出后，父任务立即推进不重叠的需求、架构、集成或关键路径工作。耦合代码和
+   共享状态保持一个写入者；多个可写子代理必须天然拥有互不重叠的文件或状态。
+6. 只在第一个真实依赖点汇合。父任务按风险核验采用的结果，并负责最终整合和声明。
 
-Fix a defect at the shared root cause, not by scattering guards around visible
-symptoms. Treat generated output, upstream-derived files, and public contracts
-as boundaries that require their own evidence.
+小任务、串行任务、重复读取、重复实现、尚未就绪的工作和汇合成本抵消收益的工作，
+都应选择零个子代理。
 
-## Native subagents
+系统内部类型只在需要调用时单独使用：
 
-This skill explicitly requests an eager but bounded native Codex subagent
-workflow. For every non-trivial engineering task, look for at least one bounded
-child route that can improve evidence, speed, quality, or total cost. Prefer a
-parallel slice that overlaps useful parent work. For a medium-or-larger task,
-normally delegate one stable, non-overlapping read-only slice when the conservative
-end-to-end estimate saves about 15 seconds or more after startup, transfer, merge,
-verification, retry, and escalation are counted. Normally delegate two when two
-such slices divide cleanly; use a third only when it remains independent and does
-not congest the merge. Start documentation checks, codebase mapping, focused test
-analysis, source verification, and independent review as soon as their inputs are
-stable. After spawning a parallel child, continue independent parent work and wait
-only at the named merge point. If the child result is the only next step, allow a sequential specialist
-route only for an existing custom agent with at least one comparable high-scoring precedent,
-and only when the quality, end-to-end-time, and total-cost gates in
-[delegation.md](references/delegation.md) all pass. A built-in, newly created,
-degraded, pending, or unscored agent cannot take this exception; a selectable
-probationary custom agent can qualify through its high-scoring precedent.
-One bounded immediate wait is then expected and must not be described as
-parallelism. Before spawning any subagent, read that reference and the [managed custom-agent
-lifecycle](references/agent-lifecycle.md) in full.
+```text
+worker
+explorer
+```
 
-Re-run this gate on every user continuation, scope expansion, grouped defect
-update, or new long-running phase. A task that began single-agent is not allowed
-to remain serial after stable parallel inputs appear. If the current task has no
-native collaboration tool, uses an older multi-agent runtime, or predates the
-plugin refresh without hot reload, the skill cannot manufacture a subagent:
-continue safe parent work, record the capability miss, and validate the policy
-in a fresh loaded task rather than claiming delegation occurred.
+## 同类复制与单轴变体
 
-At the delegation checkpoint, inventory built-in, personal, project, and
-plugin-managed agents before choosing. Reuse the narrowest suitable specialized
-agent. For a non-trivial, reusable specialist role that no specialized custom
-agent fits, create a managed personal agent before falling back to the generic
-`worker` or `explorer`; a built-in being broadly capable is not by itself a
-specialist match. Default to at most one new persistent role per top-level task.
-A second is allowed only when the user explicitly requests frequent
-customization or another genuinely distinct reusable specialty also exists;
-never create a third in the same top-level task. Use a built-in fallback for
-one-off roles, exhausted capacity, conflicts, or pending visibility.
-Use the lifecycle script as the sole writer; never edit or remove an agent TOML
-directly. A newly created or restored TOML is not proof of current-session
-visibility, so use an explicit-role fallback until the real Codex surface
-confirms it. Promoted experience stays in the versioned lifecycle playbook and
-is injected into future briefs; promotion never overwrites the stable TOML.
+同一种专长存在多个独立项目时，使用同一角色的运行时复制。只有一个明确差异可能
+更快消除不确定性时，才建立单轴变体，例如因果假设、证据来源、模型配置或权限
+边界。模型、推理强度和速度档位是三个不同轴，每次只升一个实际可用档位并核验收益，
+不能同时升级后把结果归因给其中一个轴。高价值工作先比较质量、正确性、安全和证据；
+普通工作在质量底线内先比较总
+时间。胜出结果成为下一轮基准；没有有用的未试单轴，或下一轮不再有净收益时停止。
+运行时复制和变体结束即消失，最多只持久保留一个真正值得复用的胜出角色。细节见
+[委派规则](references/delegation.md)。
 
-For a previously evaluated managed agent, ask the lifecycle CLI for a
-task-class, risk-tier, execution-mode, and service-tier-specific route
-recommendation before the next comparable run. Treat `WATCH` as evidence to
-observe, not permission to tune. A proposed model, reasoning, or speed change is
-a single-axis shadow candidate; it never edits the stable TOML or global Codex
-configuration. A named custom agent whose file pins model or effort must use an
-explicit-role fallback to test a different pair.
+## 最小任务说明与中文表达
 
-Choose a role for every subagent and explicitly request that role's model and
-reasoning effort in both the spawn call, when supported, and the written brief.
-Do not silently let all children inherit one parent configuration.
+子代理只接收完成工作所需的最小上下文：本地化角色名、精确工作块和来源边界、
+可写所有权或只读限制、禁止的外部影响、完成条件、证据、时间与工具边界、停止条件
+和回复语言。除非工作确实依赖，不复制完整会话历史。
 
-Require every subagent to report in the user's current language unless the user
-explicitly requests another language. Preserve code, paths, identifiers, quoted
-source text, and raw error messages in their original form when useful. Its first
-progress update must first state a concise user-visible agent name localized to
-that language, then disclose the requested model and reasoning effort. Add an
-effective model, effort, or speed line only when the host actually exposes that
-specific runtime value. The host's internal task identifier may remain an ASCII slug
-when its API forbids localized names; do not present that technical identifier as
-the user-facing name. Omit every unavailable effective field completely; never
-emit an unavailable-value placeholder or guess from behavior or identity text.
+中文任务的进度、证据、发现、缺口和结论都使用通俗中文。中文正文不要夹入英文术语；
+无法替代的代码标识、命令、路径、模型名和原始错误使用代码格式单独
+引用。正文优先说“任务说明”“通用执行子代理”“代码探索子代理”“运行环境”
+“汇合点”和“验证子代理”。启动进度只报告请求的模型和推理强度；生效字段仅在
+宿主真实提供时显示。
 
-Treat `FINAL_ANSWER` or another complete result as `result_received`, not proof
-that the host has closed the child thread. At the merge point, collect the result,
-verify its required evidence, and perform one bounded terminal-state check. If a
-complete child still appears active, send one explicit stop-and-close request,
-check once more, then use the available interrupt/stop control. Never respawn the
-work merely to clear the UI. If the host still does not expose a terminal state,
-label it `stale_host_status`, stop waiting, and disclose the UI gap. A non-critical
-stale card must not block the parent's useful final answer. Release a managed
-agent's lease only after a confirmed terminal state; when the host cannot confirm
-one, let the bounded lease expire instead of claiming a clean close.
+子代理必须返回可直接采用的实现、测试、证据或结论，不能创建一个子代理去决定
+是否再创建另一个子代理。来源工作必须返回 `SOURCE_COVERAGE`：来源身份、边界或
+快照、覆盖状态和剩余缺口。完整覆盖在来源未变化时替代父任务的常规重复读取；只有
+证据冲突、用户要求、高风险主张或仍有缺口时才重读。
 
-Stay single-agent for a trivial task, work whose overlapping writes and startup
-cost exceed the expected benefit, or a tightly sequential chain that does not
-clear all three sequential-route gates. Increased delegation frequency does not
-authorize redundant agents, duplicated scopes, shared-file races, or a cheap
-first attempt whose expected retry and escalation erase the claimed savings.
+## 简单结果判断
 
-After every terminal managed-agent run, release its lifecycle lease and submit
-an evidence-scored report with `evolution_mode=rapid`. A run that satisfies the
-existing high-quality contract must include one bounded sanitized experience;
-the lifecycle immediately adds that one rule to the versioned injected playbook.
-A score below 90 immediately records one demerit and lowers the routing reputation;
-every routed high, low, and major result also enters the same project-scoped
-configuration observation pool. The first evidence-backed attributable major
-failure for one exact project/task/risk/model/effort/speed configuration marks it
-`watch`; the second cumulative major failure marks only that configuration
-`failing` and may stage one causal single-axis neighbor. Quality failures raise
-the attributed model or reasoning axis. Model-compute latency or timeout may try
-an exposed faster tier, then lower effort or model within the task floor; cost
-overrun with a known high token or credit bucket moves one cost axis downward.
-Tool/environment, role-mismatch, stale-host, unproven timeout, missing failure
-reason, unknown cost, and unknown-attribution failures are penalized but do not
-count toward configuration failure. Generate or reuse the opaque
-`project_key` returned by `catalog --project-root` (or `project-key`) and include
-it in both route recommendations and evaluation reports; never persist the real
-project path.
+只在内存中判断三种结果，不计算数字评分、失败次数、声誉或降级阶段：
 
-Every high-quality incumbent is retained while the lifecycle stages at most one
-resource challenger for the same project/task/risk class. A challenger is a logical copy
-of the incumbent route and changes exactly one model, reasoning, or exposed speed
-tier. Each finite neighboring configuration is tried at most once. A proven winner
-becomes the preferred route; when all adjacent single-axis tiers have been tested
-without improvement, the competition converges and later high scores absorb
-experience without producing more copies. Stable TOML and global Codex settings
-remain unchanged; named agents use an explicit fallback to test conflicting pins.
+- `good`：已核验且可直接采用。
+- `bad`：不可用、证据弱、越界或需要明显返工。
+- `severe_bad`：用户明确否定该结果、发生未授权影响、伪造关键证据，或明显违反
+  权限与安全边界。不得采用并停止继续使用；可以向用户建议处理，但严重失败本身
+  不是永久删除授权。
 
-The omitted or explicit `guarded` mode preserves the three-observation and shadow
-promotion workflow for existing callers. A confirmed
-extreme failure can retire only a plugin-owned, hash-matching, inactive agent by
-moving its single TOML to recoverable quarantine. Built-in, project, user-owned,
-externally edited, or currently running agents are never automatically modified
-or deleted. Tell the user whenever this skill causes a persistent create,
-promotion, quarantine, or restore action.
+需求变化、用户批评父任务、工具或环境故障，以及单纯耗时，不自动等于子代理严重
+失败。
 
-When runtime configuration facts are available, include the requested and
-effective model, reasoning effort, service tier, execution mode, and a bounded
-cause code in that report. Unknown effective values remain unknown. Repeated
-low-quality comparable guarded runs may produce a stronger single-axis recommendation;
-sustained high-quality but slow runs may produce a cheaper/lower-effort
-recommendation. Fast remains recommendation-only unless the current spawn
-surface exposes and validates a per-agent service tier. Three high-quality slow
-runs are enough to propose Fast for a low- or medium-cost configuration when the
-user accepts a bounded cost increase. High-cost configurations prefer Standard;
-every Fast candidate still requires a cost notice, host capability check, and
-user confirmation.
+## 验证调度
 
-For deliberate agent evolution, use the lifecycle's bounded variation path.
-`stagnation-status` may authorize a supervisor only after comparable runs show a
-real no-improvement streak or repeat the same high-confidence enumerated failure.
-An explicit user request may instead authorize a manual variation session.
-`variation-plan` fixes candidate count and end-to-end wall-clock, tool-call,
-token, and credit budgets and emits only sanitized lineage. `variation-stage` rejects late or
-over-budget output and can only stage challengers. `variation-verify` requires
-independent shadow evidence, keeps generation plus verification inside the same
-budgets, and records quality, wall time, tokens, credits, retries, and rework as
-separate objectives. It creates a normal candidate but
-still cannot promote it; the existing `promote` gate must run separately. No
-variation or supervisor command edits stable TOML, global Codex configuration,
-or the active session. Unknown credits remain unknown rather than zero.
+迭代阶段的最窄相关检查由父任务直接调用工具，默认使用简短输出，失败后才打开详细
+输出。相关代码仍可能变化时，不启动最终验证子代理；先完成可能推动修改的语义审查。
 
-## Proof contract
+语义审查关闭且相关代码边界冻结后，只运行一次必要的最终验证。多个短而确定的检查
+优先在一次工具调用中并发执行；不得让子代理只运行命令并回报退出状态。只有需要
+独立语义判断、运行时间较长且父任务仍有真实并行工作，或高价值边界需要独立复核时，
+才使用验证子代理。
 
-- Define what observable result would prove success before editing.
-- Prefer a failing-then-passing reproduction for defects when a cheap path exists.
-- Run only checks that can fail because of the changed behavior, an explicit
-  contract, or a material boundary risk. Start with the narrowest meaningful
-  check. Run one broader essential suite only at the final code boundary when the
-  changed behavior justifies it; do not repeat broad suites or reviews after
-  documentation-only edits or while the relevant artifact bytes are unchanged.
-- Inspect the final diff and working tree. Preserve unrelated user changes.
-- Require every coherent group of changed lines to trace to the user goal, a
-  confirmed constraint, or verification needed for that goal. Remove an
-  untraceable change or present it separately as an unimplemented option.
-- Remove imports, variables, private branches, or internal APIs made obsolete by
-  the current change in the same verified wave. Report pre-existing adjacent
-  dead code or formatting drift instead of cleaning it up unless asked.
-- Compilation, a subagent's self-report, or a mocked surface alone does not prove
-  runtime behavior.
-- If the real surface is unavailable, label the result as unverified and state
-  exactly what remains to be exercised.
+验证后若代码、依赖、配置或运行环境发生变化，只重跑可能受影响的检查；来源与边界
+未变化时复用已经通过的证据。纯文档改动默认不运行代码测试，但安全、权限、数据
+丢失、迁移、公共契约和静默错误所需的检查不能省略。
 
-## Handoff
+## 可选专门代理记忆与终止条件
 
-Lead with the outcome. Then give the evidence, material choices, intentionally
-skipped complexity, and any residual risk. Reviews lead with actionable findings
-ordered by impact. Investigations separate confirmed facts, inference, and
-unknowns. Do not pass through raw subagent reports.
+普通分派不运行持久化或数据库操作。当一个稳定、重复的角色确实值得未来复用时，
+这一判断自动授权插件拥有的非破坏性创建、安全重配、胜出经验去敏追加和摘要压缩；
+用户明确否决时不得执行。永久删除仍必须由用户当前明确要求。只有维护能与仍需完成
+的主任务工作并行时，才读取
+[专门代理记忆](references/specialist-memory.md)。主结果一旦满足，立即放弃未完成的
+创建、可见性、经验、压缩或删除维护并交付，不得让辅助状态阻塞主任务。
+
+## 完成工作并证明
+
+只在确有帮助时读取一个任务手册：
+[调查](references/investigation.md)、[缺陷修复](references/bug-fix.md)、
+[构建或重构](references/build.md)或[审查](references/review.md)。多阶段任务再叠加
+[长任务](references/long-running.md)。需要向用户解释完整链路时读取
+[全部中文链路图](references/flowcharts-zh.md)。
+
+按“不构建、复用现有代码、标准库、原生平台、已安装依赖、删除或内联、最后才添加
+最少代码”的顺序停止在第一个完整方案。不能用精简为由省掉安全、授权、验证、数据
+保护、无障碍或便宜的回归检查。
+
+最终交接先给结果、决定性证据、重要取舍和残余风险，不粘贴原始子代理报告或辅助
+维护细节。

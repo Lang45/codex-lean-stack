@@ -1,26 +1,16 @@
-# Bug fix
+# 缺陷修复
 
-Use for a reported defect whose requested outcome includes a fix.
+用于用户报告缺陷且请求包含修复的任务。
 
-1. Reproduce the symptom on the matching surface. Record the smallest reliable
-   trigger and the failing observation. If reproduction is unavailable, add
-   targeted instrumentation or state why the result cannot be proved.
-2. Trace the responsible flow and every relevant caller. Form a small set of
-   competing causal hypotheses and eliminate them with evidence.
-3. Confirm the surviving mechanism before designing the fix. For a non-trivial
-   defect, delegate at least one independent evidence or verification slice when
-   available, such as runtime reproduction, code-path mapping, or regression-test
-   review; do not let several agents guess fixes concurrently. Request a
-   `gpt-5.6-terra` / `medium` explorer for mapping, a `gpt-5.6-sol` / `xhigh`
-   reviewer for a genuinely complex causal mechanism, and one
-   `gpt-5.6-sol` / `high` implementation worker only after the cause is proven.
-4. Apply the minimality ladder. Fix the shared cause once. Avoid speculative
-   guards, fallback layers, and unrelated cleanup.
-5. Add a cheap regression check first when it can represent the failure without
-   a large harness. Otherwise preserve a precise manual or integration repro.
-6. Re-run the original repro on the same surface, then run the broader relevant
-   tests and inspect the final diff.
+1. 在匹配的真实表面复现问题，记录最小稳定触发条件和失败现象。无法复现时加入最小
+   定向观测，或明确说明当前无法证明。
+2. 追踪负责流程和相关调用方，列出少量竞争性因果假设并用证据排除。
+3. 根因未证明前，不让多个子代理同时猜修法。独立复现、代码路径阅读或回归场景设计
+   需要持续判断且确有净收益时，才一次选择零至三个专门子代理；父任务继续根因分析。
+4. 证明根因后按最小方案修复一次共享原因，避免推测性保护、层层后备和无关清理。
+5. 能用便宜检查表示原始失败时先补最窄回归检查；否则保留精确人工或集成复现。
+6. 在同一真实表面重跑原始复现。迭代测试由父任务直接运行；先完成会推动代码变化的
+   语义审查，代码边界冻结后再按主技能的最终验证规则收口。
 
-Done means the original failure is observed before the change, absent after it,
-and the mechanism is explained by the evidence. A unit test alone is not a
-substitute for the original surface when that surface is available.
+完成条件是：修改前观察到原始失败，修改后失败消失，并且证据解释了机制。真实表面
+可用时，单元测试不能替代原始表面验证。

@@ -1,4 +1,4 @@
 interface:
-  display_name: "Lean Stack"
-  short_description: "Fast verified work with eager adaptive subagents."
-  default_prompt: "Use $lean-stack; start useful subagents early, keep the parent moving, use rapid evidence-scored evolution, and run only essential checks."
+  display_name: "精益任务栈"
+  short_description: "按价值选择质量或速度优先，只派真正有净收益的子代理。"
+  default_prompt: "使用 $lean-stack 先按工作价值选择质量优先或速度优先，再判断工具直做或分派零至三个专门子代理；每次用户调整方向、加入新工作或阶段变化时重新判断。"

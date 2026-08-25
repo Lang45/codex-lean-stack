@@ -1,7 +1,7 @@
 {
   "name": "codex-lean-stack",
-  "version": "0.5.0+codex.20260824234451",
-  "description": "Fast, evidence-driven Codex engineering with eager subagents and project-scoped adaptive resource competition.",
+  "version": "1.2.0+codex.20260825174400",
+  "description": "\u6309\u5de5\u4f5c\u4ef7\u503c\u9009\u62e9\u8d28\u91cf\u6216\u901f\u5ea6\u4f18\u5148\uff0c\u53ea\u628a\u771f\u6b63\u6709\u51c0\u6536\u76ca\u7684\u72ec\u7acb\u5de5\u4f5c\u4ea4\u7ed9\u96f6\u81f3\u4e09\u4e2a\u4e13\u95e8\u5b50\u4ee3\u7406\u3002",
   "author": {
     "name": "Lang45",
     "url": "https://github.com/Lang45"
@@ -12,16 +12,16 @@
   "keywords": [
     "codex",
     "engineering",
-    "agent-lifecycle",
+    "specialist-agents",
     "multi-agent",
     "minimalism",
     "verification"
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Codex Lean Stack",
-    "shortDescription": "Fast verified work with critical-path subagents.",
-    "longDescription": "Combines minimal verified changes with eager non-blocking subagents, immediate experience absorption, two-major-failure project routing, and finite single-axis model/reasoning/speed competition.",
+    "displayName": "\u7cbe\u76ca\u4efb\u52a1\u6808",
+    "shortDescription": "\u6309\u4ef7\u503c\u9009\u62e9\u8d28\u91cf\u6216\u901f\u5ea6\u4f18\u5148\uff0c\u53ea\u6d3e\u771f\u6b63\u6709\u51c0\u6536\u76ca\u7684\u5b50\u4ee3\u7406\u3002",
+    "longDescription": "\u5148\u533a\u5206\u9ad8\u4ef7\u503c\u5de5\u4f5c\u4e0e\u666e\u901a\u5de5\u4f5c\uff0c\u518d\u52a8\u6001\u6392\u5217\u8d28\u91cf\u3001\u603b\u65f6\u95f4\u548c\u603b\u6210\u672c\u3002\u786e\u5b9a\u6027\u5de5\u5177\u7531\u7236\u4efb\u52a1\u76f4\u63a5\u8fd0\u884c\uff1b\u53ea\u6709\u5df2\u5c31\u7eea\u3001\u9700\u8981\u8bed\u4e49\u5224\u65ad\u4e14\u6709\u51c0\u6536\u76ca\u7684\u72ec\u7acb\u5de5\u4f5c\u624d\u4ea4\u7ed9\u96f6\u81f3\u4e09\u4e2a\u5b50\u4ee3\u7406\u3002\u8bed\u4e49\u5ba1\u67e5\u5b8c\u6210\u5e76\u51bb\u7ed3\u4ee3\u7801\u540e\u624d\u8fdb\u884c\u4e00\u6b21\u5fc5\u8981\u7684\u6700\u7ec8\u9a8c\u8bc1\u3002",
     "developerName": "Lang45",
     "category": "Productivity",
     "capabilities": [
@@ -30,8 +30,7 @@
     ],
     "websiteURL": "https://github.com/Lang45/codex-lean-stack",
     "defaultPrompt": [
-      "Use $lean-stack for a minimal verified solution; give each subagent a localized name, model, and reasoning effort.",
-      "\u7528 $lean-stack \u5b8c\u6210\u4efb\u52a1\uff1a\u9009\u62e9\u6700\u5c0f\u53ef\u8fa9\u62a4\u89e3\uff0c\u4e3a\u6bcf\u4e2a\u5b50\u4ee3\u7406\u6307\u5b9a\u4e2d\u6587\u7528\u6237\u53ef\u89c1\u540d\u79f0\u3001\u6a21\u578b\u548c\u63a8\u7406\u5f3a\u5ea6\uff0c\u5e76\u7528\u771f\u5b9e\u8bc1\u636e\u9a8c\u8bc1\u3002"
+      "\u4f7f\u7528 $lean-stack \u5148\u6309\u5de5\u4f5c\u4ef7\u503c\u9009\u62e9\u8d28\u91cf\u4f18\u5148\u6216\u901f\u5ea6\u4f18\u5148\uff0c\u518d\u5224\u65ad\u5de5\u5177\u76f4\u505a\u6216\u5206\u6d3e\u96f6\u81f3\u4e09\u4e2a\u4e13\u95e8\u5b50\u4ee3\u7406\uff1b\u6bcf\u6b21\u7528\u6237\u8c03\u6574\u65b9\u5411\u3001\u52a0\u5165\u65b0\u5de5\u4f5c\u6216\u9636\u6bb5\u53d8\u5316\u65f6\u91cd\u65b0\u5224\u65ad\u3002"
     ]
   }
 }

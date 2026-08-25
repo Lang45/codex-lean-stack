@@ -1,59 +1,26 @@
-# Long-running orchestration overlay
+# 长任务
 
-Read this in addition to the task's primary playbook when one request spans
-several independently verifiable phases, a large migration, or work the user
-expects Codex to carry without repeated prompts. The primary playbook still owns
-task-specific evidence such as bug reproduction, review findings, or feature
-behavior.
+仅作为真正多阶段或无人值守工作的叠加规则。主工程任务始终优先，代理维护不是阶段。
 
-1. Define one terminal predicate and the authority boundary. Persistence does
-   not authorize deployment, deletion, publication, or external messages.
-2. Split the program into the smallest units that each end in a meaningful
-   check. Keep at most one unit in progress in the parent plan.
-3. Identify blocking work before fan-out. Parallelize only independent slices and
-   give every writer a disjoint output. Keep integration and shared state with
-   one owner. Select and request each slice's model and reasoning effort from the
-   delegation role matrix instead of applying one configuration to the program.
-   For a medium-or-larger program, normally start one stable non-overlapping
-   read-only slice when the conservative end-to-end saving is about 15 seconds
-   or more, and normally start two when two clean slices meet that gate. Count
-   startup, duplicate reading, transfer, synthesis, verification, retry, and
-   escalation; do not fan out when those costs are likely to exceed the saving.
-   Start useful children early, continue the parent-owned critical-path slice,
-   and place a single explicit merge point later in the plan. Never make
-   "spawn, immediately wait, then continue" the default shape.
-   A blocking unit whose result is the only next step may instead use sequential
-   specialist routing only through an existing selectable custom agent with at
-   least one comparable high-scoring precedent, when the quality floor is preserved
-   and the complete child route is both faster and cheaper than the parent route.
-   In that case one bounded immediate wait is valid, but record it as sequential
-   routing rather than fan-out and count any retry or escalation against its
-   savings.
-4. At each checkpoint, record the decision, evidence, result, and next risk in
-   the task plan or a user-requested durable log. Do not accumulate raw agent
-   transcripts in the main context. Re-run the delegation gate at each phase
-   boundary and after a user continuation adds work; do not inherit a prior
-   single-agent decision after the inputs or remaining scope changed.
-5. Verify each unit before the next depends on it. Reassess the design when the
-   same workaround or failed assumption repeats.
-6. Stop at the terminal predicate. Before the final handoff, drain required child
-   results and run the terminal-state closeout in `delegation.md`: a child final
-   proves result delivery, not host closure. Use one bounded close/check/interrupt
-   sequence, record `stale_host_status` when the host still cannot confirm a
-   terminal state, and never rerun completed work to clear a stale UI card. Report
-   unresolved gaps honestly; do not add adjacent improvements merely because the
-   workflow is still running.
+1. 定义一个终止条件和精确权限边界。
+2. 把任务拆成最小、可独立验证的阶段。
+3. 每个阶段先区分高价值与普通工作，再排除短命令、确定性工具工作和未就绪工作。
+4. 只对当前已经就绪的独立语义工作，一次决定使用 `0`、`1`、`2` 或 `3` 个专门
+   子代理。阶段边界若工作块、依赖、风险和可用代理未变化，复用原决定。
+5. 子代理不能提前启动后等待下一阶段输入。父任务继续关键路径，只在真实依赖点汇合；
+   并行写入必须天然分离。
+6. 记录决定、关键证据、已验证结果和下一风险。下一阶段只能依赖已验证结果。
+7. 终止条件满足时立即结束；不能满足时报告精确缺口。
 
-For an authorized, idempotent external transfer such as publishing one verified
-commit, try the normal transport first. After one bounded retry of a clearly
-transient failure, do not keep paying the same timeout: switch to a previously
-verified safe transport when one exists, or report the exact external gap. Reuse
-already completed validation when the artifact bytes are unchanged; run the
-narrow affected check after a small edit and one final broad verification wave
-before handoff. During ordinary editing, run only the narrow check that can fail
-because of the current change. Run the smallest essential final suite once; do
-not repeat full suites or independent reviews after documentation-only edits.
+不要等待新写入的代理配置在当前任务中可见。当前任务立即使用可见角色和最小任务
+说明，最多在以后持久保留一个胜出者。
 
-When blocked, exhaust safe in-scope evidence and alternatives. Ask for user input
-only when a product choice, new authority, or unavailable external state truly
-prevents progress.
+成功子结果需要核验和整合，不需要关闭仪式。非必要工作迟到就放弃；必要工作超时只
+发一次有界收尾请求，随后由父任务继续或报告缺口。
+
+可选专门代理记忆不是阶段。它只能与仍需完成的主任务工作并行，终止条件一满足就
+放弃，详见[专门代理记忆](specialist-memory.md)。不得遗留后台生命周期工作。
+
+已授权且幂等的外部传输可对一次明确的暂时故障重试。持久化本身不授权部署、删除
+用户数据、公开发布或外部发信。只有产品选择、新权限或外部状态真正阻止安全推进时，
+才询问用户。

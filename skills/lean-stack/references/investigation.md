@@ -1,22 +1,16 @@
-# Investigation
+# 调查
 
-Use for read-only questions about behavior, ownership, rationale, risk, or a
-choice between approaches.
+用于只读回答行为、所有权、原因、风险或方案选择问题。
 
-1. State the exact question and what evidence would answer it.
-2. Trace the runtime path, data flow, callers, configuration, and tests that own
-   the behavior. Use history and external documentation only when the question
-   depends on them.
-3. Apply the eager delegation gate whenever one independent module, evidence
-   source, or verification pass can be checked while the parent traces the main
-   path. Give each subagent a distinct source category or subsystem. Request
-   `gpt-5.6-terra` with `medium` effort for codebase exploration and
-   `gpt-5.6-luna` with `medium` effort for narrow documentation verification.
-4. Reconcile conflicts against primary evidence. Do not treat search snippets,
-   comments, or old docs as more authoritative than current code and behavior.
-5. Return the answer or recommendation with exact locations or links. Separate
-   confirmed facts, inference, and unknowns.
+1. 写清问题，以及什么证据足以回答。
+2. 先标出主运行或数据路径，再标出相互独立的调用方、配置、测试、历史或外部来源。
+3. 先判断每块工作是否需要持续模型判断。短查询由父任务直接调用工具；只有大于工具
+   开销、边界清楚的独立来源或子系统才进入核心分派判断。
+4. 父任务追主路径，已选择的子代理覆盖不同来源类别或子系统；任何子代理启动时都要
+   立即有真实来源可读，不能预先启动后等待。
+5. 汇合真正拥有该行为的运行路径、调用方、配置和测试。只有问题确实依赖时才使用
+   历史和外部文档；当前代码与真实行为优先于搜索摘要、评论和旧文档。
+6. 返回带精确位置或链接的答案，明确区分已确认事实、推断和未知项。
 
-Do not edit, launch a mutating workflow, or quietly turn the investigation into
-an implementation. If the conclusion suggests a change, hand it back as an
-option unless the user's request already authorized that change.
+来源覆盖完整且未变化时，父任务不做常规完整重读。除非用户已经授权修改，否则不编辑、
+不启动有外部影响的流程，也不把调查悄悄扩大成实现；建议修改时把它作为选项交回。

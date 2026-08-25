@@ -1,331 +1,103 @@
-# Native Codex delegation
+# 子代理委派
 
-Use this reference only after the delegation gate in `SKILL.md` passes. This
-skill instruction is an explicit trigger for Codex's native subagent workflow;
-it does not require a custom agent runtime, a hook, or an external orchestrator.
+仅在多个执行者、可写工作块、同类复制、单轴变体或真实顺序协作需要细节时读取。
+父任务是唯一的路由者和整合者。
 
-## Gate
+## 一次快速决定
 
-Delegate only when all are true:
+对当前所有已就绪、稳定、独立、可验收且需要语义判断的工作块，只应用一次核心
+分派判断。平等考虑 `0`、`1`、`2`、`3`。每条新用户消息、方向调整、队列新增、
+范围扩展或阶段变化都重新判断；只有工作形状完全没有变化时才复用决定。没有核对
+具体候选工作块前，不把零个子代理宣布为整轮固定结论。不要估算不可观测的令牌数字，
+也不要给第三个代理增加单独手续。
 
-1. The task is non-trivial and has at least one bounded exploration,
-   documentation, test, analysis, or review slice with a clear done predicate.
-2. That slice is large enough to repay startup and synthesis overhead and can
-   proceed while the parent does different useful work, can provide genuinely
-   independent verification of the parent's result, or clears every sequential
-   specialist-routing gate below.
-3. The work can use separate outputs, or one agent remains the sole writer.
-4. The parent can verify the returned evidence without replaying all raw work.
+以下情况不委派：
 
-Good first uses are codebase mapping, documentation checks, log or test analysis,
-independent review axes, and tests that can run without competing for the same
-state. For a medium-or-larger task, normally spawn one read-only child as soon as
-a stable non-overlapping slice is conservatively expected to save about 15 seconds
-or more end to end. Normally spawn two when two such slices have independent done
-predicates. This estimate includes startup, context transfer, merge, verification,
-retry, and escalation. A third child needs a third real slice and a merge that will
-not become the bottleneck. Avoid
-delegation for a one-function edit, a single linear debugging chain that fails
-the sequential specialist gate, or several agents writing the same files.
+- 父任务几秒即可完成的动作；
+- 可以用确定性工具直接完成的命令；
+- 前置条件尚未就绪的工作；
+- 重复读取或重复实现；
+- 无法安全拆开的耦合写入；
+- 审批另一次委派；
+- 维护成本超过当前任务收益；
+- 启动后只能空等的角色。
 
-Run the gate again after every `continue`, newly added defect group, broadened
-scope, or phase transition. Long-lived implementation tasks commonly become
-parallelizable only after the first repository map, reproduction, or design
-decision stabilizes; delaying the next gate until final review loses most of the
-wall-clock benefit. Short visual nudges and a genuinely coupled edit remain
-single-agent.
+## 找到或定义专门角色
 
-The gate also needs an executable host route. If native collaboration tools are
-absent, the task is on an older multi-agent runtime, or the task began before the
-plugin was installed or refreshed and cannot hot-load it, record
-`native_subagent_unavailable` and continue in the parent. Do not create a
-user-owned peer task as a fake subagent, and do not claim that a skill prompt can
-invoke a tool the host did not provide. Validate the new behavior in a fresh task.
+当前已知可见的定制代理在专长、能力、权限和证据形状上匹配时直接复用。否则，把
+同一份精简专门任务说明交给内置的通用执行子代理或代码探索子代理并立即启动。
+枚举代理目录、创建持久文件、重新加载和可见性轮询都不是分派前置条件。
 
-## Shape
+父任务按工作块决定权限：
 
-- After the gate passes, default to one subagent and use two or three only for
-  genuinely distinct workstreams. Prefer two for two clean independent slices
-  instead of serially waiting for the first one. Respect the runtime limit and never create
-  more agents than useful, non-overlapping slices.
-- Prefer read-only exploration and review agents. Keep one implementation owner
-  unless writable targets are disjoint by construction.
-- When the host exposes specialized roles, use an explorer for read-heavy work
-  and a worker for bounded implementation. Otherwise state the role in the brief.
-- Do not allow recursive delegation unless the parent assigns a real orchestration
-  subproblem with its own bounded fan-out.
+- 实现、修复、测试或独立文件所有权可以使用可写权限；
+- 调研、审查、来源核对、日志或历史读取使用只读权限；
+- 任何子代理都不能超出用户授权和自身运行环境。
 
-## Critical-path parallelism
+耦合代码或共享状态只有一个写入者。共享工作树中的分支不等于写入隔离；多个可写
+子代理必须天然拥有互不重叠的目标。
 
-Subagents must overlap useful work instead of turning parallelism into a serial
-queue. Before spawning, estimate:
+## 同类复制和单轴变体
 
-```text
-parallel_time = startup + max(parent_slice, child_slice) + merge
-serial_time   = parent_slice + child_slice
-```
+同一种专长有多个独立项目时，使用同一可见角色的多个运行时实例，每个实例有不同
+的完成条件和所有权。
 
-Delegate only when `parallel_time` is plausibly lower, or when independent
-evidence is worth the bounded delay. Then follow these rules:
+只有一个刻意差异能更快消除不确定性时才使用变体，例如：
 
-1. Spawn as soon as the child's inputs are stable, and immediately continue the
-   parent-owned slice that does not depend on the child. Do not call `wait`
-   directly after spawning merely because the child exists.
-2. Name the merge point in advance. Wait only when the parent reaches that point
-   and the result is genuinely needed for integration or the final claim.
-3. Prefer one result-ready notification or one bounded wait at the merge point;
-   do not repeatedly poll unchanged status. Keep child output compact so result
-   transfer and synthesis do not erase the parallel gain.
-4. If a non-essential child is late, continue with available evidence and mark
-   it dropped. If an essential child is late, send one narrow finish-now request;
-   if it still misses the budget, interrupt it and report the verification gap.
-5. When the child result is the only possible next step and the parent has no
-   independent work, do not call it parallelism. Evaluate it only under the
-   sequential specialist-routing gate below.
+- 不同因果假设；
+- 不同来源或证据策略；
+- 模型只升一个实际可用档位；
+- 推理强度只升一个实际可用档位；
+- 速度只在标准速度档和快速速度档之间改变；
+- 不同读写边界。
 
-## Sequential specialist routing
+每个变体相对当前已验证基准只改变一个轴。高价值工作先比较质量、正确性、安全和
+证据，再比较总时间与成本；普通工作在质量底线内先比较总时间。把真实结果更好的
+方案设为新基准。没有有用的未试相邻轴，或下一轮不再有净收益时停止，不计算评分、
+惩罚、失败次数或降级阶段。
 
-Keep an only-next-step task in the parent by default. Only an existing custom
-specialist with at least one comparable high-scoring precedent may be considered
-for an exception; built-ins, newly created or unscored agents, degraded agents,
-and pending agents are ineligible. A selectable probationary custom agent can
-qualify through that precedent.
+当前使用 5.6 系列时，模型轴按实际需要单向考虑 `Luna → Terra → Sol`；推理强度
+只沿宿主当前真实提供的相邻档位提升；速度轴只单独比较标准速度档与快速速度档。
+当前档位已满足成功条件时立即停止，不把三个轴同时升级。未来更强模型由宿主可用性
+和当前官方数据接入模型轴，不猜测隐藏档位或价格。
 
-For a plugin-managed agent, precedent means at least one recent evaluation on
-the current revision with the same task class, risk tier, execution mode, and
-requested configuration. It must satisfy the lifecycle's high-quality
-contract: total score at least 90, correctness at least 32/35, evidence at least
-16/20, scope at least 13/15, efficiency at least 12/15, safety 5/5, strong
-evidence, no critical event, medium-or-high judge confidence, and no user
-rejection. The agent must be selectable with lifecycle state `probation` or
-`active`. Equivalent human-approved score evidence meeting the
-same thresholds may qualify another custom agent explicitly named by the user;
-otherwise missing lifecycle proof fails closed.
+复制和变体是运行时实例，不是额外持久代理文件。汇合时选择最好的已验证结果，其他
+实例自然结束。角色确有长期复用价值时，最多按
+[专门代理记忆](specialist-memory.md)保留或安全重配一个胜出者。
 
-After that precedent gate passes, compare whether the specialist offers a faster
-and cheaper route without weakening quality:
+## 最小任务说明
+
+使用主技能定义的最小任务说明，不在每个子代理提示里重复通用规则或完整三项原则。
+只传该工作块需要的上下文；完整会话历史不是默认输入。
+
+来源工作要求返回：
 
 ```text
-parent_time = parent_slice + parent_verification + expected_parent_rework
-child_time  = startup + child_slice + transfer + merge + child_verification
-              + expected_child_retry + expected_escalation
-
-parent_cost = parent_model_charge + parent_tool_charge
-              + expected_parent_rework_charge
-child_cost  = child_model_charge + child_tool_charge + coordination_charge
-              + expected_child_retry_charge + expected_escalation_charge
+SOURCE_COVERAGE
+source_identity: ...
+boundary_or_snapshot: ...
+coverage: complete | partial | unverifiable
+remaining_gap: ...
 ```
 
-Delegate the only next step only when all are true:
+中文正文解释为“来源覆盖、来源身份、边界或快照、完整或部分或无法核验、剩余缺口”。
+完整覆盖会替代父任务的常规重读，除非证据变化、互相冲突、主张风险高或仍有缺口。
 
-1. The specialist's role matches the task, the precedent gate above has passed,
-   and a cheap current deterministic check supports the same correctness,
-   safety, scope, and evidence floor as the parent route. A child's
-   self-assessment is insufficient.
-2. `child_time` is plausibly lower than `parent_time` after startup, transfer,
-   verification, retry, escalation, and merge are included.
-3. `child_cost` is plausibly lower than `parent_cost`, using one comparable
-   billing unit: ChatGPT credits, API charges, or another explicitly declared
-   proxy. Never add raw tokens, credits, and currency together. Include a failed
-   cheap attempt before escalation.
-4. Inputs are stable, the result can stay compact, and the parent can verify it
-   without replaying the entire task.
-5. Materially unknown quality, latency, retry, or billing assumptions fail the
-   gate. High-risk architecture, security, permission, data-loss, migration, and
-   external-effect work stays with the parent unless comparable evidence proves
-   the specialist route preserves its higher floor.
+## 汇合与停止
 
-This is sequential specialization, not parallel acceleration. Because the parent
-has no other useful work, one bounded wait immediately after spawning is allowed
-and expected. Do not poll repeatedly. If the child misses its budget or fails the
-quality check, stop it and use at most one disclosed parent fallback when needed
-to finish safely; record the failed attempt, added time, and cost so the same
-route is not falsely treated as efficient later.
+父任务和已选择子代理同时工作。父任务保留不重叠的需求、架构、集成或关键路径，
+只在真实依赖点等待。汇合时核验采用的结果、检查允许的写入并去除重复结论。
 
-## Model and reasoning requests
+用户的主结果一经核验就立即结束。辅助记忆只能与仍需完成的主任务工作并行；数据库
+锁、文件漂移、宿主状态未知或维护失败都不能拖延主结果。
 
-Select the role before spawning. Every subagent prompt must explicitly request a
-model and reasoning effort. When the spawn tool exposes `model` and
-`reasoning_effort` fields, pass the same pair there; the prose request is not a
-substitute for supported tool parameters.
+代码稳定后的命令测试优先由父任务通过工具级并发执行。独立验证子代理只用于持续
+语义判断、重要风险复核，或运行时间足够长且父任务仍有真实并行工作；不得只运行
+命令并回报退出状态。完整覆盖的验证不由父任务重复运行，除非结果冲突、来源变化或
+高风险缺口仍在。
 
-An explicit user choice or applicable project instruction overrides this table.
-Otherwise use these defaults:
+非必要子代理迟到时直接放弃。必要子代理超时时只发一次有界收尾请求，随后由父任务
+补齐证据或明确报告缺口，不创建租约、关闭仪式、恢复循环或后台生命周期工作。
 
-| Role | Requested model | Requested effort | Use |
-|---|---|---|---|
-| Codebase explorer | `gpt-5.6-terra` | `medium` | Read-heavy mapping, large-file scans, call graphs |
-| Integration or test reviewer | `gpt-5.6-terra` | `high` | Cross-boundary behavior, tests, edge cases |
-| Documentation verifier | `gpt-5.6-luna` | `medium` | Narrow source checks and supporting documents |
-| Mechanical worker | `gpt-5.6-luna` | `low` | Clear repetitive checks, generated lists, simple isolated edits |
-| Implementation worker | `gpt-5.6-sol` | `high` | Bounded feature or root-cause fix after the design is settled |
-| Architect or critical reviewer | `gpt-5.6-sol` | `xhigh` | Ambiguous design, security, concurrency, data-loss, adversarial review |
-
-Reserve `max` for the hardest quality-first architecture, security, or migration
-work when the selected model supports it and the expected gain justifies the
-extra time and tokens. Do not request `max` or `ultra` routinely.
-
-## Speed and adaptive route requests
-
-Treat model, reasoning effort, and service tier as independent axes. Fast mode
-does not make a model more capable; it trades higher credits or API price for
-lower service latency. Current OpenAI guidance describes roughly 1.5x speed and,
-for GPT-5.6 in ChatGPT-credit mode, 2.5x Standard credit consumption. Recheck the
-official Speed page before publishing fixed pricing claims.
-
-Use these speed-biased, bounded-cost defaults:
-
-- High-cost model/effort combinations stay on Standard.
-- Three high-quality slow runs can propose Fast for low- or medium-cost
-  combinations when the user accepts some extra cost.
-- In `rapid` lifecycle mode, every score below 90 immediately records a demerit
-  and lowers routing reputation. High and low runs share one configuration
-  observation pool scoped by agent, opaque project key, task, risk, requested
-  model, effort, and service tier. The first evidence-backed attributable major
-  failure marks that exact configuration `watch`; the second cumulative major
-  failure marks it `failing` and may stage one neighboring axis. A quality cause
-  raises only the attributed reasoning or model axis. A model-compute timeout or
-  latency cause tries one faster axis; a cost overrun with a known high token or
-  credit bucket tries one cheaper axis. Tool/environment, role mismatch,
-  stale-host, unproven timeout, missing failure reason, unknown cost, and unknown
-  causes receive the demerit but do not increment the configuration failure count.
-- High-quality rapid runs immediately absorb one sanitized experience and retain
-  the incumbent while trying at most one untested project-scoped single-axis
-  resource neighbor.
-  The finite search stops after every adjacent model, effort, or exposed speed
-  tier has been tried without improvement. `guarded` mode retains the repeated-
-  evidence routing gates below.
-- Change one axis per shadow comparison so the cause remains identifiable.
-- A named custom-agent file that pins model or effort cannot be tested with a
-  conflicting spawn override; use an explicit-role fallback or the incumbent.
-- If the current spawn schema omits `service_tier`, Fast is recommendation-only.
-  Never toggle `/fast`, edit global `config.toml`, or claim an effective tier on
-  the user's behalf.
-
-For a managed agent with comparable evaluation history, run the lifecycle
-`recommend-route` command before briefing the next task. A `watch` or `hold`
-result preserves the incumbent. A model or reasoning proposal requests two
-focused shadow cases. A service-tier proposal needs no duplicate quality run
-because Fast does not change the model; it still requires a current host
-capability check, cost notice, and user confirmation. No proposal edits the
-managed TOML.
-
-Include this block in every brief, localized to the user's language:
-
-```text
-User-visible agent name: <localized role name>
-Requested model: <exact model>
-Requested reasoning effort: <exact effort>
-Role: <bounded role>
-```
-
-Use a concise localized role name in conversation, progress, and the final
-report. If the spawn API restricts its internal `task_name` to ASCII slugs, use a
-stable technical slug there and keep the localized name in the brief; never
-claim that the host UI itself accepted a localized identifier when it did not.
-
-If the exact pair is rejected or unavailable, retry at most once with the
-closest supported model in the same GPT-5.6 family and a supported effort that
-preserves the role's quality floor. Do not reduce a critical reviewer below
-`high`. Report the fallback to the user. If only parent inheritance is possible,
-state that limitation before treating the child result as equivalent.
-
-## Startup disclosure
-
-Require each subagent's first progress update to begin with:
-
-- `子代理名称`: the user-visible role name localized to the user's current
-  language.
-- `请求模型`: the exact model requested in the brief and spawn call.
-- `请求推理强度`: the exact requested reasoning-effort value.
-
-Only when the host actually exposes a value, append:
-
-- `生效模型`: the actual model identifier exposed by the spawn result, runtime,
-  or agent metadata.
-- `生效推理强度`: the actual reasoning-effort value exposed by the same source.
-
-When a service tier was explicitly requested or recommended, also require
-`请求速度档位` and `生效速度档位`. Use `Standard`/`Fast` for the user-facing
-mode and retain raw values such as `priority` when the runtime exposes them.
-Omit an unexposed effective speed line.
-
-Localize these labels to the user's current language. If a value is not exposed,
-omit that effective field completely; never print an unavailable-value placeholder.
-If the spawn actually fell back to parent inheritance, say so explicitly. Never
-infer an effective model or effort from writing style, capability, a generic
-identity prompt, or a configured default that was not confirmed for the child.
-
-## Brief every agent
-
-Give each subagent a self-contained brief with:
-
-- Goal and exact slice.
-- Read and write boundaries, including named paths when known.
-- Relevant constraints and authority limits.
-- Evidence to collect or checks to run.
-- A done predicate, time budget, and stopping condition.
-- Whether the route is parallel or sequential, the child's criticality and
-  deadline, and either the parent-owned concurrent slice plus named merge point
-  or the evidence that clears the sequential quality/time/cost gates and their
-  routing preconditions.
-- The user's current response language. Require the entire report in that
-  language unless the user explicitly requests another one; code, paths,
-  identifiers, quoted source text, and raw errors may stay in their original form.
-- The role-specific requested model and reasoning effort, repeated exactly from
-  the spawn call.
-- A compact return shape: `AGENT_NAME`, `REQUESTED_MODEL`, `REQUESTED_REASONING`,
-  `STATUS`, `SCOPE`, `EVIDENCE`, `FINDINGS`, `GAPS`. Add `EFFECTIVE_MODEL`,
-  `EFFECTIVE_REASONING`, or `EFFECTIVE_SERVICE_TIER` only when the host actually
-  exposes the corresponding value.
-
-Pass file pointers instead of copying large payloads into every brief. If agents
-must write, give them naturally disjoint files or separate worktrees. A branch
-isolates writes only when it has its own worktree. Shared writes are serialized
-under one owner.
-
-## Terminal-state closeout
-
-Keep result delivery and host lifecycle as separate facts:
-
-- `result_received`: a complete structured result or `FINAL_ANSWER` arrived.
-- `result_verified`: the parent checked the required evidence and accepted or
-  rejected the slice.
-- `host_terminal`: the collaboration surface reports completed, stopped, or an
-  equivalent terminal state.
-
-At the merge point, drain every required result and then check child status once.
-For a child with a complete final that still appears active, send one explicit
-request to stop and close the completed thread, then perform one bounded status
-check. If it remains active, call the available interrupt/stop control. Do not
-resume it, ask it to repeat the final, or spawn a replacement merely to clear a
-stale card. If the host still exposes no terminal state, record
-`stale_host_status`, report that the result was received but UI closure was not
-confirmed, and stop waiting. Late or duplicate finals are idempotent inputs and
-cannot reopen a completed slice.
-
-For a managed agent, release its lifecycle lease only after `host_terminal` is
-confirmed. If the host cannot expose that fact, leave the bounded lease to expire;
-do not release it and then claim the child was safely closed. A non-essential UI
-status gap does not block the parent's final handoff after the useful result is
-verified and the bounded stop sequence is exhausted.
-
-## Parent responsibilities
-
-The parent owns requirements, architecture, integration, and the final claim.
-At the named merge point, collect every still-required slice, note dropouts,
-deduplicate findings, inspect any diff, and rerun the decisive check. Agreement
-raises confidence but does not turn an unsupported claim into evidence. Stop
-fan-out once the required coverage is complete.
-
-Do not wait indefinitely. If a child exceeds its stated budget or stops making
-progress, steer it once with a narrow finish-now request. If it still does not
-return, interrupt it, mark that slice `DROPPED`, and finish with the available
-evidence. A non-essential slice must never block the parent handoff; a missing
-essential slice becomes an explicit verification gap rather than a fabricated
-pass.
-
-Subagents inherit the current permission boundary. A child that needs new
-authority returns `BLOCKED` instead of broadening scope.
-
-Current behavior and role guidance are documented in [Codex Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents?surface=app).
+只有确实需要不同专长依次交接，且完整路线仍优于父任务独立完成时，才允许顺序
+委派；串行等待不是并行加速。
