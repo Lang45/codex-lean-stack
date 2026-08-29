@@ -185,12 +185,14 @@ def atomic_replace_json(
     )
     temporary = Path(temporary_name)
     try:
+        ensure_plain_path(manifest_path, label="manifest", directory=False)
         if os.name != "nt":
             os.fchmod(descriptor, stat.S_IMODE(os.lstat(manifest_path).st_mode))
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        ensure_plain_path(manifest_path, label="manifest", directory=False)
         if manifest_path.read_bytes() != expected_original:
             raise VersionError("manifest changed after it was read; refusing to overwrite")
         os.replace(temporary, manifest_path)

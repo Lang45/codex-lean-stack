@@ -9,19 +9,38 @@
 
 `+codex.<标识>` 只标识一次安装构建，不能替代数字语义版本决定。
 
-公共行为确定、会推动代码变化的语义审查关闭且代码边界冻结后，使用完整旧版本作为
-比较并交换前置条件，只运行一次版本写入器：
+公共行为确定、当前风险所需的语义复核和相关检查完成后，使用完整旧版本作为比较并
+交换前置条件，只运行一次版本写入器：
 
 ```powershell
-py -3 .\skills\lean-stack\scripts\bump_plugin_version.py <plugin-root> `
+py -3 -X utf8 .\skills\lean-stack\scripts\bump_plugin_version.py <plugin-root> `
   --change feature `
   --expected-version "1.1.0+codex.previous"
 ```
 
 前置条件防止重试时重复升版。运行后不得再调用第二个缓存刷新工具。
 
-父任务直接运行受影响测试、官方技能校验、插件校验和差异检查；多个短检查可在一次
+父代理直接运行受影响测试、官方技能校验、插件校验和差异检查；多个短检查可在一次
 工具调用中并发。全部通过后只重装一次，再核对安装状态、版本、源文件集合和哈希。
-新任务负责加载新技能和专门代理表面，不需要重启 ChatGPT。
+用户已明确授权全局默认调用指令时，使用本插件的显式安装入口完成这唯一一次重装：
+
+```powershell
+py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace personal
+```
+
+它先核对市场名、唯一插件条目、当前源码根和 `AGENTS.md` 安全前置条件，并在同一把文件锁内
+执行正式 `codex plugin add` 与成功后的幂等单行写入；已知前置错误不会先安装插件，安装失败
+也不触碰 `AGENTS.md`。没有用户当次授权时仍使用普通安装命令，不修改全局文件。新任务负责
+加载新技能和专门代理表面，不需要重启 ChatGPT。
+
+唯一允许写入的默认调用指令是：
+
+```text
+默认调用已安装的 `codex-lean-stack` 插件；是否启动子代理仍由插件自身规则决定。
+```
+
+Windows 上本插件脚本和官方校验器都必须由 `py -3 -X utf8` 启动。即使当前 PowerShell、
+Codex 或父 Python 进程使用 GBK，也不能让子进程依赖默认编码读取 UTF-8 中文 `SKILL.md`；
+由 Python 包装启动时还应给子进程设置 `PYTHONUTF8=1`。这条边界不能用切换控制台代码页代替。
 
 提交、推送、公开发布或外部消息仍需要用户授权；版本提升不提供这些权限。

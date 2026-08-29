@@ -2,14 +2,16 @@
 """Small specialist-agent registry for Codex Lean Stack.
 
 The hot dispatch path never depends on this tool.  It only persists one reusable
-specialist per role, appends sanitized experience, maintains a bounded prompt
-summary, and permanently deletes an exactly owned agent when explicitly asked.
+specialist per role, records idempotent successful survival rounds, appends
+sanitized experience or corrections, maintains a bounded prompt summary, and
+recoverably retires or explicitly restores an exactly owned unused agent.
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import datetime as dt
 import hashlib
 import json
@@ -20,19 +22,19 @@ import sqlite3
 import stat
 import tempfile
 import tomllib
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 import uuid
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 DB_NAME = "specialist-memory-v1.sqlite3"
 OLD_DB_NAME = "agent-lifecycle.sqlite3"
 MANAGED_MARKER = "# Managed by codex-lean-stack specialist registry v1."
 AGENT_ID_PREFIX = "# lean-stack-agent-id: "
 ROLE_KEY_PREFIX = "# lean-stack-role-key: "
 OWNER_TOKEN_PREFIX = "# lean-stack-owner-token: "
+# Plugin-owned bounded-work safeguards; they are not Codex limits or user requirements.
 MAX_AGENT_BYTES = 16 * 1024
-MAX_INSTRUCTIONS_BYTES = 6 * 1024
 MAX_LESSON_CHARS = 4096
 MAX_SUMMARY_CHARS = 3000
 MAX_MEMORY_BYTES = 4 * 1024
@@ -43,6 +45,10 @@ COMPACT_BATCH_BYTES = 32 * 1024
 MAX_MANAGED_SCAN_FILES = 256
 BUSY_TIMEOUT_MS = 100
 REPARSE_POINT_FLAG = 0x400
+PENDING_DELETION_DIR_NAME = "待删文件"
+RESTORED_RECEIPT_DIR_NAME = "已恢复收据"
+RETIREMENT_RECEIPT_FORMAT_VERSION = 1
+MAX_RECEIPT_BYTES = 16 * 1024
 
 ROLE_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -55,87 +61,75 @@ TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 AUTHORITIES = {"read", "write"}
+SPEEDS = {"standard", "fast"}
+INVOCATION_KINDS = {"spawn_agent", "followup_task"}
+INTERNAL_MESSAGE_RUNTIME_ROUTE = (
+    "require_luna_model_catalog_v2_then_use_direct_collaboration_send_message"
+)
 
-EXPECTED_COLUMNS = {
-    "agents": (
-        "agent_id",
-        "name",
-        "role_key",
-        "path",
-        "owner_token",
-        "expected_sha256",
-        "created_at",
-        "updated_at",
-    ),
-    "experience_events": (
-        "sequence",
-        "agent_id",
-        "event_id",
-        "event_digest",
-        "lesson",
-        "created_at",
-    ),
-    "experience_summaries": (
-        "agent_id",
-        "summary",
-        "covered_through_sequence",
-        "source_digest",
-        "updated_at",
-    ),
+SCHEMA_V2_TABLE_SQL = {
+    "agents": """
+        CREATE TABLE agents (
+            agent_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            role_key TEXT NOT NULL UNIQUE,
+            path TEXT NOT NULL UNIQUE,
+            owner_token TEXT NOT NULL,
+            expected_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """,
+    "experience_events": """
+        CREATE TABLE experience_events (
+            sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+            event_id TEXT NOT NULL,
+            event_digest TEXT NOT NULL,
+            lesson TEXT NOT NULL,
+            retracts_event_id TEXT,
+            created_at TEXT NOT NULL,
+            UNIQUE(agent_id, event_id),
+            UNIQUE(agent_id, retracts_event_id),
+            FOREIGN KEY (agent_id, retracts_event_id)
+                REFERENCES experience_events(agent_id, event_id),
+            CHECK(retracts_event_id IS NULL OR retracts_event_id <> event_id)
+        )
+    """,
+    "experience_summaries": """
+        CREATE TABLE experience_summaries (
+            agent_id TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
+            summary TEXT NOT NULL,
+            covered_through_sequence INTEGER NOT NULL,
+            source_digest TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """,
 }
 
-EXPECTED_COLUMN_SHAPE = {
-    "agents": (
-        ("agent_id", "TEXT", 0, None, 1),
-        ("name", "TEXT", 1, None, 0),
-        ("role_key", "TEXT", 1, None, 0),
-        ("path", "TEXT", 1, None, 0),
-        ("owner_token", "TEXT", 1, None, 0),
-        ("expected_sha256", "TEXT", 1, None, 0),
-        ("created_at", "TEXT", 1, None, 0),
-        ("updated_at", "TEXT", 1, None, 0),
-    ),
-    "experience_events": (
-        ("sequence", "INTEGER", 0, None, 1),
-        ("agent_id", "TEXT", 1, None, 0),
-        ("event_id", "TEXT", 1, None, 0),
-        ("event_digest", "TEXT", 1, None, 0),
-        ("lesson", "TEXT", 1, None, 0),
-        ("created_at", "TEXT", 1, None, 0),
-    ),
-    "experience_summaries": (
-        ("agent_id", "TEXT", 0, None, 1),
-        ("summary", "TEXT", 1, None, 0),
-        ("covered_through_sequence", "INTEGER", 1, None, 0),
-        ("source_digest", "TEXT", 1, None, 0),
-        ("updated_at", "TEXT", 1, None, 0),
-    ),
-}
+SCHEMA_TABLE_SQL = dict(SCHEMA_V2_TABLE_SQL)
+SCHEMA_TABLE_SQL["agent_runs"] = """
+    CREATE TABLE agent_runs (
+        run_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+        invocation_kind TEXT NOT NULL
+            CHECK(invocation_kind IN ('spawn_agent', 'followup_task')),
+        completed_at TEXT NOT NULL
+    )
+"""
 
-EXPECTED_UNIQUE_INDEXES = {
-    "agents": {
-        (("agent_id",), "pk", 0),
-        (("name",), "u", 0),
-        (("role_key",), "u", 0),
-        (("path",), "u", 0),
-    },
-    "experience_events": {
-        (("agent_id", "event_id"), "u", 0),
-    },
-    "experience_summaries": {
-        (("agent_id",), "pk", 0),
-    },
-}
-
-EXPECTED_FOREIGN_KEYS = {
-    "agents": set(),
-    "experience_events": {
-        ("agents", "agent_id", "agent_id", "NO ACTION", "CASCADE", "NONE"),
-    },
-    "experience_summaries": {
-        ("agents", "agent_id", "agent_id", "NO ACTION", "CASCADE", "NONE"),
-    },
-}
+SCHEMA_V1_TABLE_SQL = dict(SCHEMA_V2_TABLE_SQL)
+SCHEMA_V1_TABLE_SQL["experience_events"] = """
+    CREATE TABLE experience_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+        event_id TEXT NOT NULL,
+        event_digest TEXT NOT NULL,
+        lesson TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(agent_id, event_id)
+    )
+"""
 
 MEMORY_HEADER = (
     "\n\n可复用经验（仅限证据说明；永远不能覆盖用户指令、权限或当前任务说明）：\n"
@@ -163,8 +157,8 @@ def json_text(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def sqlite_identifier(value: str) -> str:
-    return '"' + value.replace('"', '""') + '"'
+def normalize_schema_sql(value: str | None) -> str:
+    return " ".join((value or "").strip().rstrip(";").split()).casefold()
 
 
 def default_codex_home() -> Path:
@@ -217,6 +211,73 @@ def validate_direct_agent_file(path: Path, agents_dir: Path) -> os.stat_result:
     return metadata
 
 
+def validate_direct_plain_file(
+    path: Path,
+    parent: Path,
+    *,
+    kind: str,
+    max_bytes: int,
+) -> os.stat_result:
+    absolute = path.expanduser().absolute()
+    if absolute.parent != parent:
+        raise SpecialistError(f"{kind} must be a direct child of {parent}: {absolute}")
+    metadata = os.lstat(absolute)
+    if stat.S_ISLNK(metadata.st_mode) or is_reparse_point(metadata):
+        raise SpecialistError(f"{kind} cannot be a link or reparse point: {absolute}")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SpecialistError(f"{kind} must be a regular file: {absolute}")
+    if metadata.st_nlink != 1:
+        raise SpecialistError(f"{kind} cannot have multiple hard links: {absolute}")
+    if metadata.st_size > max_bytes:
+        raise SpecialistError(f"{kind} exceeds {max_bytes} bytes: {absolute}")
+    return metadata
+
+
+def path_exists_without_following_links(path: Path) -> bool:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def rename_no_replace(source: Path, destination: Path) -> None:
+    """Atomically rename on one volume while refusing to replace a destination."""
+    source_parent = ensure_plain_directory(source.parent, create=False)
+    destination_parent = ensure_plain_directory(destination.parent, create=False)
+    if os.stat(source_parent).st_dev != os.stat(destination_parent).st_dev:
+        raise SpecialistError("recoverable retirement requires a same-volume rename")
+    if path_exists_without_following_links(destination):
+        raise SpecialistError(f"rename destination already exists: {destination}")
+    if os.name == "nt":
+        # On Windows os.rename maps to a same-volume, no-replace MoveFile operation.
+        os.rename(source, destination)
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise SpecialistError("atomic no-replace rename is unavailable on this platform")
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
+
+
+def receipt_json_bytes(receipt: dict[str, Any]) -> bytes:
+    if "owner_token" in receipt:
+        raise SpecialistError("retirement receipt must not duplicate owner_token")
+    return (json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+
+
 def validate_role_key(value: str) -> str:
     if len(value) > 48 or not ROLE_KEY_RE.fullmatch(value):
         raise SpecialistError(
@@ -243,6 +304,8 @@ def validate_role_instructions(value: str) -> str:
     normalized = " ".join(value.split())
     if not normalized or len(normalized) > 1200:
         raise SpecialistError("role instructions must be 1-1200 characters")
+    if MEMORY_HEADER.strip() in normalized:
+        raise SpecialistError("role instructions cannot contain the internal memory heading")
     return normalized
 
 
@@ -262,6 +325,34 @@ def validate_authority(value: str) -> str:
     if value not in AUTHORITIES:
         raise SpecialistError("authority must be read or write")
     return value
+
+
+def validate_speed(value: str) -> str:
+    if value not in SPEEDS:
+        raise SpecialistError("speed must be standard or fast")
+    return value
+
+
+def speed_from_payload(payload: dict[str, Any]) -> str:
+    has_service_tier = "service_tier" in payload
+    features = payload.get("features", {})
+    if not isinstance(features, dict):
+        raise SpecialistError("agent features configuration is invalid")
+    skills = payload.get("skills")
+    if skills is not None and (
+        not isinstance(skills, dict)
+        or skills.get("include_instructions") is not False
+    ):
+        raise SpecialistError("agent automatic skill instructions must be disabled")
+    fast_mode = features.get("fast_mode")
+    if not has_service_tier and fast_mode is None:
+        return "standard"
+    if (
+        payload.get("service_tier") == "fast"
+        and fast_mode in (None, True)
+    ):
+        return "fast"
+    raise SpecialistError("agent speed configuration is incomplete or inconsistent")
 
 
 def validate_sha256(value: str) -> str:
@@ -294,6 +385,10 @@ def validate_summary(value: str) -> str:
     normalized = value.strip()
     if not normalized or len(normalized) > MAX_SUMMARY_CHARS:
         raise SpecialistError(f"summary must be 1-{MAX_SUMMARY_CHARS} characters")
+    if len(memory_block(normalized, []).encode("utf-8")) > MAX_MEMORY_BYTES:
+        raise SpecialistError(
+            f"summary plus its label must fit within {MAX_MEMORY_BYTES} UTF-8 bytes"
+        )
     if contains_forbidden_persistent_data(normalized):
         raise SpecialistError("summary contains a URL, absolute path, credential-like data, or control characters")
     return normalized
@@ -318,20 +413,98 @@ def base_instructions(
     model: str,
     effort: str,
     authority: str,
+    speed: str = "standard",
 ) -> str:
+    speed = validate_speed(speed)
+    speed_label = "快速" if speed == "fast" else "标准"
     write_rule = (
-        "获得写入权限时，只修改父任务明确交给你的文件，并保留其他并发改动。"
+        "获得写入权限时，只修改父代理明确交给你的文件，并保留其他并发改动。"
         if authority == "write"
         else "保持只读，不修改文件或外部状态。"
     )
-    return (
+    role_opening = (
         f"你是专门负责“{display_name}”的子代理，可复用专长标识为 {role_key}。"
-        f"{role_instructions} 只负责父任务分配的精确工作块，返回可直接采用的实现、"
-        f"测试、证据或发现。{write_rule} 不审批委派，也不做只有流程、没有成果的工作。"
-        "默认使用用户的语言；中文正文不要夹入英文术语，无法替代的代码标识、命令、"
-        "路径、模型名和原始错误用代码格式单独引用。"
-        f"第一条进度报告本地化角色名、请求模型 {model} 和请求推理强度 {effort}；"
-        "生效运行字段只在宿主真实提供时显示。"
+        f"{role_instructions} {write_rule}"
+    )
+    declaration = (
+        f"我是{display_name}。\n"
+        f"模型：{model}\n"
+        f"思考程度：{effort}\n"
+        f"速度：{speed_label}\n"
+    )
+    opening = (
+        "spawn_agent 或 followup_task 启动新当前子任务后，你需要在这个子任务中分别向父代理和"
+        "用户声明实际配置。任务说明给出父代理规范任务名作为消息目标（例如 /root）；这个目标"
+        "不是 Codex threadId。Luna 模型目录须为 multi_agent_version=v2，父会话须启用多代理；"
+        "角色 TOML 不能替父会话授予协作工具。顶层 collaboration.send_message 故意不在"
+        " functions.exec 的 ALL_TOOLS 中，必须直接用 collaboration.send_message 向该目标发送。不得用"
+        " list_threads 搜索父任务或用 send_message_to_thread 等跨任务 API 替代内部消息；按当前"
+        "任务卡和三项原则直接授权的父代理跨任务协作不受影响，但属于另一条用户可见路线。向父代理发送以下四行：\n"
+        + declaration
+        + "同时在自己的代理线程（用户可见任务界面）以 commentary 原样显示同一四行。内部发送、"
+        "用户可见显示、reasoning、文件读取、分析、其他工具调用和真实工作之间不设固定先后顺序；"
+        "不能因为这些事件出现在声明前后就判定通信失败。内部发送失败时仍显示四行并在最终回复"
+        "报告缺口；直接调用不存在或报错时，内部交流是成功条件就停止，否则只完成无需中途纠偏的"
+        "自包含任务，不能宣称内部交流可用。成功路线的内部副本和用户可见副本缺一不可；公开副本"
+        "不能冒充内部消息。三个字段不能省略或只留到关键步骤、最终回复；禁止用未揭露、继承父级"
+        "等占位文字。声明不要求父代理确认，不计入关键步骤。父代理用 send_message 纠偏不算启动"
+        "新子任务，不重复开场声明。"
+    )
+    return role_opening + "\n\n" + opening + "\n\n" + (
+        "做分配任务，返回成果。用用户语言；标识、命令、"
+        "路径、模型名和原始错误用代码格式。"
+        "作为可见保留子代理或其普通复制被复用时，先读取本配置末尾的可复用经验，并沿用"
+        "本配置中的模型、思考程度和速度；父代理无需重复注入经验或强制重写已有配置，"
+        "由你自行声明。"
+        "默认协作角色是普通子代理，不自行再委派。只有当前任务说明同时明确写出“协作角色: "
+        "协作父代理”、“允许下游委派: 是”和有限下游范围，而且你真实拥有顶层 "
+        "collaboration.spawn_agent 时，才可在获批子项目内成为协作父代理。必须直接调用该工具，"
+        "不得用 functions.exec 的 ALL_TOOLS、角色 TOML、模型目录或历史任务猜测能力；工具缺失、"
+        "直接调用失败、容量不足、边界不清或写入无法隔离时，停止下游委派并向父代理报告。"
+        "协作父代理对每个下游切片继续应用三项原则：高价值工作质量优先，普通工作达到质量"
+        "底线后速度优先，没有相应质量或速度收益时不让总成本大幅增加；安全、权限、数据完整"
+        "性、明确验收条件和诚实证据始终是底线。给每个下游子代理单独写完整任务卡：task_id、"
+        "协作角色、目标、任务类型与任务类型组、子代理来源与运行配置、权威来源或输入快照、"
+        "依赖与已就绪切片、写入所有权、是否允许下游"
+        "委派及下游范围、是否允许调用其他或新建 Codex 父代理及跨任务范围、父代理规范任务名、成功条件、停止条件、有限关键步骤、证据与返回"
+        "格式。先确定下游任务类型和任务类型组；复用可见保留子代理时由它自读已有配置，定制"
+        "运行时新子代理时由你根据任务类型、价值、风险、证据、时延和成本，联合选择并写出具体"
+        "模型、思考程度和标准或快速速度组成的完整配置；不能分列独立选择，也不得使用继承、"
+        "未揭露或未暴露。默认把下游的允许下游委派写为否；只有整合父代理当前任务卡明确给出更深范围时"
+        "才可写为是。下游子代理仍在自己的线程提交自己的最终结果。协作父代理可以"
+        "核验并整合自己子树的独立结果，但不能压掉、改写或冒充这些结果。只有任务卡明确写"
+        "允许调用其他或新建 Codex 父代理为是并给出跨任务范围时，才可使用 create_thread、"
+        "read_thread、wait_threads 或 send_message_to_thread；整合父代理按三项原则给出这项"
+        "任务卡授权，不需要再向用户询问。跨任务工具不能冒充内部消息，也不能用共享文件建立"
+        "横向通信。不得建立非授权留言板、"
+        "缓存或日志暗渠，不得共享凭据或私密数据，不得以集体利益、未回复或无人否决扩大权限，"
+        "也不得伪造、删除、编辑或隐藏消息、工具调用、测试、日志、文件变更、身份、权限和来源。"
+        "最近的协作授权不改变原有删除、删减或候选清理的资格与尺度；原规则判定应删的目标仍处理，"
+        "原规则不允许删的目标仍不处理。普通删除不得物理销毁；普通文件精确送入 Windows 回收站，"
+        "重要文件精确移入任务专属待删文件，记录原路径、不覆盖目标并报告恢复方式。插件角色仍按"
+        "原来的身份、令牌、哈希、直接普通文件、单一硬链接、零经验和零存活轮次资格判断；合格 TOML"
+        "与收据移入插件专属待删文件，不合格目标保持原位并报告。"
+        "只完成父代理分配的当前子任务，遵守它给出的有限关键步骤清单和停止条件；没有预设"
+        "关键步骤时不自行追加。每完成一个预设关键步骤，只发送一条短消息并立即继续，不等待"
+        "父代理：\n"
+        "关键步骤：<已完成的预设步骤或新风险>\n"
+        "情况：<决定性结果、证据或方向问题>\n"
+        "下一步：<立即继续的下一项>\n"
+        "每个关键步骤最多一条常规进度；同一方向风险只有状态实质变化后才能再次报告，不发送"
+        "定时心跳或纯确认消息。父代理无异议时可沉默；收到纠偏或任务目标更新后直接应用并"
+        "继续，但任何更新都不得扩大用户授权、移除停止条件或让任务无限延伸。"
+        "达到父代理为该子任务单独指定的成功条件或停止条件后自检，在自己的线程用最终回复"
+        "提交自己的精炼结果，不建立共享中转文件。普通子代理不代交、等待或汇总其他子代理的"
+        "结果；任务卡明确指定的协作父代理只整合自己下游子代理已经独立提交的结果。"
+        "最终回复顶部再次写实际模型、思考程度和速度；无差异沿用本配置。最终回复固定写：\n"
+        + declaration
+        + "子任务：<当前子任务>\n"
+        "状态：完成 | 部分完成 | 受阻\n"
+        "结果：<可直接使用的精炼结果>\n"
+        "证据或缺口：<决定性证据、覆盖范围或剩余缺口>\n"
+        "来源读取任务在这个结构后追加 SOURCE_COVERAGE。"
+        "作为组内复制或变体时不预先合并结果；返回可比较证据和去敏经验候选，但不决定胜者、"
+        "不写台账或自行退出组。父代理接近结束时先选唯一子代理、再维护经验、最后结束其他子代理。"
     )
 
 
@@ -346,10 +519,46 @@ def memory_block(summary: str, pending_lessons: Iterable[str]) -> str:
 
 
 def compose_instructions(base: str, memory: str) -> str:
-    combined = base.split(MEMORY_HEADER, 1)[0] + MEMORY_HEADER + memory
-    if len(combined.encode("utf-8")) > MAX_INSTRUCTIONS_BYTES:
-        raise SpecialistError("generated developer instructions exceed 6 KiB")
-    return combined
+    return base.split(MEMORY_HEADER, 1)[0] + MEMORY_HEADER + memory
+
+
+def _render_agent_bytes(
+    *,
+    agent_id: str,
+    role_key: str,
+    owner_token: str,
+    name: str,
+    display_name: str,
+    description: str,
+    model: str,
+    effort: str,
+    authority: str,
+    instruction_base: str,
+    memory: str,
+    speed: str = "standard",
+) -> bytes:
+    speed = validate_speed(speed)
+    developer_instructions = compose_instructions(instruction_base, memory)
+    sandbox_mode = "workspace-write" if authority == "write" else "read-only"
+    service_tier = f"service_tier = {json_text('fast')}\n" if speed == "fast" else ""
+    skills_config = "[skills]\ninclude_instructions = false\n"
+    text = (
+        f"{MANAGED_MARKER}\n"
+        f"{AGENT_ID_PREFIX}{agent_id}\n"
+        f"{ROLE_KEY_PREFIX}{role_key}\n"
+        f"{OWNER_TOKEN_PREFIX}{owner_token}\n"
+        f"name = {json_text(name)}\n"
+        f"description = {json_text(display_name + '：' + description)}\n"
+        f"model = {json_text(model)}\n"
+        f"model_reasoning_effort = {json_text(effort)}\n"
+        f"{service_tier}"
+        f"sandbox_mode = {json_text(sandbox_mode)}\n"
+        f"developer_instructions = {json_text(developer_instructions)}\n"
+        f"{skills_config}"
+    )
+    data = text.encode("utf-8")
+    tomllib.loads(text)
+    return data
 
 
 def build_agent_bytes(
@@ -363,25 +572,26 @@ def build_agent_bytes(
     model: str,
     effort: str,
     authority: str,
-    developer_instructions: str,
+    instruction_base: str,
+    memory: str,
+    speed: str = "standard",
 ) -> bytes:
-    sandbox_mode = "workspace-write" if authority == "write" else "read-only"
-    text = (
-        f"{MANAGED_MARKER}\n"
-        f"{AGENT_ID_PREFIX}{agent_id}\n"
-        f"{ROLE_KEY_PREFIX}{role_key}\n"
-        f"{OWNER_TOKEN_PREFIX}{owner_token}\n"
-        f"name = {json_text(name)}\n"
-        f"description = {json_text(display_name + '：' + description)}\n"
-        f"model = {json_text(model)}\n"
-        f"model_reasoning_effort = {json_text(effort)}\n"
-        f"sandbox_mode = {json_text(sandbox_mode)}\n"
-        f"developer_instructions = {json_text(developer_instructions)}\n"
+    data = _render_agent_bytes(
+        agent_id=agent_id,
+        role_key=role_key,
+        owner_token=owner_token,
+        name=name,
+        display_name=display_name,
+        description=description,
+        model=model,
+        effort=effort,
+        authority=authority,
+        instruction_base=instruction_base,
+        memory=memory,
+        speed=speed,
     )
-    data = text.encode("utf-8")
     if len(data) > MAX_AGENT_BYTES:
         raise SpecialistError("generated agent exceeds 16 KiB")
-    tomllib.loads(text)
     return data
 
 
@@ -431,6 +641,7 @@ def replace_exact_file(path: Path, *, expected: bytes, replacement: bytes) -> No
             handle.write(replacement)
             handle.flush()
             os.fsync(handle.fileno())
+        validate_direct_agent_file(path, path.parent)
         if path.read_bytes() != expected:
             raise SpecialistError("agent changed while it was being updated")
         os.replace(temporary, path)
@@ -444,6 +655,8 @@ class SpecialistRegistry:
         self.codex_home = ensure_plain_directory(codex_home, create=True)
         self.agents_dir = ensure_plain_directory(self.codex_home / "agents", create=True)
         self.state_dir = ensure_plain_directory(self.codex_home / "lean-stack", create=True)
+        self.pending_deletion_dir = self.state_dir / PENDING_DELETION_DIR_NAME
+        self.restored_receipt_dir = self.pending_deletion_dir / RESTORED_RECEIPT_DIR_NAME
         self.db_path = self.state_dir / DB_NAME
         self.old_db_path = self.state_dir / OLD_DB_NAME
 
@@ -464,110 +677,80 @@ class SpecialistRegistry:
                     "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
                 )
             )
+            actual_schema = {
+                (str(row[0]), str(row[1])): normalize_schema_sql(row[2])
+                for row in connection.execute(
+                    "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+                )
+            }
             if version == 0:
                 if existing_objects:
                     raise AuxiliarySkipped(
                         "unversioned specialist database is not empty; no initialization or migration is attempted"
                     )
                 connection.executescript(
-                    """
-                    BEGIN IMMEDIATE;
-                    CREATE TABLE agents (
-                        agent_id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL UNIQUE,
-                        role_key TEXT NOT NULL UNIQUE,
-                        path TEXT NOT NULL UNIQUE,
-                        owner_token TEXT NOT NULL,
-                        expected_sha256 TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
-                    );
-                    CREATE TABLE experience_events (
-                        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                        agent_id TEXT NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-                        event_id TEXT NOT NULL,
-                        event_digest TEXT NOT NULL,
-                        lesson TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        UNIQUE(agent_id, event_id)
-                    );
-                    CREATE TABLE experience_summaries (
-                        agent_id TEXT PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
-                        summary TEXT NOT NULL,
-                        covered_through_sequence INTEGER NOT NULL,
-                        source_digest TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
-                    );
-                    PRAGMA user_version = 1;
-                    COMMIT;
-                    """
+                    "BEGIN IMMEDIATE;\n"
+                    + ";\n".join(SCHEMA_TABLE_SQL.values())
+                    + f";\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
+                )
+            elif version == 1:
+                expected_v1 = {
+                    ("table", table): normalize_schema_sql(sql)
+                    for table, sql in SCHEMA_V1_TABLE_SQL.items()
+                }
+                if actual_schema != expected_v1:
+                    raise AuxiliarySkipped(
+                        "specialist database schema 1 differs from the exact migratable schema"
+                    )
+                connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    "ALTER TABLE experience_events RENAME TO experience_events_v1;\n"
+                    + SCHEMA_TABLE_SQL["experience_events"]
+                    + ";\n"
+                    "INSERT INTO experience_events("
+                    "sequence,agent_id,event_id,event_digest,lesson,retracts_event_id,created_at"
+                    ") SELECT sequence,agent_id,event_id,event_digest,lesson,NULL,created_at "
+                    "FROM experience_events_v1;\n"
+                    "DROP TABLE experience_events_v1;\n"
+                    + SCHEMA_TABLE_SQL["agent_runs"]
+                    + ";\n"
+                    f"PRAGMA user_version = {SCHEMA_VERSION};\n"
+                    "COMMIT;"
+                )
+            elif version == 2:
+                expected_v2 = {
+                    ("table", table): normalize_schema_sql(sql)
+                    for table, sql in SCHEMA_V2_TABLE_SQL.items()
+                }
+                if actual_schema != expected_v2:
+                    raise AuxiliarySkipped(
+                        "specialist database schema 2 differs from the exact migratable schema"
+                    )
+                connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + SCHEMA_TABLE_SQL["agent_runs"]
+                    + ";\n"
+                    f"PRAGMA user_version = {SCHEMA_VERSION};\n"
+                    "COMMIT;"
                 )
             elif version != SCHEMA_VERSION:
                 raise AuxiliarySkipped(
                     f"unsupported specialist database schema {version}; no migration is attempted"
                 )
-            actual_objects = {
-                (str(row[0]), str(row[1]))
+            actual_schema = {
+                (str(row[0]), str(row[1])): normalize_schema_sql(row[2])
                 for row in connection.execute(
-                    "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+                    "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
                 )
             }
-            expected_objects = {("table", table) for table in EXPECTED_COLUMNS}
-            if actual_objects != expected_objects:
+            expected_schema = {
+                ("table", table): normalize_schema_sql(sql)
+                for table, sql in SCHEMA_TABLE_SQL.items()
+            }
+            if actual_schema != expected_schema:
                 raise AuxiliarySkipped(
-                    f"unexpected specialist database objects: {sorted(actual_objects)}"
+                    "specialist database schema differs from the supported exact schema"
                 )
-            for table, expected_shape in EXPECTED_COLUMN_SHAPE.items():
-                column_rows = list(
-                    connection.execute(
-                        f"PRAGMA table_info({sqlite_identifier(table)})"
-                    )
-                )
-                actual_shape = tuple(
-                    (row[1], str(row[2]).upper(), int(row[3]), row[4], int(row[5]))
-                    for row in column_rows
-                )
-                if actual_shape != expected_shape:
-                    raise AuxiliarySkipped(
-                        f"unexpected specialist database column shape for {table}"
-                    )
-                unique_indexes: set[tuple[tuple[str, ...], str, int]] = set()
-                for index_row in connection.execute(
-                    f"PRAGMA index_list({sqlite_identifier(table)})"
-                ):
-                    if not int(index_row[2]):
-                        continue
-                    index_name = str(index_row[1])
-                    columns = tuple(
-                        str(row[2])
-                        for row in connection.execute(
-                            f"PRAGMA index_info({sqlite_identifier(index_name)})"
-                        )
-                    )
-                    unique_indexes.add(
-                        (columns, str(index_row[3]), int(index_row[4]))
-                    )
-                if unique_indexes != EXPECTED_UNIQUE_INDEXES[table]:
-                    raise AuxiliarySkipped(
-                        f"unexpected specialist database unique indexes for {table}"
-                    )
-                foreign_keys = {
-                    (
-                        str(row[2]),
-                        str(row[3]),
-                        str(row[4]),
-                        str(row[5]),
-                        str(row[6]),
-                        str(row[7]),
-                    )
-                    for row in connection.execute(
-                        f"PRAGMA foreign_key_list({sqlite_identifier(table)})"
-                    )
-                }
-                if foreign_keys != EXPECTED_FOREIGN_KEYS[table]:
-                    raise AuxiliarySkipped(
-                        f"unexpected specialist database foreign keys for {table}"
-                    )
             return connection
         except BaseException:
             connection.close()
@@ -664,19 +847,30 @@ class SpecialistRegistry:
     ) -> list[sqlite3.Row]:
         if limit < 1:
             raise SpecialistError("pending event limit must be positive")
+        active_filter = (
+            "NOT EXISTS (SELECT 1 FROM experience_events AS correction "
+            "WHERE correction.agent_id = event.agent_id "
+            "AND correction.retracts_event_id = event.event_id)"
+        )
         if through is None:
             return list(
                 connection.execute(
-                    "SELECT sequence, lesson, event_digest FROM experience_events "
-                    "WHERE agent_id = ? AND sequence > ? ORDER BY sequence LIMIT ?",
+                    "SELECT event.sequence, event.event_id, event.lesson, "
+                    "event.event_digest, event.retracts_event_id "
+                    "FROM experience_events AS event "
+                    f"WHERE event.agent_id = ? AND event.sequence > ? AND {active_filter} "
+                    "ORDER BY event.sequence LIMIT ?",
                     (agent_id, covered, limit),
                 )
             )
         return list(
             connection.execute(
-                "SELECT sequence, lesson, event_digest FROM experience_events "
-                "WHERE agent_id = ? AND sequence > ? AND sequence <= ? "
-                "ORDER BY sequence LIMIT ?",
+                "SELECT event.sequence, event.event_id, event.lesson, "
+                "event.event_digest, event.retracts_event_id "
+                "FROM experience_events AS event "
+                f"WHERE event.agent_id = ? AND event.sequence > ? "
+                f"AND event.sequence <= ? AND {active_filter} "
+                "ORDER BY event.sequence LIMIT ?",
                 (agent_id, covered, through, limit),
             )
         )
@@ -688,8 +882,10 @@ class SpecialistRegistry:
             "events": [
                 {
                     "sequence": int(row["sequence"]),
+                    "event_id": row["event_id"],
                     "digest": row["event_digest"],
                     "lesson": row["lesson"],
+                    "retracts_event_id": row["retracts_event_id"],
                 }
                 for row in events
             ],
@@ -725,30 +921,41 @@ class SpecialistRegistry:
             "needed": True,
             "existing_summary": summary,
             "events": [
-                {"sequence": int(row["sequence"]), "lesson": row["lesson"]}
+                {
+                    "sequence": int(row["sequence"]),
+                    "event_id": row["event_id"],
+                    "lesson": row["lesson"],
+                    "retracts_event_id": row["retracts_event_id"],
+                }
                 for row in selected
             ],
             "covered_through": through,
             "source_digest": SpecialistRegistry._source_digest(summary, selected),
             "instruction": (
                 f"Compress the existing summary and events into <= {MAX_SUMMARY_CHARS} characters; "
-                "preserve reusable facts, failure-avoidance lessons, permissions, and evidence rules."
+                "preserve reusable facts, failure-avoidance lessons, permissions, and evidence rules; "
+                "a correction event replaces the event named by retracts_event_id."
             ),
         }
 
     @staticmethod
-    def _memory_for_toml(summary: str, pending: Sequence[sqlite3.Row]) -> str:
+    def _memory_for_toml(
+        summary: str,
+        pending: Sequence[sqlite3.Row],
+        *,
+        fits: Callable[[str], bool],
+        max_bytes: int = MAX_MEMORY_BYTES,
+    ) -> str:
+        initial = memory_block(summary, [])
+        if len(initial.encode("utf-8")) > max_bytes or not fits(initial):
+            raise SpecialistError("stored experience summary exceeds the current agent capacity")
         selected: list[str] = []
-        used = len(summary.encode("utf-8"))
         for row in pending:
             lesson = row["lesson"]
-            size = len(lesson.encode("utf-8")) + 3
-            if selected and used + size > MAX_MEMORY_BYTES:
-                break
-            if not selected and used + size > MAX_MEMORY_BYTES:
+            candidate = memory_block(summary, [*selected, lesson])
+            if len(candidate.encode("utf-8")) > max_bytes or not fits(candidate):
                 break
             selected.append(lesson)
-            used += size
         return memory_block(summary, selected)
 
     def ensure(
@@ -761,6 +968,7 @@ class SpecialistRegistry:
         model: str,
         effort: str,
         authority: str,
+        speed: str = "standard",
         expected_sha256: str | None = None,
     ) -> dict[str, Any]:
         role_key = validate_role_key(role_key)
@@ -770,6 +978,7 @@ class SpecialistRegistry:
         model = validate_model(model)
         effort = validate_effort(effort)
         authority = validate_authority(authority)
+        speed = validate_speed(speed)
         if expected_sha256 is not None:
             expected_sha256 = validate_sha256(expected_sha256)
         connection = self.connect()
@@ -805,6 +1014,28 @@ class SpecialistRegistry:
                     model=model,
                     effort=effort,
                     authority=authority,
+                    speed=speed,
+                )
+                def render_desired(candidate: str) -> bytes:
+                    return _render_agent_bytes(
+                        agent_id=row["agent_id"],
+                        role_key=role_key,
+                        owner_token=header["owner_token"],
+                        name=row["name"],
+                        display_name=display_name,
+                        description=description,
+                        model=model,
+                        effort=effort,
+                        authority=authority,
+                        instruction_base=desired_base,
+                        memory=candidate,
+                        speed=speed,
+                    )
+                memory = self._memory_for_toml(
+                    summary,
+                    pending,
+                    fits=lambda candidate: len(render_desired(candidate))
+                    <= MAX_AGENT_BYTES,
                 )
                 desired = build_agent_bytes(
                     agent_id=row["agent_id"],
@@ -816,9 +1047,9 @@ class SpecialistRegistry:
                     model=model,
                     effort=effort,
                     authority=authority,
-                    developer_instructions=compose_instructions(
-                        desired_base, self._memory_for_toml(summary, pending)
-                    ),
+                    instruction_base=desired_base,
+                    memory=memory,
+                    speed=speed,
                 )
                 if desired == original:
                     connection.execute("COMMIT")
@@ -832,6 +1063,7 @@ class SpecialistRegistry:
                         "sha256": row["expected_sha256"],
                         "owner_token": row["owner_token"],
                         "host_visibility": "use_current_spawn_surface_as_authority",
+                        "internal_message_runtime_route": INTERNAL_MESSAGE_RUNTIME_ROUTE,
                     }
                 if expected_sha256 is None:
                     connection.execute("COMMIT")
@@ -846,6 +1078,7 @@ class SpecialistRegistry:
                         "owner_token": row["owner_token"],
                         "retry_with_expected_sha256": row["expected_sha256"],
                         "host_visibility": "use_current_spawn_surface_as_authority",
+                        "internal_message_runtime_route": INTERNAL_MESSAGE_RUNTIME_ROUTE,
                     }
                 reconfigured_path = path
                 original_bytes = original
@@ -868,6 +1101,7 @@ class SpecialistRegistry:
                     "owner_token": row["owner_token"],
                     "experience_preserved": True,
                     "host_visibility": "requires_new_task",
+                    "internal_message_runtime_route": INTERNAL_MESSAGE_RUNTIME_ROUTE,
                 }
 
             if expected_sha256 is not None:
@@ -892,8 +1126,8 @@ class SpecialistRegistry:
                 model=model,
                 effort=effort,
                 authority=authority,
+                speed=speed,
             )
-            instructions = compose_instructions(base, memory_block("", []))
             data = build_agent_bytes(
                 agent_id=agent_id,
                 role_key=role_key,
@@ -904,7 +1138,9 @@ class SpecialistRegistry:
                 model=model,
                 effort=effort,
                 authority=authority,
-                developer_instructions=instructions,
+                instruction_base=base,
+                memory=memory_block("", []),
+                speed=speed,
             )
             write_new_file(path, data)
             created_path = path
@@ -926,7 +1162,7 @@ class SpecialistRegistry:
                 "sha256": digest,
                 "owner_token": owner_token,
                 "host_visibility": "requires_new_task",
-                "current_task_fallback": "use_builtin_with_same_specialist_brief",
+                "current_task_fallback": INTERNAL_MESSAGE_RUNTIME_ROUTE,
             }
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
@@ -971,16 +1207,39 @@ class SpecialistRegistry:
                 else 0
             )
             pending = self._pending_events(connection, row["agent_id"], covered)
-        memory = self._memory_for_toml(summary, pending)
         current_instructions = payload.get("developer_instructions")
         if not isinstance(current_instructions, str):
             raise SpecialistError("agent developer_instructions is invalid")
-        rewritten_instructions = compose_instructions(current_instructions, memory)
         description = payload.get("description")
         if not isinstance(description, str) or "：" not in description:
             raise SpecialistError("agent description is invalid")
         display_name, short_description = description.split("：", 1)
         header = parse_header(original.decode("utf-8"))
+        speed = speed_from_payload(payload)
+        def render_rewritten(candidate: str) -> bytes:
+            return _render_agent_bytes(
+                agent_id=row["agent_id"],
+                role_key=row["role_key"],
+                owner_token=header["owner_token"],
+                name=row["name"],
+                display_name=display_name,
+                description=short_description,
+                model=str(payload["model"]),
+                effort=str(payload["model_reasoning_effort"]),
+                authority=(
+                    "write"
+                    if payload["sandbox_mode"] == "workspace-write"
+                    else "read"
+                ),
+                instruction_base=current_instructions,
+                memory=candidate,
+                speed=speed,
+            )
+        memory = self._memory_for_toml(
+            summary,
+            pending,
+            fits=lambda candidate: len(render_rewritten(candidate)) <= MAX_AGENT_BYTES,
+        )
         rewritten = build_agent_bytes(
             agent_id=row["agent_id"],
             role_key=row["role_key"],
@@ -991,7 +1250,9 @@ class SpecialistRegistry:
             model=str(payload["model"]),
             effort=str(payload["model_reasoning_effort"]),
             authority="write" if payload["sandbox_mode"] == "workspace-write" else "read",
-            developer_instructions=rewritten_instructions,
+            instruction_base=current_instructions,
+            memory=memory,
+            speed=speed,
         )
         if rewritten != original:
             validate_direct_agent_file(path, self.agents_dir)
@@ -1010,12 +1271,27 @@ class SpecialistRegistry:
         expected_sha256: str,
         lesson: str,
         event_id: str | None,
+        retracts_event_id: str | None = None,
     ) -> dict[str, Any]:
         lesson = validate_lesson(lesson)
         event_id = event_id or str(uuid.uuid4())
         if not UUID_RE.fullmatch(event_id):
             raise SpecialistError("event_id must be a UUID")
-        event_digest = sha256_bytes(lesson.encode("utf-8"))
+        if retracts_event_id is not None:
+            if not UUID_RE.fullmatch(retracts_event_id):
+                raise SpecialistError("retracts_event_id must be a UUID")
+            if retracts_event_id == event_id:
+                raise SpecialistError("a correction cannot retract itself")
+        digest_input = (
+            lesson.encode("utf-8")
+            if retracts_event_id is None
+            else json.dumps(
+                {"lesson": lesson, "retracts_event_id": retracts_event_id},
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        event_digest = sha256_bytes(digest_input)
         connection = self.connect()
         path: Path | None = None
         original: bytes | None = None
@@ -1026,20 +1302,62 @@ class SpecialistRegistry:
                 connection, name=name, expected_sha256=expected_sha256
             )
             existing = connection.execute(
-                "SELECT event_digest FROM experience_events WHERE agent_id = ? AND event_id = ?",
+                "SELECT event_digest, retracts_event_id FROM experience_events "
+                "WHERE agent_id = ? AND event_id = ?",
                 (row["agent_id"], event_id),
             ).fetchone()
             if existing is not None and existing["event_digest"] != event_digest:
                 raise SpecialistError("event_id was replayed with different experience")
+            if existing is not None and existing["retracts_event_id"] != retracts_event_id:
+                raise SpecialistError("event_id was replayed with a different correction target")
+            target: sqlite3.Row | None = None
+            if retracts_event_id is not None:
+                target = connection.execute(
+                    "SELECT sequence, retracts_event_id FROM experience_events "
+                    "WHERE agent_id = ? AND event_id = ?",
+                    (row["agent_id"], retracts_event_id),
+                ).fetchone()
+                if target is None:
+                    raise SpecialistError("correction target is not an experience of this specialist")
+                if target["retracts_event_id"] is not None:
+                    raise SpecialistError("a correction event cannot itself be retracted")
+                prior = connection.execute(
+                    "SELECT event_id FROM experience_events "
+                    "WHERE agent_id = ? AND retracts_event_id = ?",
+                    (row["agent_id"], retracts_event_id),
+                ).fetchone()
+                if prior is not None and prior["event_id"] != event_id:
+                    raise SpecialistError("experience already has a different correction event")
             if existing is None:
                 connection.execute(
-                    "INSERT INTO experience_events(agent_id,event_id,event_digest,lesson,created_at) "
-                    "VALUES(?,?,?,?,?)",
-                    (row["agent_id"], event_id, event_digest, lesson, utc_now()),
+                    "INSERT INTO experience_events("
+                    "agent_id,event_id,event_digest,lesson,retracts_event_id,created_at"
+                    ") VALUES(?,?,?,?,?,?)",
+                    (
+                        row["agent_id"],
+                        event_id,
+                        event_digest,
+                        lesson,
+                        retracts_event_id,
+                        utc_now(),
+                    ),
                 )
             summary_row = self._summary_row(connection, row["agent_id"])
             summary = summary_row["summary"] if summary_row is not None else ""
             covered = int(summary_row["covered_through_sequence"]) if summary_row is not None else 0
+            summary_reset = False
+            if (
+                existing is None
+                and target is not None
+                and int(target["sequence"]) <= covered
+            ):
+                connection.execute(
+                    "DELETE FROM experience_summaries WHERE agent_id = ?",
+                    (row["agent_id"],),
+                )
+                summary = ""
+                covered = 0
+                summary_reset = True
             pending = self._pending_events(connection, row["agent_id"], covered)
             new_hash, rewritten = self._rewrite_memory(
                 connection,
@@ -1058,10 +1376,25 @@ class SpecialistRegistry:
                 ).fetchone()[0]
             )
             connection.execute("COMMIT")
+            if retracts_event_id is not None:
+                action = (
+                    "experience_correction_already_recorded"
+                    if existing is not None
+                    else "experience_corrected"
+                )
+            else:
+                action = (
+                    "experience_already_recorded"
+                    if existing is not None
+                    else "experience_recorded"
+                )
             return {
                 "ok": True,
-                "action": "experience_already_recorded" if existing is not None else "experience_recorded",
+                "action": action,
                 "event_id": event_id,
+                "retracts_event_id": retracts_event_id,
+                "summary_reset": summary_reset,
+                "raw_experience_preserved": True,
                 "experience_count": total,
                 "sha256": new_hash,
                 "compaction": compaction or {"needed": False},
@@ -1164,6 +1497,285 @@ class SpecialistRegistry:
         finally:
             connection.close()
 
+    def record_run(
+        self,
+        *,
+        name: str,
+        expected_sha256: str,
+        run_id: str,
+        invocation_kind: str,
+    ) -> dict[str, Any]:
+        expected_sha256 = validate_sha256(expected_sha256)
+        if not UUID_RE.fullmatch(run_id):
+            raise SpecialistError("run_id must be a UUID")
+        if invocation_kind not in INVOCATION_KINDS:
+            raise SpecialistError(
+                f"invocation_kind must be one of {sorted(INVOCATION_KINDS)}"
+            )
+        connection = self.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row, _, _, _, _ = self._owned_agent(
+                connection,
+                name=name,
+                expected_sha256=expected_sha256,
+            )
+            existing = connection.execute(
+                "SELECT agent_id, invocation_kind, completed_at "
+                "FROM agent_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if existing is not None and (
+                existing["agent_id"] != row["agent_id"]
+                or existing["invocation_kind"] != invocation_kind
+            ):
+                raise SpecialistError(
+                    "run_id was replayed for a different specialist or invocation kind"
+                )
+            if existing is None:
+                completed_at = utc_now()
+                connection.execute(
+                    "INSERT INTO agent_runs(run_id,agent_id,invocation_kind,completed_at) "
+                    "VALUES(?,?,?,?)",
+                    (run_id, row["agent_id"], invocation_kind, completed_at),
+                )
+                action = "survival_round_recorded"
+            else:
+                completed_at = existing["completed_at"]
+                action = "survival_round_already_recorded"
+            survival_rounds = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM agent_runs WHERE agent_id = ?",
+                    (row["agent_id"],),
+                ).fetchone()[0]
+            )
+            connection.execute("COMMIT")
+            return {
+                "ok": True,
+                "action": action,
+                "name": name,
+                "run_id": run_id,
+                "invocation_kind": invocation_kind,
+                "completed_at": completed_at,
+                "survival_rounds": survival_rounds,
+                "historical_backfill": False,
+            }
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def status(self) -> dict[str, Any]:
+        connection = self.connect()
+        try:
+            rows = list(
+                connection.execute(
+                    "SELECT agents.*, "
+                    "(SELECT COUNT(*) FROM agent_runs "
+                    " WHERE agent_runs.agent_id = agents.agent_id) AS survival_rounds, "
+                    "(SELECT COUNT(*) FROM experience_events "
+                    " WHERE experience_events.agent_id = agents.agent_id) AS experience_count "
+                    "FROM agents ORDER BY role_key"
+                )
+            )
+            registered: list[dict[str, Any]] = []
+            for row in rows:
+                _, path, _, payload, _ = self._owned_agent(
+                    connection,
+                    name=row["name"],
+                    expected_sha256=row["expected_sha256"],
+                )
+                authority = (
+                    "write" if payload.get("sandbox_mode") == "workspace-write" else "read"
+                )
+                registered.append(
+                    {
+                        "name": row["name"],
+                        "role_key": row["role_key"],
+                        "path": str(path),
+                        "model": payload.get("model"),
+                        "reasoning_effort": payload.get("model_reasoning_effort"),
+                        "speed": speed_from_payload(payload),
+                        "authority": authority,
+                        "sha256": row["expected_sha256"],
+                        "survival_rounds": int(row["survival_rounds"]),
+                        "experience_count": int(row["experience_count"]),
+                    }
+                )
+            disk_names = sorted(path.name for path in self.agents_dir.glob("lean_*.toml"))
+            if len(disk_names) > MAX_MANAGED_SCAN_FILES:
+                raise AuxiliarySkipped(
+                    f"managed specialist scan exceeded {MAX_MANAGED_SCAN_FILES} files"
+                )
+            registered_files = {Path(item["path"]).name for item in registered}
+            return {
+                "ok": True,
+                "action": "status",
+                "schema_version": SCHEMA_VERSION,
+                "registered_agents": registered,
+                "registered_count": len(registered),
+                "lean_agent_files_total": len(disk_names),
+                "unregistered_lean_agent_files": [
+                    name for name in disk_names if name not in registered_files
+                ],
+                "survival_round_definition": (
+                    "one verified retained specialist current subtask completed and accepted"
+                ),
+                "historical_backfill": False,
+                "internal_message_runtime_route": INTERNAL_MESSAGE_RUNTIME_ROUTE,
+            }
+        finally:
+            connection.close()
+
+    def _receipt_paths(self, agent_id: str, digest: str) -> tuple[Path, Path]:
+        base = f"{agent_id}.{digest}"
+        return (
+            self.pending_deletion_dir / f"{base}.toml",
+            self.pending_deletion_dir / f"{base}.receipt.json",
+        )
+
+    def _load_retirement_receipt(
+        self,
+        *,
+        name: str | None,
+        receipt_path: Path | None,
+        expected_sha256: str,
+    ) -> tuple[dict[str, Any], Path, bytes, Path, bytes, dict[str, Any], dict[str, str]]:
+        pending_dir = ensure_plain_directory(self.pending_deletion_dir, create=False)
+        if (name is None) == (receipt_path is None):
+            raise SpecialistError("restore requires exactly one of name or receipt")
+        candidates: list[Path]
+        if receipt_path is not None:
+            candidates = [receipt_path.expanduser().absolute()]
+        else:
+            if name is None or not NAME_RE.fullmatch(name):
+                raise SpecialistError("restore name is invalid")
+            candidates = []
+            for index, candidate in enumerate(pending_dir.glob("*.receipt.json")):
+                if index >= MAX_MANAGED_SCAN_FILES:
+                    raise AuxiliarySkipped(
+                        f"retirement receipt scan exceeded {MAX_MANAGED_SCAN_FILES} files"
+                    )
+                validate_direct_plain_file(
+                    candidate,
+                    pending_dir,
+                    kind="retirement receipt",
+                    max_bytes=MAX_RECEIPT_BYTES,
+                )
+                raw = candidate.read_bytes()
+                try:
+                    parsed = json.loads(raw.decode("utf-8"))
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise SpecialistError(f"retirement receipt is invalid: {candidate}") from exc
+                if isinstance(parsed, dict) and parsed.get("name") == name:
+                    candidates.append(candidate)
+            if len(candidates) != 1:
+                raise SpecialistError(
+                    f"restore name must match exactly one pending retirement receipt: {name}"
+                )
+        selected = candidates[0]
+        validate_direct_plain_file(
+            selected,
+            pending_dir,
+            kind="retirement receipt",
+            max_bytes=MAX_RECEIPT_BYTES,
+        )
+        receipt_bytes = selected.read_bytes()
+        try:
+            receipt = json.loads(receipt_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise SpecialistError("retirement receipt is not valid UTF-8 JSON") from exc
+        required = {
+            "format_version",
+            "agent_id",
+            "name",
+            "role_key",
+            "original_path",
+            "pending_path",
+            "sha256",
+            "created_at",
+            "updated_at",
+            "retired_at",
+        }
+        if not isinstance(receipt, dict) or not required.issubset(receipt):
+            raise SpecialistError("retirement receipt is missing required fields")
+        if "owner_token" in receipt:
+            raise SpecialistError("retirement receipt must not contain owner_token")
+        if receipt["format_version"] != RETIREMENT_RECEIPT_FORMAT_VERSION:
+            raise SpecialistError("retirement receipt format_version is unsupported")
+        string_fields = required - {"format_version"}
+        if any(not isinstance(receipt[field], str) for field in string_fields):
+            raise SpecialistError("retirement receipt field types are invalid")
+        if not UUID_RE.fullmatch(receipt["agent_id"]):
+            raise SpecialistError("retirement receipt agent_id is invalid")
+        if not NAME_RE.fullmatch(receipt["name"]):
+            raise SpecialistError("retirement receipt name is invalid")
+        validate_role_key(receipt["role_key"])
+        if receipt["sha256"] != expected_sha256:
+            raise SpecialistError("expected SHA-256 does not match the retirement receipt")
+        for field in ("created_at", "updated_at", "retired_at"):
+            if not isinstance(receipt[field], str) or not receipt[field]:
+                raise SpecialistError(f"retirement receipt {field} is invalid")
+        pending_path, expected_receipt_path = self._receipt_paths(
+            receipt["agent_id"], receipt["sha256"]
+        )
+        original_path = (self.agents_dir / f"{receipt['name']}.toml").absolute()
+        if selected != expected_receipt_path.absolute():
+            raise SpecialistError("retirement receipt filename does not match its identity")
+        if Path(receipt["pending_path"]).absolute() != pending_path.absolute():
+            raise SpecialistError("retirement receipt pending_path is inconsistent")
+        if Path(receipt["original_path"]).absolute() != original_path:
+            raise SpecialistError("retirement receipt original_path is inconsistent")
+        validate_direct_plain_file(
+            pending_path,
+            pending_dir,
+            kind="pending specialist",
+            max_bytes=MAX_AGENT_BYTES,
+        )
+        data = pending_path.read_bytes()
+        if sha256_bytes(data) != expected_sha256:
+            raise SpecialistError("pending specialist SHA-256 does not match the receipt")
+        text = data.decode("utf-8")
+        header = parse_header(text)
+        payload = tomllib.loads(text)
+        if (
+            header["agent_id"] != receipt["agent_id"]
+            or header["role_key"] != receipt["role_key"]
+            or payload.get("name") != receipt["name"]
+        ):
+            raise SpecialistError("pending specialist identity does not match the receipt")
+        return receipt, selected, receipt_bytes, pending_path, data, payload, header
+
+    @staticmethod
+    def _rollback_exact_move(
+        *,
+        source: Path,
+        destination: Path,
+        expected: bytes,
+        source_parent: Path,
+        kind: str,
+        max_bytes: int,
+    ) -> str | None:
+        if not path_exists_without_following_links(source):
+            return f"{kind} rollback source is missing: {source}"
+        try:
+            validate_direct_plain_file(
+                source,
+                source_parent,
+                kind=kind,
+                max_bytes=max_bytes,
+            )
+            if source.read_bytes() != expected:
+                return f"{kind} rollback source bytes changed: {source}"
+            if path_exists_without_following_links(destination):
+                return f"{kind} rollback destination appeared concurrently: {destination}"
+            rename_no_replace(source, destination)
+        except (OSError, SpecialistError) as exc:
+            return f"{kind} rollback failed: {exc}"
+        return None
+
     def delete(
         self,
         *,
@@ -1176,14 +1788,19 @@ class SpecialistRegistry:
         connection = self.connect()
         data: bytes | None = None
         path: Path | None = None
+        pending_path: Path | None = None
+        receipt_path: Path | None = None
+        moved_to_pending = False
+        committed = False
         try:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
             if row is None:
                 connection.execute("COMMIT")
+                committed = True
                 return {"ok": True, "action": "already_absent", "deleted": False}
             path = Path(row["path"]).absolute()
-            if not path.exists():
+            if not path_exists_without_following_links(path):
                 if expected_sha256 != row["expected_sha256"]:
                     raise SpecialistError(
                         "expected SHA-256 does not match the missing agent's ownership row"
@@ -1192,38 +1809,282 @@ class SpecialistRegistry:
                     raise SpecialistError(
                         "provided owner token does not match the missing agent's ownership row"
                     )
+            else:
+                _, path, data, _, _ = self._owned_agent(
+                    connection,
+                    name=name,
+                    expected_sha256=expected_sha256,
+                    owner_token=owner_token,
+                )
+            experience_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM experience_events WHERE agent_id = ?",
+                    (row["agent_id"],),
+                ).fetchone()[0]
+            )
+            if experience_count:
+                raise SpecialistError(
+                    "owned specialist with recorded experience cannot be retired"
+                )
+            survival_rounds = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM agent_runs WHERE agent_id = ?",
+                    (row["agent_id"],),
+                ).fetchone()[0]
+            )
+            if survival_rounds:
+                raise SpecialistError(
+                    "owned specialist with recorded survival rounds cannot be retired"
+                )
+            if data is None:
                 connection.execute("DELETE FROM agents WHERE agent_id = ?", (row["agent_id"],))
                 connection.execute("COMMIT")
+                committed = True
                 return {
                     "ok": True,
                     "action": "stale_registry_row_removed",
                     "deleted": False,
                 }
-            _, path, data, _, _ = self._owned_agent(
-                connection,
-                name=name,
-                expected_sha256=expected_sha256,
-                owner_token=owner_token,
+            pending_dir = ensure_plain_directory(self.pending_deletion_dir, create=True)
+            pending_path, receipt_path = self._receipt_paths(
+                row["agent_id"], expected_sha256
             )
+            if path_exists_without_following_links(pending_path):
+                raise SpecialistError(f"pending specialist target already exists: {pending_path}")
+            if path_exists_without_following_links(receipt_path):
+                raise SpecialistError(f"retirement receipt target already exists: {receipt_path}")
             validate_direct_agent_file(path, self.agents_dir)
-            if path.read_bytes() != data:
-                raise SpecialistError("agent changed immediately before deletion")
-            path.unlink()
+            if path.read_bytes() != data or sha256_bytes(data) != expected_sha256:
+                raise SpecialistError("agent changed immediately before retirement")
+            retired_at = utc_now()
+            receipt = {
+                "format_version": RETIREMENT_RECEIPT_FORMAT_VERSION,
+                "agent_id": row["agent_id"],
+                "name": row["name"],
+                "role_key": row["role_key"],
+                "original_path": str(path),
+                "pending_path": str(pending_path),
+                "sha256": expected_sha256,
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "retired_at": retired_at,
+            }
+            receipt_bytes = receipt_json_bytes(receipt)
+            write_new_file(receipt_path, receipt_bytes)
+            validate_direct_plain_file(
+                receipt_path,
+                pending_dir,
+                kind="retirement receipt",
+                max_bytes=MAX_RECEIPT_BYTES,
+            )
+            if receipt_path.read_bytes() != receipt_bytes:
+                raise SpecialistError("retirement receipt changed immediately after creation")
+            rename_no_replace(path, pending_path)
+            moved_to_pending = True
+            validate_direct_plain_file(
+                pending_path,
+                pending_dir,
+                kind="pending specialist",
+                max_bytes=MAX_AGENT_BYTES,
+            )
+            if pending_path.read_bytes() != data:
+                raise SpecialistError("pending specialist changed immediately after retirement")
             connection.execute("DELETE FROM agents WHERE agent_id = ?", (row["agent_id"],))
             connection.execute("COMMIT")
+            committed = True
             return {
                 "ok": True,
-                "action": "deleted",
+                "action": "retired_to_pending_deletion",
                 "deleted": True,
-                "recoverable": False,
+                "deleted_from": "active_specialist_registry",
+                "recoverable": True,
+                "disposition": "plugin_pending_deletion",
                 "path": str(path),
+                "original_path": str(path),
+                "pending_path": str(pending_path),
+                "receipt_path": str(receipt_path),
+                "sha256": expected_sha256,
+                "agent_id": row["agent_id"],
             }
-        except BaseException:
-            with contextlib.suppress(sqlite3.Error):
+        except BaseException as exc:
+            if committed:
+                raise
+            rollback_error: str | None = None
+            try:
                 connection.execute("ROLLBACK")
-            if path is not None and data is not None and not path.exists():
-                with contextlib.suppress(OSError):
-                    write_new_file(path, data)
+            except sqlite3.Error as rollback_exc:
+                rollback_error = f"database rollback failed: {rollback_exc}"
+            if (
+                moved_to_pending
+                and path is not None
+                and pending_path is not None
+                and data is not None
+            ):
+                move_error = self._rollback_exact_move(
+                    source=pending_path,
+                    destination=path,
+                    expected=data,
+                    source_parent=self.pending_deletion_dir,
+                    kind="pending specialist",
+                    max_bytes=MAX_AGENT_BYTES,
+                )
+                rollback_error = rollback_error or move_error
+            if rollback_error is not None:
+                raise SpecialistError(
+                    f"retirement failed and exact recovery was not completed: {rollback_error}"
+                ) from exc
+            raise
+        finally:
+            connection.close()
+
+    def restore(
+        self,
+        *,
+        expected_sha256: str,
+        owner_token: str,
+        name: str | None = None,
+        receipt: Path | None = None,
+    ) -> dict[str, Any]:
+        expected_sha256 = validate_sha256(expected_sha256)
+        if not TOKEN_RE.fullmatch(owner_token):
+            raise SpecialistError("owner_token is invalid")
+        connection = self.connect()
+        original_path: Path | None = None
+        pending_path: Path | None = None
+        data: bytes | None = None
+        moved_to_original = False
+        committed = False
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            (
+                receipt_data,
+                receipt_path,
+                receipt_bytes,
+                pending_path,
+                data,
+                _,
+                header,
+            ) = self._load_retirement_receipt(
+                name=name,
+                receipt_path=receipt,
+                expected_sha256=expected_sha256,
+            )
+            if header["owner_token"] != owner_token:
+                raise SpecialistError("provided owner token is incorrect")
+            original_path = Path(receipt_data["original_path"]).absolute()
+            conflict = connection.execute(
+                "SELECT agent_id, name, role_key, path FROM agents "
+                "WHERE agent_id = ? OR name = ? OR role_key = ? OR path = ? LIMIT 1",
+                (
+                    receipt_data["agent_id"],
+                    receipt_data["name"],
+                    receipt_data["role_key"],
+                    str(original_path),
+                ),
+            ).fetchone()
+            if conflict is not None:
+                raise SpecialistError(
+                    "active registry has an agent_id, name, role_key, or path conflict"
+                )
+            if path_exists_without_following_links(original_path):
+                raise SpecialistError(f"original specialist target already exists: {original_path}")
+            validate_direct_plain_file(
+                pending_path,
+                self.pending_deletion_dir,
+                kind="pending specialist",
+                max_bytes=MAX_AGENT_BYTES,
+            )
+            if pending_path.read_bytes() != data:
+                raise SpecialistError("pending specialist changed immediately before restore")
+            ensure_plain_directory(self.restored_receipt_dir, create=True)
+            rename_no_replace(pending_path, original_path)
+            moved_to_original = True
+            validate_direct_agent_file(original_path, self.agents_dir)
+            if original_path.read_bytes() != data:
+                raise SpecialistError("restored specialist changed immediately after restore")
+            connection.execute(
+                "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    receipt_data["agent_id"],
+                    receipt_data["name"],
+                    receipt_data["role_key"],
+                    str(original_path),
+                    owner_token,
+                    expected_sha256,
+                    receipt_data["created_at"],
+                    receipt_data["updated_at"],
+                ),
+            )
+            connection.execute("COMMIT")
+            committed = True
+
+            archive_path = self.restored_receipt_dir / (
+                f"{receipt_data['agent_id']}.{expected_sha256}.restored."
+                f"{uuid.uuid4().hex}.receipt.json"
+            )
+            receipt_disposition = "archived_after_restore"
+            receipt_archive_error: str | None = None
+            try:
+                validate_direct_plain_file(
+                    receipt_path,
+                    self.pending_deletion_dir,
+                    kind="retirement receipt",
+                    max_bytes=MAX_RECEIPT_BYTES,
+                )
+                if receipt_path.read_bytes() != receipt_bytes:
+                    raise SpecialistError("retirement receipt changed before archival")
+                rename_no_replace(receipt_path, archive_path)
+            except (OSError, SpecialistError) as archive_exc:
+                archive_path = receipt_path
+                receipt_disposition = "retained_after_archive_conflict"
+                receipt_archive_error = str(archive_exc)
+            result = {
+                "ok": True,
+                "action": "restored_from_pending_deletion",
+                "restored": True,
+                "path": str(original_path),
+                "original_path": str(original_path),
+                "pending_path": str(pending_path),
+                "receipt_path": str(archive_path),
+                "receipt_disposition": receipt_disposition,
+                "receipt_replayable": False,
+                "replay_prevention": "active_registry_identity_conflicts",
+                "sha256": expected_sha256,
+                "agent_id": receipt_data["agent_id"],
+                "name": receipt_data["name"],
+                "role_key": receipt_data["role_key"],
+            }
+            if receipt_archive_error is not None:
+                result["receipt_archive_error"] = receipt_archive_error
+            return result
+        except BaseException as exc:
+            if committed:
+                raise
+            rollback_error: str | None = None
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error as rollback_exc:
+                rollback_error = f"database rollback failed: {rollback_exc}"
+            if (
+                moved_to_original
+                and original_path is not None
+                and pending_path is not None
+                and data is not None
+            ):
+                move_error = self._rollback_exact_move(
+                    source=original_path,
+                    destination=pending_path,
+                    expected=data,
+                    source_parent=self.agents_dir,
+                    kind="restored specialist",
+                    max_bytes=MAX_AGENT_BYTES,
+                )
+                rollback_error = rollback_error or move_error
+            if rollback_error is not None:
+                raise SpecialistError(
+                    f"restore failed and exact recovery was not completed: {rollback_error}"
+                ) from exc
             raise
         finally:
             connection.close()
@@ -1243,6 +2104,7 @@ def build_parser() -> argparse.ArgumentParser:
     ensure.add_argument("--instructions", required=True)
     ensure.add_argument("--model", required=True)
     ensure.add_argument("--reasoning-effort", required=True, choices=sorted(EFFORTS))
+    ensure.add_argument("--speed", choices=sorted(SPEEDS), default="standard")
     ensure.add_argument("--authority", required=True, choices=sorted(AUTHORITIES))
     ensure.add_argument(
         "--expected-sha256",
@@ -1256,13 +2118,48 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--lesson")
     mode.add_argument("--summary")
     improve.add_argument("--event-id")
+    improve.add_argument(
+        "--retracts-event-id",
+        help="append a correction that removes one prior event from active memory",
+    )
     improve.add_argument("--covered-through", type=int)
     improve.add_argument("--source-digest")
 
-    delete = subparsers.add_parser("delete", help="permanently delete one exactly owned specialist")
+    record_run = subparsers.add_parser(
+        "record-run",
+        help="idempotently record one verified successful retained-agent survival round",
+    )
+    record_run.add_argument("--name", required=True)
+    record_run.add_argument("--expected-sha256", required=True)
+    record_run.add_argument("--run-id", required=True)
+    record_run.add_argument(
+        "--invocation-kind",
+        required=True,
+        choices=sorted(INVOCATION_KINDS),
+    )
+
+    subparsers.add_parser(
+        "status",
+        help="report registered specialists, survival rounds, and unregistered lean files",
+    )
+
+    delete = subparsers.add_parser(
+        "delete",
+        help="recoverably retire one exactly owned unused specialist to plugin pending deletion",
+    )
     delete.add_argument("--name", required=True)
     delete.add_argument("--expected-sha256", required=True)
     delete.add_argument("--owner-token", required=True)
+
+    restore = subparsers.add_parser(
+        "restore",
+        help="restore one exactly verified specialist from plugin pending deletion",
+    )
+    restore_identity = restore.add_mutually_exclusive_group(required=True)
+    restore_identity.add_argument("--name")
+    restore_identity.add_argument("--receipt", type=Path)
+    restore.add_argument("--expected-sha256", required=True)
+    restore.add_argument("--owner-token", required=True)
     return parser
 
 
@@ -1277,6 +2174,7 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             model=arguments.model,
             effort=arguments.reasoning_effort,
             authority=arguments.authority,
+            speed=arguments.speed,
             expected_sha256=arguments.expected_sha256,
         )
     if arguments.command == "improve":
@@ -1288,11 +2186,14 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
                 expected_sha256=arguments.expected_sha256,
                 lesson=arguments.lesson,
                 event_id=arguments.event_id,
+                retracts_event_id=arguments.retracts_event_id,
             )
         if arguments.covered_through is None or arguments.source_digest is None:
             raise SpecialistError("summary mode requires --covered-through and --source-digest")
         if arguments.event_id is not None:
             raise SpecialistError("summary mode does not accept --event-id")
+        if arguments.retracts_event_id is not None:
+            raise SpecialistError("summary mode does not accept --retracts-event-id")
         return registry.improve_with_summary(
             name=arguments.name,
             expected_sha256=arguments.expected_sha256,
@@ -1300,9 +2201,25 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             covered_through=arguments.covered_through,
             source_digest=arguments.source_digest,
         )
+    if arguments.command == "record-run":
+        return registry.record_run(
+            name=arguments.name,
+            expected_sha256=arguments.expected_sha256,
+            run_id=arguments.run_id,
+            invocation_kind=arguments.invocation_kind,
+        )
+    if arguments.command == "status":
+        return registry.status()
     if arguments.command == "delete":
         return registry.delete(
             name=arguments.name,
+            expected_sha256=arguments.expected_sha256,
+            owner_token=arguments.owner_token,
+        )
+    if arguments.command == "restore":
+        return registry.restore(
+            name=arguments.name,
+            receipt=arguments.receipt,
             expected_sha256=arguments.expected_sha256,
             owner_token=arguments.owner_token,
         )
