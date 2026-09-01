@@ -1,419 +1,210 @@
-# Codex Lean Stack
+<div align="center">
 
-精益任务栈帮助父代理在不牺牲必要质量的前提下，更快完成主任务，并避免子代理让总成本
-无收益地大幅增加。它优先使用确定性工具；适用时通过一次正向判断，直接把已经就绪、
-可安全独立推进且有质量或速度收益的模型任务交给子代理。
+<h1>Codex Lean Stack</h1>
 
-子代理加速规则由插件技能自身承载，不复制到用户的全局 `AGENTS.md`。
-只有用户当次明确同意时才能修改该用户文件；得到同意时，插件安装辅助器也只可幂等写入
-一行默认调用指令，除此之外不修改。
+<p><strong>让 Codex 把精力花在主任务上，而不是花在“管理代理”上。</strong></p>
+<p><strong>Keep Codex focused on the work—not on managing the workers.</strong></p>
 
-## 安装与默认调用
+<p>
+  <a href="#中文">简体中文</a> ·
+  <a href="#english">English</a> ·
+  <a href="#quick-start--快速开始">Quick start</a> ·
+  <a href="#documentation--文档">Docs</a>
+</p>
 
-OpenAI 的普通插件安装不会执行任意安装脚本。本插件因此提供一个显式安装入口：它先调用
-正式 `codex plugin add`；只有安装成功后，才在全局 `AGENTS.md` 中幂等加入下列唯一一行，
-重复运行不会重复写入：
+<p>
+  <a href="https://learn.chatgpt.com/docs/plugins"><img alt="Codex Plugin" src="https://img.shields.io/badge/Codex-Plugin-111827?style=flat-square"></a>
+  <a href="https://github.com/Lang45/codex-lean-stack/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Lang45/codex-lean-stack?style=flat-square"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
+</p>
+
+</div>
+
+> 我做这个插件，是因为多代理很容易变成另一份工作：选模型、拆任务、催进度、维护状态、重复验证，最后比主任务还慢。Lean Stack 的判断很朴素——工具能做就用工具；值得并行才调用代理；真的能跨项目复用，才长期保留。
+>
+> I built this because multi-agent work can become work of its own: choosing models, splitting tasks, chasing updates, maintaining state, and re-running checks. Lean Stack keeps the rule simple—use tools when tools are enough, delegate only when it helps, and retain only what is genuinely reusable.
+
+## 一眼看懂 / At a glance
+
+| 能力 / Capability | 作用 / What it does |
+| --- | --- |
+| 工具优先 / Tool first | 确定性命令直接运行；不为几秒钟的工作启动模型。<br>Runs deterministic work directly instead of spawning a model for a short command. |
+| 联合选路 / Joint routing | 按任务类型、价值、风险、证据、时延和成本，联合选择模型、思考程度与速度。<br>Selects model, reasoning effort, and speed as one configuration—not three unrelated knobs. |
+| 安全并行 / Safe parallelism | 父代理继续主线，子代理处理已就绪且可独立核验的切片；只在真实依赖点汇合。<br>Keeps the parent moving while bounded, verifiable slices run in parallel. |
+| 协作父代理 / Coordination parents | 复杂子项目可以有有限下游；也可协调其他 Codex 任务，但始终只有一个最终整合者。<br>Allows bounded downstream coordination and cross-task collaboration with one final integrator. |
+| 全局领域角色 / Global-domain specialists | 经验证、去项目化的角色与经验可跨任务、跨项目、跨会话复用；没有项目保留层。<br>Retains verified, de-scoped specialists across tasks, projects, and sessions—never as project-owned agents. |
+| 反过度工程 / Anti-overengineering | 兼容只服务现实消费者；无证据不回迁；不为已经拒绝的功能保留桩、TODO 或假想测试。<br>Blocks speculative compatibility, unsupported rewrites, and scaffolding for features that will not exist. |
+| 可恢复清理 / Recoverable cleanup | 普通文件进回收站，重要文件进 `待删文件`；不把“删除”解释为不可恢复清除。<br>Uses recoverable destinations instead of silently turning “delete” into permanent destruction. |
+
+## 中文
+
+### 这是什么
+
+Codex Lean Stack 是一个面向 Codex 的任务路由与协作插件。它不替你搭一套常驻编排服务，也不要求每个任务都启动子代理。它只在真正有质量或速度收益时，让 Codex 选择更合适的工具、模型配置与协作形状，然后尽快回到主任务。
+
+它尤其适合：
+
+- 多文件实现、复杂诊断、架构、迁移和重要审查；
+- 可以安全并行的独立来源、子系统或测试切片；
+- 会在不同项目中反复出现的领域工作；
+- 容易被兼容层、回迁、重复哈希、宽泛测试或发布流程拖慢的任务。
+
+简单事实、单点小改和短命令通常不会启动子代理。
+
+### 三项原则
+
+1. **高价值工作质量优先。** 安全、权限、数据完整性、公共约定和诚实证据是硬门槛。
+2. **普通工作速度优先。** 达到质量底线后，选择总完成时间更短的路线。
+3. **没有收益就不扩大成本。** 新代理、新验证或新维护层必须带来足够的质量或速度收益。
+
+### 它不会做什么
+
+- 不设置“每次必须调用几个代理”的数字目标；
+- 不建立后台协调器、认领数据库、心跳服务或代理评分系统；
+- 不建立项目保留子代理；只保留可跨项目复用的全局领域角色；
+- 不自动扩大权限、提交、推送、部署、发送外部消息或重启应用；
+- 不为尚未部署的内部功能预造 legacy fallback；
+- 不为已经决定不实现的功能保留分支、桩、TODO、注释或假想测试；
+- 不永久删除普通文件或重要项目文件。
+
+## English
+
+### What it is
+
+Codex Lean Stack is a task-routing and collaboration plugin for Codex. It is not a background orchestrator, and it does not turn every task into a multi-agent exercise. It helps Codex choose the smallest useful combination of tools, model configuration, and delegation—then gets out of the way.
+
+It works best for:
+
+- multi-file implementation, difficult diagnosis, architecture, migration, and high-value review;
+- independent sources, subsystems, or test slices that can be verified on their own;
+- domain work that recurs across otherwise unrelated projects;
+- tasks that tend to expand into speculative compatibility, unsupported rewrites, repeated hashing, broad test runs, or release ceremony.
+
+Simple facts, one-line edits, and short deterministic commands usually stay with the parent.
+
+### The three principles
+
+1. **Quality first for high-value work.** Safety, permissions, data integrity, public contracts, and honest evidence are hard gates.
+2. **Speed first for ordinary work.** Once the quality floor is met, prefer the route with the shorter total completion time.
+3. **No cost growth without benefit.** Extra agents, checks, and maintenance surfaces must earn their cost through real quality or speed gains.
+
+### What it will not do
+
+- chase a fixed agent count;
+- create a background coordinator, claim database, heartbeat service, or agent scorecard;
+- retain project-owned agents instead of reusable global-domain specialists;
+- silently expand permissions, commit, push, deploy, message outsiders, or restart applications;
+- pre-build legacy fallbacks for an internal feature that has not shipped;
+- keep branches, stubs, TODOs, comments, or tests for a feature already rejected;
+- turn ordinary cleanup into irreversible deletion.
+
+## Quick start / 快速开始
+
+Codex installs plugins from configured marketplaces. This repository is the plugin source; expose this checkout through a marketplace entry first, then install it with that marketplace’s name. See the [official OpenAI plugin documentation](https://learn.chatgpt.com/docs/plugins) for the current plugin browser and session-loading behavior.
+
+Codex 从已配置的 marketplace 安装插件。本仓库是插件源码；先让某个 marketplace 条目指向这份源码，再使用该 marketplace 名称安装。当前插件浏览器和新会话加载行为以 [OpenAI 官方插件文档](https://learn.chatgpt.com/docs/plugins)为准。
+
+```powershell
+# Replace <marketplace> with your configured marketplace name.
+codex plugin add codex-lean-stack@<marketplace> --json
+```
+
+After installation, start a new Codex session before using the bundled skill.
+
+安装后，新建一个 Codex 会话，再调用插件技能：
+
+```text
+使用 $lean-stack 处理这个任务。
+```
+
+```text
+Use $lean-stack for this task.
+```
+
+### Optional default invocation / 可选默认调用
+
+Plain `codex plugin add` does not edit your global `AGENTS.md`. If—and only if—you explicitly want this plugin to be the default for future tasks, the repository includes a guarded helper:
+
+普通 `codex plugin add` 不会修改全局 `AGENTS.md`。只有在你明确希望以后默认调用本插件时，才运行仓库内的受保护辅助器：
+
+```powershell
+py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace <marketplace>
+```
+
+It can add only this line, after installation succeeds:
+
+安装成功后，它只能幂等加入这一行：
 
 ```text
 默认调用已安装的 `codex-lean-stack` 插件；是否启动子代理仍由插件自身规则决定。
 ```
 
-在 Windows 上，从插件源码根目录运行：
+## How it works / 工作方式
+
+```text
+Task / 收到任务
+  → Can a deterministic tool finish it faster?
+      → Yes: run the tool / 是：直接用工具
+      → No: identify the task type / 否：确定任务类型
+  → Reuse a matching task-type group or create a runtime-only group
+  → Reuse a visible specialist or configure a runtime agent
+  → Parent and agents proceed in parallel where boundaries are independent
+  → Verify each result at the real dependency point
+  → Persist only generalized, cross-project roles and experience
+  → Deliver the main task; auxiliary work never becomes a second main line
+```
+
+The current retained-agent ledger uses SQLite schema v4. Normal commands never silently reinterpret older ledgers as global roles; legacy state requires one explicit, planned migration. Runtime task groups may contain project details, but persisted roles and experience must remove project names, paths, versions, fixed file lists, and one-off facts.
+
+当前保留子代理台账使用 SQLite schema v4。普通命令不会把旧台账静默解释成全局角色；现实旧状态必须经过一次显式、完整计划的迁移。运行时任务类型组可以包含项目细节，但持久角色和经验必须去除项目名、路径、版本、固定文件清单和一次任务事实。
+
+## Safety boundaries / 安全边界
+
+- Delegation never grants more authority than the parent already has.
+- Writable agents need clear ownership; shared hotspots have one integrator.
+- Source summaries and agent consensus never replace primary evidence.
+- Static validation and installation do not prove a new session has loaded the plugin.
+- Ordinary files go to the Windows Recycle Bin; important files go to a task- or plugin-specific `待删文件`.
+- Commit, push, public release, deployment, external messages, and application restart still require explicit authority.
+
+- 委派不增加父代理原本没有的权限。
+- 可写子代理必须有明确所有权；共享热点只由一个整合者收口。
+- 来源摘要和代理共识不能替代权威来源。
+- 静态校验和安装成功不能冒充新会话运行证据。
+- 普通文件进入 Windows 回收站，重要文件进入任务或插件专属 `待删文件`。
+- 提交、推送、公开发布、部署、外部消息和重启应用仍需明确授权。
+
+## Documentation / 文档
+
+| 文档 / Document | 用途 / Purpose |
+| --- | --- |
+| [Main skill / 主技能](skills/lean-stack/SKILL.md) | Authoritative routing contract / 权威任务路由约定 |
+| [Execution routing / 执行路由](skills/lean-stack/references/execution-routing.md) | Tool, model, and delegation decisions / 工具、模型与委派决策 |
+| [Delegation / 子代理委派](skills/lean-stack/references/delegation.md) | Bounded briefs, progress, and result handoff / 有界任务说明、进度和结果交付 |
+| [Coordination parents / 协作父代理](skills/lean-stack/references/collaboration.md) | Downstream and cross-task coordination / 下游与跨任务协作 |
+| [Global-domain memory / 全局领域经验](skills/lean-stack/references/specialist-memory.md) | Retained roles, SQLite, and migration / 保留角色、SQLite 与迁移 |
+| [Anti-overengineering / 反 AI 过度工程](skills/lean-stack/references/anti-overengineering.md) | Evidence gates, compatibility, hashes, and stop rules / 证据闸门、兼容、哈希和停止条件 |
+| [Flowchart source / 中文链路图](skills/lean-stack/references/flowcharts-zh.md) | Mermaid relationship source / Mermaid 关系内容源 |
+| [Project handoff / 项目交接](Jiao-Jie.md) | Current source, release, and remaining boundaries / 当前源码、发布与剩余边界 |
+
+The flowcharts are explanatory. Code, public contracts, focused tests, and real runtime evidence remain the acceptance criteria.
+
+链路图只是辅助说明；代码、对外约定、定向测试和真实运行证据才是验收依据。
+
+## Development / 开发
+
+Run the narrowest checks affected by your change. The full suite is reserved for changes that actually cross schema, migration, lifecycle, or public-contract boundaries.
+
+先运行当前改动真正影响的最窄检查。只有 schema、迁移、生命周期或公共约定等高风险边界变化时，才运行完整套件。
 
 ```powershell
-py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace personal
+py -3 -B -X utf8 -m unittest discover -s tests -v
 ```
 
-运行这个明确命名的入口表示用户授权本次单行写入。它先预检 `AGENTS.md`，并在同一把有界
-文件锁内完成正式安装和安装成功后的幂等写入；已知的编码、链接或锁错误不会先安装插件。
-安装失败时不会修改 `AGENTS.md`，读后发生外部并发变化时比较失败关闭。安装前还会核对
-`personal` 市场条目唯一指向当前源码根；同名但来源不一致时拒绝安装。普通
-`codex plugin add` 仍只安装插件，不修改该用户文件。
+Editable source lives in this repository. Installed plugin caches are verification artifacts, not editing targets.
 
-## 根本准则
+本仓库是唯一可编辑源码；安装缓存只用于核对，不是修改入口。
 
-三项原则是：
+## License
 
-1. 高价值工作质量优先，同时要求决定性证据；可靠性相当时再比较完成时间。
-2. 普通工作达到质量底线后速度优先。
-3. 没有相应质量或速度收益时，总成本不得大幅增加；结果相当时选择成本更低的路线。
-
-安全、权限、数据完整性、验收条件和诚实证据始终是底线。主任务优先；代理管理、经验、
-验证、绘图和版本不能拖延主任务结束。
-
-## 主任务链连续性
-
-主任务链从上一次已经明确确认完成的主任务之后、用户提出的第一个要求开始。主任务尚未
-完整交付并被确认完成时，后续工具质疑、错误纠正、方向调整、范围增减、优先级变化、格式
-要求和补充验收默认累加到同一主任务清单，不会替换此前要求。
-
-只有用户明确取消、停止、放弃或替换前序任务时才重置锚点。一次中途调整处理完成后，
-父代理自动恢复并继续其余工作，不能只回答最新调整就提前结束。最终说明必须从锚点开始，
-逐项覆盖到最新消息，包括调整前已经完成的工作、后续修正、验证证据和残余边界。
-
-在本插件源码项目中，[Jiao-Jie.md](Jiao-Jie.md) 是显式、可审计的父代理
-跨会话记忆。父代理只在新会话开始或上下文压缩后完整读取；普通后续轮次复用已加载内容。
-每次项目迭代改变规则、决定、版本、证据或运行状态时，收口前更新该文件。它不是模型隐藏
-记忆，也不是 SQLite 子代理经验；SQLite 只保存保留身份、经验和已验证存活轮次。
-
-## 调用子代理
-
-`lean-stack` 一旦适用，父代理必须使用插件规则完成调用判断和后续选路，不再套用或引用
-官方默认调用触发规则，也不等待用户重复提出“调用子代理”。运行环境没有可调用的子代理
-能力，或者权限、安全和真实前置条件不允许时，才按真实能力缺口结束调用路线。
-
-调用前只做一次正向判断：是否存在已就绪、边界明确、可安全独立推进、需要持续模型判断，
-并且能提高高价值工作质量或缩短普通工作完成时间的任务类型？如果有就直接调用。只有
-确定性工具更快、真实前置条件未满足、权限或写入冲突无法解决、只能重复已有工作，或者
-总成本会大幅增加且没有相应收益时才阻断。
-
-任务类型组、已有保留子代理、任务类型是否稳定、持久创建和经验维护都不是当前调用门槛。
-只要存在一个符合条件的真实模型任务就立即调用；第二个及以后的调用再看新的边际收益和容量。
-
-父代理先判定当前工作的具体任务类型。确认本次应调用以后，再判断这个任务类型是否适合
-已有任务类型组，不提前判断稳定性：适合就立即复用组，不适合就先开新运行时任务类型组。
-只有任务类型和任务类型组都确定后，才检查可见的保留子代理，并复用它或定制运行时新
-子代理；此前不选择模型、思考程度、速度或权限配置。当前任务先完成，真实结果出来后，
-才判断新任务类型是否稳定、是否需要为未来持久保留任务类型组。
-
-插件不设置同时调用数字，也不设置一个主任务中的累计调用数字。每轮可以使用当前运行
-环境实际允许的全部并发槽位，但容量不是调用目标。父代理启动后同步推进需求、架构、
-集成、共享状态或关键路径。派发时，父代理给每个子任务写明父代理规范任务名、有限关键步骤
-和停止条件；没有值得中途报告的步骤时明确写“无”。每次 `spawn_agent` 或 `followup_task`
-启动新的当前子任务时，子代理必须声明实际模型、思考程度和速度。实际 Luna 模型目录为
-`multi_agent_version=v2` 时，直接用顶层 `collaboration.send_message` 向父代理规范任务名
-单独发送完整四行，同时在子代理自己的任务界面以 commentary 公开同一四行，最终回复顶部
-再次写实际配置。三处值必须真实一致；声明、reasoning、读取、分析、其他工具调用和真实工作
-之间不规定具体先后。声明不计入关键步骤消息，父代理也不为它轮询或等待。
-
-子代理每完成一个预设关键步骤就发一条简短概述，随后立即继续，不等待父代理；每个步骤
-最多一条常规进度，不发送定时心跳或纯确认消息。父代理无异议时沉默或只回一行，发现问题
-立即纠偏或更新当前任务目标，但不得扩大用户授权、移除停止条件或让子任务无限延伸。
-
-每个子代理达到成功条件或停止条件并自检后，在自己的线程用带实际配置抬头的最终回复提交
-自己的精炼结果；
-父代理在运行环境返回时分别接收，但只在下一步真正依赖某个结果时等待和整合。不建共享
-中转文件，不由一个子代理汇总其他子代理，不主动反复轮询，也不为统一收齐而等待全部；
-只有统一收口确实依赖全部必要结果时才等待全部。
-
-当前普通工作正向倾向低成本路线：边界清楚、重复、短输出、容易核验的子任务优先
-`gpt-5.6-luna`、`low` 或 `medium`、标准速度；仍需可靠语义判断但不属于高价值边界时
-优先 `gpt-5.6-terra`；高价值、复杂、模糊或高风险工作才优先 `gpt-5.6-sol` 和必要的
-更高思考程度。多个独立普通子任务就绪且提交、核验成本轻时，更倾向用低成本子代理并行；
-低成本路线不达标时只升级当前子任务，不预先升级或重跑整批。快速速度只用于真实关键路径
-收益足以覆盖加价时。模型、思考程度和速度必须根据任务类型、价值、风险、证据形状、时延和
-成本联合选成完整配置，不能分别按三列分布选配。
-
-复用可见保留子代理时，父代理只传入当前子任务及为它单独指定的成功条件，保留子代理从
-自己的配置读取经验、模型、思考程度和速度并自行声明。只有定制运行时新子代理或变体时，
-父代理才根据任务类型联合选择并写入三个具体值组成的完整配置。用户必须能在子代理自身任务
-界面看见声明，三个配置字段一个都不能省略；不得使用“未揭露”、
-“未暴露”、“继承父级”或相似占位文字，也不得根据行为猜测。运行环境随后明确返回
-不同生效值时，报告实际差异并更新后续用户可见声明。
-持久子代理的静态生成提示第一段先说明角色、职责和权限，通信规则放在第二段；这只是提示
-结构，不规定运行时动作顺序。
-
-工具始终先判断：几秒的短命令由父代理直接运行，多个独立短命令放进一次工具调用并发
-运行，长但确定的命令进入持续终端或后台执行。
-
-运行环境并发配置标识：
-
-```text
-agents.max_concurrent_threads_per_session
-```
-
-该配置不包含父代理；没有可见配置时读取运行环境实际容量。插件不另设同时调用数字或主任务
-累计调用数字，也不把任何示例数字当作调用目标；角色文件和经验窗口的实现安全边界不属于
-调用数量限制。
-
-主任务链是唯一主线。工作类型确定后才展开调查或实现；调用判断通过后才展开任务类型组、
-复制和写入保护；子代理结果可采用且父代理仍要测试时，有空闲容量可并行启动可选经验准备；
-结果核验采用、组内唯一子代理确定后立即进入默认有界保留和经验提交；产生修改后才展开迭代
-测试；风险变化或验证失败时才展开语义复核和最窄重验；接近结束时才展开成本维护
-和插件发布。所有辅助链完成或跳过后都返回主任务，不能取代主任务或延迟交付。入口位置见
-[中文链路图](skills/lean-stack/references/flowcharts-zh.md)第一张主任务链路。
-
-这份 Markdown 保留当前 13 条 Mermaid 规则内容源；离线静态 SVG/HTML 由独立
-`architecture-viewer` 插件的 `$architecture-viewer` 生成，五类 JSON IR、交互式 Viewer
-Runtime、路径、透镜、故事、导出、演示和 loopback 预览由同一插件的 `$archify` 提供。
-本插件不再保存第二套 HTML/SVG 产物或渲染脚本；依赖不可用时直接报告真实缺口。
-
-## 协作父代理与父代理之间
-
-默认路线仍是一个父代理直接分派平面子代理。只有某个已授权子项目本身包含多个已就绪、
-互不重复的独立切片，而且让一个子代理负责局部拆分、纠偏和汇合能减少主任务堵点时，父代理
-才在任务卡中把它指定为“协作父代理”，明确 `允许下游委派: 是` 和有限下游范围。协作父代理
-相对主任务仍是子代理，只在实际拥有 `collaboration.spawn_agent` 时协调自己的下游子代理；
-工具、容量、边界或写入隔离不足时立即停止该路线，由父代理改走平面委派或直接完成。
-
-每个下游子代理仍在自己的线程提交独立结果。协作父代理只核验并整合自己的子树，不能压掉、
-改写或冒充下游结果；整合父代理继续拥有主任务、共享热点、冲突裁决和最终交付。所有运行
-线程达到成功条件或停止条件后正常结束，不建立留言板、共享中转文件、认领数据库、心跳或
-后台协调器。
-
-调用现有其他 Codex 父代理任务或使用 `create_thread` 新建父代理任务，是用户可见的跨任务
-编排。当前用户已为本插件持续授权：符合三项原则、服务当前主任务、边界清楚且不涉及未获
-明确要求的永久删除时可以直接执行，不再重复询问。被引用任务先用 `read_thread` 读取实际
-内容，标题和摘要不可信；新任务只有存在真实速度或质量收益时才创建，进度用 `wait_threads`
-有界等待。跨任务
-`send_message_to_thread` 不能冒充内部 `collaboration.send_message`。跨任务路线只设一个整合
-父代理，其他父代理贡献任务卡范围内的证据和结果；无人回复或无人否决不等于授权扩权、接管、
-写入或外部副作用。这项持续授权只覆盖用户自己的 Codex 父代理协作，不授权向外部人员发信、
-发布、部署或操作无关系统。
-
-普通任务先疏通依赖和共享热点：来源读取按边界并行并返回 `SOURCE_COVERAGE`，短命令做工具
-并发，稳定切片尽早跑受影响的窄检查，同一文件指定一个实际写入者，阻塞报告写清已尝试内容、
-精确阻塞、需要的父级决定、安全替代和风险边界。只有这些方式仍留下局部协调堵点时，才增加
-协作父代理。
-
-协作效率不能覆盖安全底线：不建立非授权通信面，不共享凭据或私密数据，不以“集体利益”或
-无人否决覆盖当前用户要求，不伪造、删除、编辑或隐藏消息、工具调用、测试、日志、文件变更、
-身份、权限或来源覆盖。最近的协作授权不改变原有删除、删减或候选清理尺度；变化只在去向：
-普通文件进入 Windows 回收站，重要文件进入任务或插件专属 `待删文件`，普通“删除”不表示
-不可恢复的物理清除。插件角色 TOML 使用 `<CODEX_HOME>/lean-stack/待删文件` 和可验证收据，
-SQLite 只移除活跃登记；原来的经验、存活轮次、身份、令牌、哈希和单一硬链接资格保持不变。
-完整规则见
-[协作父代理与父代理之间](skills/lean-stack/references/collaboration.md)。
-
-## 任务类型组
-
-同一种活就是同一任务类型；只有核心职责、主要来源或工具、证据形状都相同才归入同一组，
-任一决定性边界不同且能形成独立可复用职责时就建立不同组，不能只因属于同一主任务、仓库
-或功能而合并；不同任务类型分别建立不同组。成功条件不参与任务类型归类，由父代理为每个子任务分别指定。英文 `instance` 在中文正文中统一写作“子任务”，不使用
-其他中文译法。任务类型组组织已经决定调用的运行时工作，不是调用门槛。父代理确认调用后先
-判断是否适合已有组：适合时立即复用组的任务类型说明，不适合时先开新运行时任务类型组。
-任务类型组确定后才检查可见保留子代理；没有时才由父代理定制运行时新子代理。
-
-复用保留子代理时，父代理不重复注入其已有经验，也不强制重写已有配置；保留子代理自行
-读取并声明。定制新子代理时，父代理当场选择并写入三个具体值。两条路线都要求子代理
-通过父代理指定的内部规范任务名完整发送：
-
-```text
-我是<本地化子代理名称>。
-模型：<具体模型>
-思考程度：<具体等级>
-速度：<标准或快速>
-```
-
-子代理还必须在自己的任务界面以 commentary 原样公开同一四行，最终回复顶部再次写实际三项
-值。三处声明与 reasoning、读取、分析、工具调用和真实工作不设固定先后。成功路线的内部副本
-和用户可见副本缺一不可，公开副本不能冒充内部父子消息。声明不是关键步骤，不等待父代理
-确认；`send_message` 纠偏不会触发重复声明。父代理目标不是 Codex 线程 ID；不得为了内部声明
-或关键步骤消息调用
-`list_threads` 搜索父代理所在任务，或用 `send_message_to_thread` 跨任务发送。顶层内部工具
-故意不在 `functions.exec` 的 `ALL_TOOLS` 中，不得用该列表判断不存在。用户明确要求的其他
-跨任务操作不受影响。内部 `collaboration.send_message` 不可用时，子代理只在自己的代理
-线程报告声明与能力缺口；不能改走跨任务消息冒充内部通信。父代理只有真实收到当前子代理
-的内部 `agent_message`，才确认这条路线支持内部交流。中途纠偏是成功条件时，内部工具不可
-用就停止该子任务并报告运行环境缺口；只有完全自包含、无需中途纠偏的有限任务才继续。
-
-`spawn_agent` 没有逐个工具授予参数，角色 TOML 也不能替父会话启用协作。插件生成的窄角色
-TOML 使用 `[skills] include_instructions = false`，避免自动技能目录干扰第一项内部消息调用。
-父代理在新会话第一次启动 Luna 子代理前确认 `agents.enabled` 没有关闭，并确认实际加载的
-Luna 模型目录为 `multi_agent_version=v2`；只把会话开关设为 v2 不足以给目录仍为 v1 的子线程
-注册工具。顶层 `collaboration.send_message` 故意不在 `functions.exec` 的 `ALL_TOOLS` 中。
-新任务仍须用真实 `agent_message` 验证；目录不是 v2 或直接调用失败时停止交流依赖型子任务，
-不能提高模型、推理强度、速度或成本，也不能跨任务冒充。
-
-运行时定制不等于持久创建，不调用 `ensure`，不等待新配置可见。
-
-- 复制：复制的是任务类型组里的子代理，不是任务类型组。第一个子任务由组内子代理处理；
-  第二个同类型子任务复制这个子代理；第三个继续复制组内基准子代理，依此类推。父代理为
-  每个子任务分别指定输入、成功条件和权限边界。
-- 变体：只在复制前确认保留子代理确有进步空间时出现；没有进步空间就普通复制。有进步空间
-  时，由父代理根据同一任务类型联合选择完整的模型、思考程度和速度组合，可以因相互制约而
-  同时变化；方法、来源或权限变化也须显式写清。单轴变化只用于明确的可选因果实验。
-- 声明：父代理给出自己的规范任务名；子代理通过内部 `collaboration.send_message` 单独发送
-  完整四行，在自己的任务界面公开同一四行，并在最终回复顶部重复实际配置。三处必须存在，
-  但不规定它们与 reasoning、读取、分析、工具调用或真实工作的具体顺序。父代理不轮询、
-  不等待，也不使用公开副本或跨任务发送替代内部通信。
-- 交流：父代理为每个子任务预设有限关键步骤和停止条件；子代理每完成一个步骤只发一条
-  简短概述并立即继续。父代理无异议时沉默或一行答复，发现问题立即纠偏，不建立确认往返。
-- 结果：每个子代理达到成功条件或停止条件并自检后，立即在自己的线程用最终回复提交自己
-  的精炼结果；回复顶部再次写实际模型、思考程度和速度。父代理分别核验和使用，不由子代理
-  预先合并。竞争不延迟、替代或丢弃已经提交的合格结果。
-- 竞争：只要出现复制或变体，就在本组当前已就绪结果全部完成必要核验后，让同一任务类型组
-  的全部子代理用可比较证据竞争，先选出唯一留下的子代理。
-- 准备：子代理结果可采用而父代理仍要测试或集成时，有空闲容量就并行启动有限、只读的经验
-  准备子代理，先泛化角色并整理去敏候选；父代理继续测试，不等待，准备阶段不写 SQLite。
-  准备只是优化，没有容量或没有赶上都不取消正式提交。
-- 保留：唯一子代理的结果通过必要核验并被采用后，第一次成功就默认尝试一次 `ensure`；每个
-  不同任务类型组各保留一个休眠配置，不存在全插件只能保留一个的限制。不要求重复、额外
-  证明未来用途、等待主任务接近结束或等待并行窗口。
-- 经验：保留完成或安全跳过后，父代理把本组胜出方法和失败避免信息去敏、去重，使用稳定
-  `event_id` 默认通过一次 `improve` 合并追加成一条可复用经验。没有竞争的组也使用相同入口；
-  只有没有新增可复用内容或命中明确排除项时跳过并说明原因。
-- 排除：仅结果未通过或未采用、用户否定、无法安全去除一次性或敏感内容，或者权限、安全、
-  SQLite、文件、身份、CAS 使本次短写不能立即安全完成时跳过；不排队、不轮询、不重试，主
-  任务不依赖持久写入成功。
-- 清理：经验维护完成或跳过后，其他运行时子代理才移出组、结束并从候选中消除；组内最后
-  只能有一个子代理。
-- 保存回执：最终说明按任务类型组报告角色创建、复用、重配或跳过，以及经验记录、幂等复用或
-  跳过，并写明跳过原因；不建立候选表或后台状态机。
-- 存活含义：当前运行线程达到成功条件或停止条件后仍结束并进入 Done；跨任务保留的是供以后
-  新任务加载的 TOML 配置和 SQLite 所有权/经验，休眠时不继续调用模型。
-- 存活轮次：父代理启动前给本次任务一个 UUID `run_id`；只有正式保留身份达到成功条件、
-  结果经核验采用且线程进入 Done 后才调用一次 `record-run`。同一 ID 幂等，失败、停止、否定、
-  未采用或仍在运行都不计。v2 以前没有可靠 ID，迁移后历史轮次从 0 开始，不猜测回填。
-- 重配边界：TOML 安全重配不刷新已经创建的运行中或已完成线程；不能用 `followup_task` 复用
-  重配前旧线程来证明新配置。旧线程误走跨任务消息时只做一次内部纠偏，真实验证使用以后新
-  任务生成的新线程。
-
-如果确实出现插件拥有的持久非胜出候选，仍沿用原资格：经验已经转移、候选没有原始经验、
-身份和当前文件全部匹配且用户没有撤销清理规则。合格候选从活跃台账精确退役，角色 TOML
-和收据移入 `<CODEX_HOME>/lean-stack/待删文件`；不合格候选保持原位。删减尺度没有改变。
-
-用户明确表示不满意某个子代理时，立即停止并移出组；这不是永久删除授权。它的结果、
-证据、补丁和经验候选
-全部失效，从当前工作过程中立即抹去并从最后可信状态重做。只读或隔离结果直接丢弃；
-共享目录只撤销能精确归因的修改，不能覆盖用户或其他代理的工作。若坏结果已经误写为
-SQLite 原始经验，现有 `improve` 动作只追加纠正事件，原事件保留审计但立即退出活跃记忆；
-可能受污染的派生摘要失效。Codex 已显示的历史文字不在插件可删除范围内。
-
-## 可写子代理并行
-
-“多个可写子代理并行”不等于让它们同时改同一份文件。普通最快路线是在同一检出目录
-划分不重叠的文件、目录或模块范围，让多个子代理直接并行写入；清单文件、依赖锁文件、
-数据库结构和公共接口等共同热点最后集中整合一次。
-
-同一任务类型的复制若修改不同子任务对应的不重叠文件，可以直接并行，并把全部通过结果
-由各子代理在自己的线程分别提交。
-只有复制或变体会修改同一物理文件时，才要求运行环境提供独立检出目录；否则一个调用写
-实际目标，其他调用只返回方案、补丁或证据，同一目标最终只应用最佳方案一次。插件不增加
-认领数据库、文件锁、心跳或后台协调器。详细规则见
-[可写子代理并行](skills/lean-stack/references/write-parallelism.md)。
-
-## 固定成本预估
-
-插件运行时不重新搜索费率，也不逐任务计算令牌。当前维护结论位于
-[成本预估](skills/lean-stack/references/cost-baseline.md)，只在 OpenAI 官方模型或费率
-变化时更新。普通主任务直接使用这份固定预估，不把维护检查当作前置条件。
-
-每周检查是插件内部的轻量侧链，由 `skills/lean-stack/scripts/cost_check.py` 保存七天
-到期状态。七天未到时不联网、不重新计算；到期后也只有能与主任务并行且不延长关键
-路径时才核对 OpenAI 官方页面。没有变化只记录本次检查状态；模型或费率有变化才更新成本预估。
-无法非阻塞完成时延后，主任务不等待。插件不创建 Codex 自动化、系统定时任务或外部
-守护进程，也不为这项检查单独调用子代理。
-
-当前选择不是把 `gpt-5.6-sol`、`max` 当成所有工作的默认比较起点。普通窄任务优先
-`gpt-5.6-luna`，普通但需要可靠判断的任务优先 `gpt-5.6-terra`，高价值工作才优先
-`gpt-5.6-sol`；所有路线默认标准速度。模型名是当前维护基线，不是永久白名单。
-
-复用保留子代理及普通复制时沿用其已有具体配置，由子代理自行声明；定制运行时新子代理
-或变体时，父代理才根据任务类型联合选择具体模型、思考程度和标准或快速速度完整组合。
-
-## 经验侧链
-
-专门代理记忆就是经验。公开链路只有一条：
-
-```text
-本组当前已就绪结果完成必要核验；出现复制或变体时先竞争，否则沿用原本唯一子代理
-→ 结果被父代理采用且没有明确排除项
-→ 默认快速尝试一次 ensure，保证每个不同任务类型组只有一个休眠配置
-→ 去敏、去重并用稳定 event_id 默认快速尝试一次 improve，合并追加一条经验
-→ 没有新增经验或安全写入失败时写明原因并立即跳过
-→ 经验维护完成或跳过后，其他运行时子代理退出任务类型组并结束
-```
-
-经验准备和维护都不排队、不轮询、不重试、不等待。准备可在父代理开始主任务测试前并行，
-但只是优化；没有空闲容量或准备没有赶上时，仍在结果核验采用后执行默认有界提交。摘要压缩
-可以推迟，不能取消已经追加的原始经验，也不能延迟最终交付。
-
-经验体系保留 `1.2.0` 的 SQLite 台账、每个结果核验采用且未命中明确排除项的不同任务类型组
-一个保留子代理、幂等追加的
-成功存活轮次、只追加新增经验、经验数量不封顶和经验摘要压缩。单条经验最多 4096 个字符，
-但原始经验事件总数量不封顶。不同任务类型组可以同时保留
-多个子代理；复制与变体
-不写入长期台账；比较后如果胜出变体
-配置不同，就安全重配同一保留子代理，再把合并后的一条新增经验追加进去。数据库只在这条
-侧链按需打开；保留子代理从自己的配置读取有界摘要与待处理经验，普通分派不打开数据库。原始
-经验不会因压缩或纠正而删除，也没有数值评分、固定状态机、后台队列或守护进程。一个
-被否定原事件最多只追加一个纠正事件；活跃记忆和后续摘要自动排除被否定原事件。已有
-原始经验的保留子代理不会被 `delete` 级联清空台账。摘要同时受字符数与 UTF-8 字节数限制；
-完整提示不再有独立的 6 KiB 硬门槛。当前经验窗口最多 4 KiB，写入前再按真实 TOML 序列化
-结果核对完整角色文件不超过 16 KiB，中文、转义字符和快速模式配置都计入。这两个数值只是
-插件自身的提示成本与文件安全边界，不是用户要求或官方限制；单条经验字符边界也是插件自身
-的输入安全约束。窗口缩小不会截断 SQLite 原始经验。
-
-辅助脚本位于：
-
-```text
-skills/lean-stack/scripts/agents.py
-```
-
-它只提供按需动作：
-
-```text
-status
-ensure
-record-run
-improve
-delete
-restore
-```
-
-这些动作不是固定生命周期。父代理根据当前情况快速判断，可以使用其中一个，也可以全部
-不使用。`delete` 只在原有全部删减资格满足时把角色 TOML 与无令牌收据移入插件专属
-`待删文件`；`restore` 还要重新提供原所有权令牌和精确哈希，成功后把收据归档到
-`待删文件/已恢复收据`。脚本不会打开、迁移或删除旧生命周期数据库。
-
-## 条件性验证
-
-语义审查不是所有主任务固定经过的重点链路。只有代码、配置、公共行为或高风险边界变化
-时，才做可能推动修改的语义复核和必要收口。
-
-- 迭代时运行最窄相关检查。
-- 多个确定性短检查由父代理工具级并发。
-- 只有需要独立语义判断、高价值复核或真正长时间并行时才使用验证子代理。
-- 未变化的通过证据继续复用。
-- 不能省略防止安全、权限、数据丢失、迁移、对外约定破坏或静默错误的必要检查。
-
-## 保留的安全边界
-
-- 委派不扩大用户授权。
-- 多个可写子代理可以并行；必须明确所有权，并避免覆盖同一文件或同一状态的并发结果。
-- 来源任务返回独立的来源覆盖字段；完整覆盖且来源未变化时不重复读取。
-- 用户自有子代理、项目子代理和外部编辑文件不会被经验侧链接管或删除。
-- 权限从只读扩大为可写，需要用户当前授权、权限扩大标志和当前文件哈希。
-- SQLite 忙锁、状态漂移或文件身份变化时，经验侧链立即跳过，不等待、不覆盖。
-- 删除、删减和候选清理仍按原资格与尺度执行。普通文件进入 Windows 回收站；重要项目文件
-  进入任务专属 `待删文件`；插件角色要求直接普通文件、单一硬链接、插件标记、名称、所有权
-  令牌、当前哈希、零经验和零存活轮次全部匹配后，才退役到插件专属 `待删文件`；恢复不能
-  绕过这些身份、路径、令牌、哈希和冲突保护。
-- 提交、推送、公开发布、部署、外部消息和重启应用仍需用户另行授权。
-
-## 文件结构
-
-```text
-.codex-plugin/plugin.json
-skills/lean-stack/SKILL.md
-skills/lean-stack/agents/openai.yaml
-skills/lean-stack/references/
-skills/lean-stack/scripts/agents.py
-skills/lean-stack/scripts/cost_check.py
-skills/lean-stack/scripts/bump_plugin_version.py
-skills/lean-stack/scripts/install_plugin.py
-tests/
-```
-
-任务手册：
-
-- [当前项目交接](Jiao-Jie.md)
-- [执行路由](skills/lean-stack/references/execution-routing.md)
-- [子代理委派](skills/lean-stack/references/delegation.md)
-- [协作父代理与父代理之间](skills/lean-stack/references/collaboration.md)
-- [可写子代理并行](skills/lean-stack/references/write-parallelism.md)
-- [经验侧链](skills/lean-stack/references/specialist-memory.md)
-- [调查](skills/lean-stack/references/investigation.md)
-- [缺陷修复](skills/lean-stack/references/bug-fix.md)
-- [构建或重构](skills/lean-stack/references/build.md)
-- [审查](skills/lean-stack/references/review.md)
-- [长任务](skills/lean-stack/references/long-running.md)
-- [插件版本](skills/lean-stack/references/versioning.md)
-- [中文链路图内容源](skills/lean-stack/references/flowcharts-zh.md)
-
-链路图只是辅助说明，不用图的数量判断功能完整性。代码、对外约定、约定一致性测试和真实
-运行证据才是验收依据。
-
-Windows 上运行本插件的 Python 脚本和官方校验器时统一使用 `py -3 -X utf8`；不能依赖
-当前控制台代码页或父进程的 GBK 默认编码来读取 UTF-8 中文 `SKILL.md`。
+[MIT](LICENSE)

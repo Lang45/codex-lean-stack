@@ -30,6 +30,16 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.codex_home = Path(self.temporary.name) / "codex-home"
         self.registry = agents.SpecialistRegistry(self.codex_home)
 
+    @staticmethod
+    def contract(domain: str = "界面绑定诊断") -> dict[str, object]:
+        return {
+            "domain": domain,
+            "input_shapes": ["源代码、运行证据和边界说明"],
+            "responsibilities": ["重复核对根因并给出可验证结论"],
+            "deliverables": ["精炼结论、证据和剩余缺口"],
+            "hard_boundaries": ["不扩大权限，不修改未分配文件"],
+        }
+
     def ensure(
         self,
         *,
@@ -42,6 +52,9 @@ class SpecialistRegistryTests(unittest.TestCase):
         effort: str = "high",
         speed: str = "standard",
         expected_sha256: str | None = None,
+        global_domain_key: str = "interface-binding-diagnostics",
+        global_contract: dict[str, object] | None = None,
+        origin_terms: tuple[str, ...] = ("当前任务来源",),
     ):
         return self.registry.ensure(
             role_key=role_key,
@@ -54,12 +67,96 @@ class SpecialistRegistryTests(unittest.TestCase):
             authority=authority,
             speed=speed,
             expected_sha256=expected_sha256,
+            global_domain_key=global_domain_key,
+            global_contract=global_contract or self.contract(),
+            origin_terms=origin_terms,
         )
 
     def db(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.registry.db_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def improve_with_lesson(self, **kwargs):
+        kwargs.setdefault("origin_terms", ("当前任务来源",))
+        return self.registry.improve_with_lesson(**kwargs)
+
+    def improve_with_summary(self, **kwargs):
+        kwargs.setdefault("origin_terms", ("当前任务来源",))
+        return self.registry.improve_with_summary(**kwargs)
+
+    def downgrade_registry(self, version: int) -> list[dict[str, str]]:
+        if version not in (1, 2, 3):
+            raise AssertionError(version)
+        with contextlib.closing(self.db()) as connection:
+            rows = [dict(row) for row in connection.execute("SELECT * FROM agents")]
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TABLE agents")
+            connection.execute(agents.SCHEMA_V2_TABLE_SQL["agents"])
+            for row in rows:
+                path = Path(row["path"])
+                legacy_lines = [
+                    line for line in path.read_text(encoding="utf-8").splitlines()
+                    if not line.startswith((
+                        agents.GLOBAL_SCOPE_PREFIX,
+                        agents.GLOBAL_DOMAIN_KEY_PREFIX,
+                        agents.GLOBAL_CONTRACT_DIGEST_PREFIX,
+                    ))
+                ]
+                legacy_data = ("\n".join(legacy_lines) + "\n").encode("utf-8")
+                path.write_bytes(legacy_data)
+                row["expected_sha256"] = agents.sha256_bytes(legacy_data)
+                connection.execute(
+                    "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    tuple(row[key] for key in (
+                        "agent_id", "name", "role_key", "path", "owner_token",
+                        "expected_sha256", "created_at", "updated_at",
+                    )),
+                )
+            if version == 1:
+                connection.execute("ALTER TABLE experience_events RENAME TO experience_events_v2")
+                connection.execute(agents.SCHEMA_V1_TABLE_SQL["experience_events"])
+                connection.execute(
+                    "INSERT INTO experience_events(sequence,agent_id,event_id,event_digest,lesson,created_at) "
+                    "SELECT sequence,agent_id,event_id,event_digest,lesson,created_at FROM experience_events_v2"
+                )
+                connection.execute("DROP TABLE experience_events_v2")
+                connection.execute("DROP TABLE agent_runs")
+            elif version == 2:
+                connection.execute("DROP TABLE agent_runs")
+            connection.execute(f"PRAGMA user_version = {version}")
+            connection.execute("COMMIT")
+        return rows
+
+    def write_migration_plan(
+        self,
+        rows: list[dict[str, str]],
+        *,
+        corrections: dict[str, list[dict[str, str]]] | None = None,
+    ) -> Path:
+        roles = []
+        for row in rows:
+            roles.append({
+                "old_name": row["name"],
+                "old_role_key": row["role_key"],
+                "expected_sha256": row["expected_sha256"],
+                "new_role_key": row["role_key"],
+                "display_name": "领域复用核对员",
+                "description": "跨任务、跨项目、跨会话重复核对同类输入。",
+                "instructions": "核对输入形状，返回证据充分的领域结论。",
+                "global_domain_key": "reusable-domain-review",
+                "global_contract": self.contract("可复用领域审核"),
+                "origin_terms": ["当前项目专属来源"],
+                "experience_corrections": (corrections or {}).get(row["name"], []),
+            })
+        plan = Path(self.temporary.name) / f"migration-{uuid.uuid4().hex}.json"
+        plan.write_text(
+            json.dumps({"format_version": 1, "roles": roles}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return plan
 
     def test_ensure_creates_one_specialist_and_reuses_the_same_role(self) -> None:
         first = self.ensure()
@@ -280,6 +377,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             model="gpt-5.6-luna",
             effort="medium",
             authority="read",
+            global_contract=self.contract(),
             speed="standard",
         )
         render_args = {
@@ -294,6 +392,8 @@ class SpecialistRegistryTests(unittest.TestCase):
             "authority": "read",
             "instruction_base": base,
             "speed": "standard",
+            "global_domain_key": "instruction-review",
+            "global_contract_digest": "0" * 64,
         }
 
         def render(candidate: str) -> bytes:
@@ -332,6 +432,8 @@ class SpecialistRegistryTests(unittest.TestCase):
             "authority": "read",
             "instruction_base": "中" * 4800,
             "speed": "standard",
+            "global_domain_key": "capacity-review",
+            "global_contract_digest": "0" * 64,
         }
 
         def render(candidate: str) -> bytes:
@@ -413,7 +515,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             tables,
             {"agents", "experience_events", "experience_summaries", "agent_runs"},
         )
-        self.assertEqual(version, 3)
+        self.assertEqual(version, 4)
         for removed in (
             "leases",
             "evaluations",
@@ -574,6 +676,10 @@ class SpecialistRegistryTests(unittest.TestCase):
             authority="read",
             instruction_base=base,
             memory=agents.memory_block("", []),
+            global_domain_key="interface-binding-diagnostics",
+            global_contract_digest=agents.normalize_global_contract(
+                self.contract(), domain_key="interface-binding-diagnostics"
+            )[1],
         )
         orphan_path = self.registry.agents_dir / "lean_renamed_orphan.toml"
         agents.write_new_file(orphan_path, data)
@@ -588,7 +694,7 @@ class SpecialistRegistryTests(unittest.TestCase):
     def test_ensure_reconfigures_one_role_with_cas_and_preserves_experience(self) -> None:
         created = self.ensure()
         lesson = "验证后的联合胜出配置必须保留已有经验。"
-        improved = self.registry.improve_with_lesson(
+        improved = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
             lesson=lesson,
@@ -670,7 +776,7 @@ class SpecialistRegistryTests(unittest.TestCase):
 
     def test_experience_rewrite_preserves_fast_speed_configuration(self) -> None:
         created = self.ensure(role_key="fast-regression-review", speed="fast")
-        improved = self.registry.improve_with_lesson(
+        improved = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
             lesson="快速配置下的经验重写必须保留速度设置。",
@@ -706,7 +812,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             agents.SpecialistError,
             "speed configuration is incomplete or inconsistent",
         ):
-            self.registry.improve_with_lesson(
+            self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=inconsistent_sha256,
                 lesson="这条经验不能写入矛盾速度配置。",
@@ -741,7 +847,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             agents.SpecialistError,
             "automatic skill instructions must be disabled",
         ):
-            self.registry.improve_with_lesson(
+            self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=invalid_sha256,
                 lesson="启用自动技能目录的窄角色不能继续写入经验。",
@@ -760,13 +866,13 @@ class SpecialistRegistryTests(unittest.TestCase):
         event_id = str(uuid.uuid4())
         lesson = "先核对真实运行时依赖，再修改共享绑定。"
 
-        first = self.registry.improve_with_lesson(
+        first = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
             lesson=lesson,
             event_id=event_id,
         )
-        replay = self.registry.improve_with_lesson(
+        replay = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=first["sha256"],
             lesson=lesson,
@@ -780,7 +886,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn(lesson, text)
 
         with self.assertRaises(agents.SpecialistError):
-            self.registry.improve_with_lesson(
+            self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=replay["sha256"],
                 lesson="同一个事件不能改写成另一条经验。",
@@ -791,7 +897,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         created = self.ensure()
         bad_event_id = str(uuid.uuid4())
         bad_lesson = "错误经验：跳过证据并直接覆盖共享文件。"
-        bad = self.registry.improve_with_lesson(
+        bad = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
             lesson=bad_lesson,
@@ -799,14 +905,14 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
         correction_event_id = str(uuid.uuid4())
         corrected_lesson = "纠正经验：先核对证据，并只修改明确分配的写入范围。"
-        corrected = self.registry.improve_with_lesson(
+        corrected = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=bad["sha256"],
             lesson=corrected_lesson,
             event_id=correction_event_id,
             retracts_event_id=bad_event_id,
         )
-        replay = self.registry.improve_with_lesson(
+        replay = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=corrected["sha256"],
             lesson=corrected_lesson,
@@ -833,7 +939,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(rows[1]["retracts_event_id"], bad_event_id)
 
         with self.assertRaisesRegex(agents.SpecialistError, "different correction"):
-            self.registry.improve_with_lesson(
+            self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=replay["sha256"],
                 lesson="另一条纠正不能重复覆盖同一事件。",
@@ -848,7 +954,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         compaction = None
         for index in range(8):
             event_id = bad_event_id if index == 2 else str(uuid.uuid4())
-            result = self.registry.improve_with_lesson(
+            result = self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=current_hash,
                 lesson=f"待压缩经验 {index}",
@@ -857,14 +963,14 @@ class SpecialistRegistryTests(unittest.TestCase):
             current_hash = result["sha256"]
             compaction = result["compaction"]
         assert compaction and compaction["needed"]
-        compacted = self.registry.improve_with_summary(
+        compacted = self.improve_with_summary(
             name=created["name"],
             expected_sha256=current_hash,
             summary="受污染摘要：待压缩经验 2。",
             covered_through=compaction["covered_through"],
             source_digest=compaction["source_digest"],
         )
-        corrected = self.registry.improve_with_lesson(
+        corrected = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=compacted["sha256"],
             lesson="纠正后只保留经过核验的压缩经验。",
@@ -887,37 +993,22 @@ class SpecialistRegistryTests(unittest.TestCase):
                 connection.execute("SELECT * FROM experience_summaries").fetchone()
             )
 
-    def test_exact_schema_one_migrates_to_three_without_losing_experience(self) -> None:
+    def test_exact_schema_one_requires_explicit_global_migration_without_losing_experience(self) -> None:
         created = self.ensure()
         lesson = "旧结构中的原始经验必须完整保留。"
-        improved = self.registry.improve_with_lesson(
+        improved = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
             lesson=lesson,
             event_id=str(uuid.uuid4()),
         )
+        rows = self.downgrade_registry(1)
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "explicit migrate-global"):
+            self.ensure()
+        migrated = self.registry.migrate_global(plan_path=self.write_migration_plan(rows))
+        self.assertEqual(migrated["action"], "global_migration_committed")
         with contextlib.closing(self.db()) as connection:
-            connection.execute("PRAGMA foreign_keys = OFF")
-            connection.executescript(
-                "BEGIN IMMEDIATE;\n"
-                "ALTER TABLE experience_events RENAME TO experience_events_v2;\n"
-                + agents.SCHEMA_V1_TABLE_SQL["experience_events"]
-                + ";\n"
-                "INSERT INTO experience_events("
-                "sequence,agent_id,event_id,event_digest,lesson,created_at"
-                ") SELECT sequence,agent_id,event_id,event_digest,lesson,created_at "
-                "FROM experience_events_v2;\n"
-                "DROP TABLE experience_events_v2;\n"
-                "DROP TABLE agent_runs;\n"
-                "PRAGMA user_version = 1;\n"
-                "COMMIT;"
-            )
-
-        reused = self.ensure()
-        self.assertEqual(reused["action"], "reused")
-        self.assertEqual(reused["sha256"], improved["sha256"])
-        with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
             row = connection.execute(
                 "SELECT lesson, retracts_event_id FROM experience_events"
             ).fetchone()
@@ -926,25 +1017,21 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIsNone(row["retracts_event_id"])
         self.assertEqual(run_count, 0)
 
-    def test_exact_schema_two_migrates_to_three_without_backfilling_runs(self) -> None:
+    def test_exact_schema_two_requires_explicit_global_migration_without_backfilling_runs(self) -> None:
         created = self.ensure()
         lesson = "第二版经验与代理身份必须保留，历史存活轮次不猜测。"
-        improved = self.registry.improve_with_lesson(
+        improved = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
             lesson=lesson,
             event_id=str(uuid.uuid4()),
         )
+        rows = self.downgrade_registry(2)
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "explicit migrate-global"):
+            self.ensure()
+        self.registry.migrate_global(plan_path=self.write_migration_plan(rows))
         with contextlib.closing(self.db()) as connection:
-            connection.execute("DROP TABLE agent_runs")
-            connection.execute("PRAGMA user_version = 2")
-            connection.commit()
-
-        reused = self.ensure()
-        self.assertEqual(reused["action"], "reused")
-        self.assertEqual(reused["sha256"], improved["sha256"])
-        with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
             self.assertEqual(
                 connection.execute("SELECT lesson FROM experience_events").fetchone()[0],
                 lesson,
@@ -959,7 +1046,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         for index in range(20):
             lesson = f"经验 {index}：保留可复核证据并避免重复读取。"
             lessons.append(lesson)
-            result = self.registry.improve_with_lesson(
+            result = self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=current_hash,
                 lesson=lesson,
@@ -986,7 +1073,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "_pending_events",
             wraps=self.registry._pending_events,
         ) as pending:
-            compacted = self.registry.improve_with_summary(
+            compacted = self.improve_with_summary(
                 name=created["name"],
                 expected_sha256=current_hash,
                 summary=summary,
@@ -1012,7 +1099,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         created = self.ensure()
         current_hash = created["sha256"]
         for index in range(7):
-            result = self.registry.improve_with_lesson(
+            result = self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=current_hash,
                 lesson=f"短经验 {index}",
@@ -1020,7 +1107,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             )
             current_hash = result["sha256"]
             self.assertFalse(result["compaction"]["needed"])
-        eighth = self.registry.improve_with_lesson(
+        eighth = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=current_hash,
             lesson="短经验 7",
@@ -1051,7 +1138,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "_pending_events",
             wraps=self.registry._pending_events,
         ) as pending:
-            result = self.registry.improve_with_lesson(
+            result = self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=created["sha256"],
                 lesson="新经验只读取一个有界窗口。",
@@ -1070,7 +1157,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         current_hash = created["sha256"]
         compaction = None
         for index in range(8):
-            result = self.registry.improve_with_lesson(
+            result = self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=current_hash,
                 lesson=f"并发经验 {index}",
@@ -1079,7 +1166,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             current_hash = result["sha256"]
             compaction = result["compaction"]
         assert compaction and compaction["needed"]
-        refreshed = self.registry.improve_with_summary(
+        refreshed = self.improve_with_summary(
             name=created["name"],
             expected_sha256=current_hash,
             summary="最新压缩摘要。",
@@ -1087,7 +1174,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             source_digest=compaction["source_digest"],
         )
         with self.assertRaises(agents.SpecialistError):
-            self.registry.improve_with_summary(
+            self.improve_with_summary(
                 name=created["name"],
                 expected_sha256=refreshed["sha256"],
                 summary="迟到旧摘要。",
@@ -1172,7 +1259,7 @@ class SpecialistRegistryTests(unittest.TestCase):
 
     def test_delete_rejects_recorded_experience_without_pending_artifacts(self) -> None:
         created = self.ensure()
-        improved = self.registry.improve_with_lesson(
+        improved = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
             lesson="已记录经验的角色不能进入待删目录。",
@@ -1217,7 +1304,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertFalse(original_path.exists())
         self.assertEqual(pending_path.read_bytes(), original)
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        self.assertEqual(receipt["format_version"], 1)
+        self.assertEqual(receipt["format_version"], 2)
         self.assertEqual(receipt["agent_id"], created["agent_id"])
         self.assertEqual(receipt["name"], created["name"])
         self.assertEqual(receipt["role_key"], "qml-binding-diagnostics")
@@ -1227,6 +1314,12 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertTrue(receipt["created_at"])
         self.assertTrue(receipt["updated_at"])
         self.assertTrue(receipt["retired_at"])
+        self.assertEqual(receipt["global_contract_version"], 1)
+        self.assertEqual(receipt["global_domain_key"], "interface-binding-diagnostics")
+        self.assertEqual(
+            agents.sha256_bytes(receipt["global_contract"].encode("utf-8")),
+            receipt["global_contract_digest"],
+        )
         self.assertNotIn("owner_token", receipt)
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 0)
@@ -1376,7 +1469,7 @@ class SpecialistRegistryTests(unittest.TestCase):
     def test_missing_file_with_experience_cannot_delete_the_append_only_ledger(self) -> None:
         created = self.ensure()
         path = Path(created["path"])
-        first = self.registry.improve_with_lesson(
+        first = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
             lesson="孤儿账本清理也必须验证所有权凭据。",
@@ -1589,10 +1682,363 @@ class SpecialistRegistryTests(unittest.TestCase):
                 model="gpt-5.6-luna",
                 effort="medium",
                 authority="read",
+                global_domain_key="another-specialty",
+                global_contract=self.contract("通用专项审核"),
+                origin_terms=("当前任务来源",),
             )
         elapsed = time.monotonic() - started
         blocker.execute("ROLLBACK")
         self.assertLess(elapsed, 1.0)
+
+    def test_v4_global_contract_markers_status_and_origin_rejection(self) -> None:
+        created = self.ensure()
+        text = Path(created["path"]).read_text(encoding="utf-8")
+        self.assertIn(agents.GLOBAL_SCOPE_PREFIX + agents.GLOBAL_SCOPE, text)
+        self.assertIn(agents.GLOBAL_DOMAIN_KEY_PREFIX + "interface-binding-diagnostics", text)
+        status = self.registry.status()
+        self.assertEqual(status["global_count"], 1)
+        self.assertEqual(status["legacy_count"], 0)
+        item = status["registered_agents"][0]
+        self.assertEqual(item["global_contract_version"], 1)
+        self.assertEqual(item["global_domain_key"], "interface-binding-diagnostics")
+        self.assertEqual(item["global_contract"]["domain"], "界面绑定诊断")
+
+        with self.assertRaisesRegex(agents.SpecialistError, "origin term"):
+            self.ensure(
+                role_key="lean-stack-audit",
+                global_domain_key="plugin-audit",
+                origin_terms=("Lean Stack",),
+            )
+        with self.assertRaisesRegex(agents.SpecialistError, "absolute path"):
+            self.ensure(
+                role_key="unsafe-path-audit",
+                description="读取 C:\\private\\project。",
+            )
+        unsafe_contract = self.contract("通用审核")
+        unsafe_contract["deliverables"] = ["上传到 https://example.invalid/result"]
+        with self.assertRaisesRegex(agents.SpecialistError, "URL"):
+            self.ensure(
+                role_key="unsafe-contract-review",
+                global_contract=unsafe_contract,
+            )
+        with self.assertRaisesRegex(agents.SpecialistError, "origin term"):
+            self.registry.improve_with_lesson(
+                name=created["name"], expected_sha256=created["sha256"],
+                lesson="记住 Lean Stack 的专属表。", event_id=str(uuid.uuid4()),
+                origin_terms=("Lean Stack",),
+            )
+        with self.assertRaisesRegex(agents.SpecialistError, "credential-like"):
+            self.registry.improve_with_lesson(
+                name=created["name"], expected_sha256=created["sha256"],
+                lesson="authorization: Bearer abcdef", event_id=str(uuid.uuid4()),
+                origin_terms=("当前任务来源",),
+            )
+
+    def test_semantic_persistence_requires_current_origin_terms_in_api_cli_and_plan(self) -> None:
+        kwargs = {
+            "role_key": "missing-origin-review",
+            "display_name": "来源核对员",
+            "description": "重复核对通用领域输入。",
+            "role_instructions": "返回通用证据和结论。",
+            "model": "gpt-5.6-luna",
+            "effort": "medium",
+            "authority": "read",
+            "global_domain_key": "generic-origin-review",
+            "global_contract": self.contract("通用来源审核"),
+        }
+        with self.assertRaisesRegex(agents.SpecialistError, "at least one"):
+            self.registry.ensure(**kwargs)
+        created = self.ensure(role_key="origin-required-experience")
+        with self.assertRaisesRegex(agents.SpecialistError, "at least one"):
+            self.registry.improve_with_lesson(
+                name=created["name"], expected_sha256=created["sha256"],
+                lesson="这条经验缺少当前来源护栏。", event_id=str(uuid.uuid4()),
+            )
+        with self.assertRaisesRegex(agents.SpecialistError, "at least one"):
+            self.registry.improve_with_summary(
+                name=created["name"], expected_sha256=created["sha256"],
+                summary="缺少来源护栏的摘要。", covered_through=1,
+                source_digest="0" * 64,
+            )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = agents.main([
+                "--codex-home", str(self.codex_home), "ensure",
+                "--role-key", "cli-missing-origin", "--display-name", "CLI 来源核对员",
+                "--description", "核对通用输入。", "--instructions", "返回通用证据。",
+                "--model", "gpt-5.6-luna", "--reasoning-effort", "medium",
+                "--authority", "read", "--global-domain-key", "cli-origin-review",
+                "--global-contract", json.dumps(self.contract("CLI 通用审核"), ensure_ascii=False),
+            ])
+        self.assertEqual(exit_code, 2)
+        self.assertIn("at least one", json.loads(output.getvalue())["error"])
+        for mode_args in (
+            ["--lesson", "CLI 缺少来源护栏的经验。", "--event-id", str(uuid.uuid4())],
+            ["--summary", "CLI 缺少来源护栏的摘要。", "--covered-through", "1", "--source-digest", "0" * 64],
+        ):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                exit_code = agents.main([
+                    "--codex-home", str(self.codex_home), "improve",
+                    "--name", created["name"], "--expected-sha256", created["sha256"],
+                    *mode_args,
+                ])
+            self.assertEqual(exit_code, 2)
+            self.assertIn("at least one", json.loads(output.getvalue())["error"])
+
+        rows = self.downgrade_registry(3)
+        plan = self.write_migration_plan(rows)
+        payload = json.loads(plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["origin_terms"] = []
+        plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        with self.assertRaisesRegex(agents.SpecialistError, "at least one"):
+            self.registry.migrate_global(plan_path=plan)
+
+    def test_explicit_v3_multi_role_migration_preserves_identity_runs_events_and_corrects_memory(self) -> None:
+        first = self.ensure(role_key="plugin-specific-review")
+        second = self.ensure(role_key="hevc-export-review", global_domain_key="media-export-review")
+        run_id = str(uuid.uuid4())
+        self.registry.record_run(
+            name=first["name"], expected_sha256=first["sha256"],
+            run_id=run_id, invocation_kind="spawn_agent",
+        )
+        bad_event = str(uuid.uuid4())
+        improved = self.improve_with_lesson(
+            name=first["name"], expected_sha256=first["sha256"],
+            lesson="旧插件专属经验。", event_id=bad_event,
+        )
+        original_identity = {}
+        with contextlib.closing(self.db()) as connection:
+            for row in connection.execute("SELECT agent_id,name,owner_token,created_at FROM agents"):
+                original_identity[row["name"]] = dict(row)
+            original_events = [tuple(row) for row in connection.execute(
+                "SELECT sequence,event_id,event_digest,lesson,retracts_event_id FROM experience_events ORDER BY sequence"
+            )]
+        rows = self.downgrade_registry(3)
+        plan_path = self.write_migration_plan(
+            rows,
+            corrections={first["name"]: [{"event_id": bad_event, "lesson": "跨插件复用时只保留通用核验步骤。"}]},
+        )
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        plan["roles"][0]["new_role_key"] = "domain-consistency-review"
+        plan["roles"][0]["origin_terms"] = ["旧插件"]
+        plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+
+        migrated = self.registry.migrate_global(plan_path=plan_path)
+        self.assertEqual(migrated["migrated_count"], 2)
+        self.assertEqual(migrated["correction_count"], 1)
+        real_ensure_directory = agents.ensure_plain_directory
+        def forbid_pending_backup_read(path: Path, *, create: bool):
+            if agents.GLOBAL_MIGRATION_PENDING_BACKUP_DIR in Path(path).parts:
+                raise AssertionError("idempotent replay must not depend on pending backups")
+            return real_ensure_directory(path, create=create)
+        with mock.patch.object(
+            agents, "ensure_plain_directory", side_effect=forbid_pending_backup_read
+        ):
+            replay = self.registry.migrate_global(plan_path=plan_path)
+        self.assertEqual(replay["action"], "global_migration_already_committed")
+        active_archive_root = self.registry.state_dir / agents.GLOBAL_MIGRATION_ARCHIVE_DIR
+        self.assertEqual(list(active_archive_root.rglob("*.legacy.toml")), [])
+        backup_root = (
+            self.registry.pending_deletion_dir
+            / agents.GLOBAL_MIGRATION_PENDING_BACKUP_DIR
+        )
+        pending_legacy = list(backup_root.rglob("*.legacy.toml"))
+        self.assertEqual(len(pending_legacy), 2)
+        completion = json.loads(
+            self.registry._migration_journal_path().read_text(encoding="utf-8")
+        )
+        completion_text = json.dumps(completion, ensure_ascii=False)
+        self.assertEqual(completion["receipt_kind"], agents.GLOBAL_MIGRATION_COMPLETION_KIND)
+        self.assertNotIn("owner_token", completion_text)
+        self.assertNotIn("lesson", completion_text)
+        self.assertNotRegex(completion_text, r"[A-Za-z]:[\\/]")
+        self.assertNotIn("old_path", completion)
+        self.assertNotIn("new_path", completion)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            identities = list(connection.execute(
+                "SELECT agent_id,owner_token,created_at,global_contract_version FROM agents"
+            ))
+            self.assertEqual(
+                {(row["agent_id"], row["owner_token"], row["created_at"]) for row in identities},
+                {(value["agent_id"], value["owner_token"], value["created_at"]) for value in original_identity.values()},
+            )
+            self.assertTrue(all(row["global_contract_version"] == 1 for row in identities))
+            self.assertEqual(connection.execute("SELECT run_id FROM agent_runs").fetchone()[0], run_id)
+            events = list(connection.execute(
+                "SELECT sequence,event_id,event_digest,lesson,retracts_event_id FROM experience_events ORDER BY sequence"
+            ))
+            self.assertEqual([tuple(row) for row in events[:len(original_events)]], original_events)
+            self.assertEqual(events[-1]["retracts_event_id"], bad_event)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM experience_summaries").fetchone()[0], 0)
+        self.assertFalse(Path(rows[0]["path"]).exists())
+        migrated_names = {item["role_key"]: item for item in self.registry.status()["registered_agents"]}
+        self.assertIn("domain-consistency-review", migrated_names)
+        self.assertIn("跨插件复用时只保留通用核验步骤", Path(migrated_names["domain-consistency-review"]["path"]).read_text(encoding="utf-8"))
+        self.assertNotIn("旧插件专属经验", Path(migrated_names["domain-consistency-review"]["path"]).read_text(encoding="utf-8"))
+
+    def test_migration_conflict_is_zero_write_and_file_failure_recovers_exactly(self) -> None:
+        first = self.ensure(role_key="first-project-review")
+        second = self.ensure(role_key="second-project-review")
+        rows = self.downgrade_registry(3)
+        before_db = self.registry.db_path.read_bytes()
+        before_files = {row["path"]: Path(row["path"]).read_bytes() for row in rows}
+        conflict_plan = self.write_migration_plan(rows)
+        payload = json.loads(conflict_plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["new_role_key"] = "shared-domain-review"
+        payload["roles"][1]["new_role_key"] = "shared-domain-review"
+        conflict_plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        with self.assertRaisesRegex(agents.SpecialistError, "conflict"):
+            self.registry.migrate_global(plan_path=conflict_plan)
+        self.assertEqual(self.registry.db_path.read_bytes(), before_db)
+        self.assertEqual({path: Path(path).read_bytes() for path in before_files}, before_files)
+
+        recovery_plan = self.write_migration_plan(rows)
+        payload = json.loads(recovery_plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["new_role_key"] = "first-global-review"
+        payload["roles"][1]["new_role_key"] = "second-global-review"
+        recovery_plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        real_write = agents.write_new_file
+        calls = 0
+        def fail_one_new_agent(path: Path, data: bytes) -> None:
+            nonlocal calls
+            if path.parent == self.registry.agents_dir and path.name.startswith("lean_first_global_review"):
+                calls += 1
+                raise OSError("forced migrated file failure")
+            real_write(path, data)
+        with mock.patch.object(agents, "write_new_file", side_effect=fail_one_new_agent):
+            with self.assertRaisesRegex(OSError, "forced migrated file failure"):
+                self.registry.migrate_global(plan_path=recovery_plan)
+        self.assertEqual(calls, 1)
+        self.assertEqual(self.registry.db_path.read_bytes(), before_db)
+        self.assertEqual({path: Path(path).read_bytes() for path in before_files}, before_files)
+        journal = json.loads(self.registry._migration_journal_path().read_text(encoding="utf-8"))
+        self.assertEqual(journal["status"], "rolled_back")
+        self.assertNotIn("owner_token", json.dumps(journal))
+        self.assertNotIn("旧插件专属经验", json.dumps(journal, ensure_ascii=False))
+
+    def test_migration_commit_failure_restores_all_legacy_files_and_database(self) -> None:
+        self.ensure(role_key="commit-failure-review")
+        rows = self.downgrade_registry(3)
+        before_db = self.registry.db_path.read_bytes()
+        before_files = {row["path"]: Path(row["path"]).read_bytes() for row in rows}
+        plan = self.write_migration_plan(rows)
+        payload = json.loads(plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["new_role_key"] = "global-commit-review"
+        plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        real_connection, version = self.registry._legacy_connection()
+
+        class FailingCommitConnection:
+            def execute(self, sql, parameters=()):
+                if sql == "COMMIT":
+                    raise sqlite3.OperationalError("forced global migration commit failure")
+                return real_connection.execute(sql, parameters)
+
+            def close(self):
+                real_connection.close()
+
+        with mock.patch.object(
+            self.registry,
+            "_legacy_connection",
+            return_value=(FailingCommitConnection(), version),
+        ):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "forced global migration commit failure"):
+                self.registry.migrate_global(plan_path=plan)
+        self.assertEqual(self.registry.db_path.read_bytes(), before_db)
+        self.assertEqual({path: Path(path).read_bytes() for path in before_files}, before_files)
+        self.assertEqual(
+            json.loads(self.registry._migration_journal_path().read_text(encoding="utf-8"))["status"],
+            "rolled_back",
+        )
+
+    def test_committed_migration_recovers_interrupted_backup_receipt_finalization(self) -> None:
+        self.ensure(role_key="cleanup-interruption-review")
+        rows = self.downgrade_registry(3)
+        plan = self.write_migration_plan(rows)
+        payload = json.loads(plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["new_role_key"] = "global-cleanup-review"
+        plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        real_write_json = agents.write_json_atomic
+        failed = False
+
+        def interrupt_completion(path: Path, value: dict[str, object]) -> None:
+            nonlocal failed
+            if (
+                not failed
+                and path == self.registry._migration_journal_path()
+                and value.get("receipt_kind") == agents.GLOBAL_MIGRATION_COMPLETION_KIND
+            ):
+                failed = True
+                raise OSError("forced completion receipt interruption")
+            real_write_json(path, value)
+
+        with mock.patch.object(agents, "write_json_atomic", side_effect=interrupt_completion):
+            with self.assertRaisesRegex(
+                agents.AuxiliarySkipped,
+                "committed but pending-backup finalization is incomplete",
+            ):
+                self.registry.migrate_global(plan_path=plan)
+        self.assertTrue(failed)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+        detailed = json.loads(
+            self.registry._migration_journal_path().read_text(encoding="utf-8")
+        )
+        self.assertEqual(detailed["status"], "commit_verified_cleanup_pending")
+        self.assertFalse(Path(detailed["archive_dir"]).exists())
+        self.assertTrue(Path(detailed["backup_target"]).exists())
+
+        recovered = self.registry.migrate_global(plan_path=plan)
+        self.assertEqual(recovered["action"], "global_migration_already_committed")
+        completion = json.loads(
+            self.registry._migration_journal_path().read_text(encoding="utf-8")
+        )
+        self.assertEqual(completion["receipt_kind"], agents.GLOBAL_MIGRATION_COMPLETION_KIND)
+        self.assertNotIn("backup_target", completion)
+        self.assertNotRegex(json.dumps(completion), r"[A-Za-z]:[\\/]")
+
+    def test_global_contract_sqlite_toml_and_duties_are_bidirectionally_verified(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        original = path.read_bytes()
+        tampered = original.replace(
+            (agents.GLOBAL_DOMAIN_KEY_PREFIX + "interface-binding-diagnostics").encode("utf-8"),
+            (agents.GLOBAL_DOMAIN_KEY_PREFIX + "different-domain").encode("utf-8"),
+            1,
+        )
+        path.write_bytes(tampered)
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE agents SET expected_sha256=? WHERE agent_id=?",
+                (agents.sha256_bytes(tampered), created["agent_id"]),
+            )
+            connection.commit()
+        with self.assertRaisesRegex(agents.SpecialistError, "domain marker"):
+            self.registry.status()
+
+    def test_migration_hashes_source_once_then_pending_backup_once(self) -> None:
+        self.ensure(role_key="digest-budget-review")
+        rows = self.downgrade_registry(3)
+        source = Path(rows[0]["path"]).read_bytes()
+        plan = self.write_migration_plan(rows)
+        payload = json.loads(plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["new_role_key"] = "global-digest-review"
+        plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        real_hash = agents.sha256_bytes
+        source_hash_calls = 0
+
+        def count_hash(data: bytes) -> str:
+            nonlocal source_hash_calls
+            if data == source:
+                source_hash_calls += 1
+            return real_hash(data)
+
+        with mock.patch.object(agents, "sha256_bytes", side_effect=count_hash):
+            self.registry.migrate_global(plan_path=plan)
+        # One preflight ownership/CAS hash and one post-move pending-backup integrity hash.
+        # Journal, receipt, and SQLite reuse those digests instead of hashing again.
+        self.assertEqual(source_hash_calls, 2)
 
     def test_cli_error_is_auxiliary_skipped(self) -> None:
         output = io.StringIO()
@@ -1616,6 +2062,12 @@ class SpecialistRegistryTests(unittest.TestCase):
                     "medium",
                     "--authority",
                     "read",
+                    "--global-domain-key",
+                    "generic-review",
+                    "--global-contract",
+                    json.dumps(self.contract("通用审核"), ensure_ascii=False),
+                    "--origin-term",
+                    "当前任务来源",
                 ]
             )
         self.assertEqual(exit_code, 2)
@@ -1643,6 +2095,12 @@ class SpecialistRegistryTests(unittest.TestCase):
                     "medium",
                     "--authority",
                     "read",
+                    "--global-domain-key",
+                    "source-contract-verification",
+                    "--global-contract",
+                    json.dumps(self.contract("来源约定核对"), ensure_ascii=False),
+                    "--origin-term",
+                    "当前任务来源",
                 ]
             )
         created = json.loads(ensure_output.getvalue())
@@ -1685,6 +2143,8 @@ class SpecialistRegistryTests(unittest.TestCase):
                     str(uuid.uuid4()),
                     "--lesson",
                     "完整来源覆盖可替代父代理的重复语义读取。",
+                    "--origin-term",
+                    "当前任务来源",
                 ]
             )
         improved = json.loads(improve_output.getvalue())

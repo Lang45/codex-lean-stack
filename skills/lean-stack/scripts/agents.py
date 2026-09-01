@@ -26,13 +26,23 @@ from typing import Any, Callable, Iterable, Sequence
 import uuid
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+GLOBAL_CONTRACT_VERSION = 1
+GLOBAL_SCOPE = "codex-global-domain-v1"
 DB_NAME = "specialist-memory-v1.sqlite3"
 OLD_DB_NAME = "agent-lifecycle.sqlite3"
 MANAGED_MARKER = "# Managed by codex-lean-stack specialist registry v1."
 AGENT_ID_PREFIX = "# lean-stack-agent-id: "
 ROLE_KEY_PREFIX = "# lean-stack-role-key: "
 OWNER_TOKEN_PREFIX = "# lean-stack-owner-token: "
+GLOBAL_SCOPE_PREFIX = "# lean-stack-scope: "
+GLOBAL_DOMAIN_KEY_PREFIX = "# lean-stack-domain-key: "
+GLOBAL_CONTRACT_DIGEST_PREFIX = "# lean-stack-contract-digest: "
+GLOBAL_MIGRATION_JOURNAL = "global-domain-migration-v1.journal.json"
+GLOBAL_MIGRATION_ARCHIVE_DIR = "global-domain-migration-v1"
+GLOBAL_MIGRATION_PENDING_BACKUP_DIR = "全局领域迁移备份"
+GLOBAL_MIGRATION_COMPLETION_KIND = "global-domain-migration-complete-v1"
+MAX_MIGRATION_PLAN_BYTES = 512 * 1024
 # Plugin-owned bounded-work safeguards; they are not Codex limits or user requirements.
 MAX_AGENT_BYTES = 16 * 1024
 MAX_LESSON_CHARS = 4096
@@ -47,7 +57,7 @@ BUSY_TIMEOUT_MS = 100
 REPARSE_POINT_FLAG = 0x400
 PENDING_DELETION_DIR_NAME = "待删文件"
 RESTORED_RECEIPT_DIR_NAME = "已恢复收据"
-RETIREMENT_RECEIPT_FORMAT_VERSION = 1
+RETIREMENT_RECEIPT_FORMAT_VERSION = 2
 MAX_RECEIPT_BYTES = 16 * 1024
 
 ROLE_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -107,14 +117,32 @@ SCHEMA_V2_TABLE_SQL = {
     """,
 }
 
-SCHEMA_TABLE_SQL = dict(SCHEMA_V2_TABLE_SQL)
-SCHEMA_TABLE_SQL["agent_runs"] = """
+SCHEMA_V3_TABLE_SQL = dict(SCHEMA_V2_TABLE_SQL)
+SCHEMA_V3_TABLE_SQL["agent_runs"] = """
     CREATE TABLE agent_runs (
         run_id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL REFERENCES agents(agent_id),
         invocation_kind TEXT NOT NULL
             CHECK(invocation_kind IN ('spawn_agent', 'followup_task')),
         completed_at TEXT NOT NULL
+    )
+"""
+
+SCHEMA_TABLE_SQL = dict(SCHEMA_V3_TABLE_SQL)
+SCHEMA_TABLE_SQL["agents"] = """
+    CREATE TABLE agents (
+        agent_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        role_key TEXT NOT NULL UNIQUE,
+        path TEXT NOT NULL UNIQUE,
+        owner_token TEXT NOT NULL,
+        expected_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        global_contract_version INTEGER NOT NULL CHECK(global_contract_version = 1),
+        global_domain_key TEXT NOT NULL,
+        global_contract TEXT NOT NULL,
+        global_contract_digest TEXT NOT NULL
     )
 """
 
@@ -367,7 +395,128 @@ def contains_forbidden_persistent_data(value: str) -> bool:
         return True
     if any(token in lowered for token in ("api_key", "api-key", "password=", "token=")):
         return True
+    if re.search(
+        r"(?i)\b(?:api[_-]?key|access[_-]?token|secret|password|passwd|authorization|bearer)\b\s*[:=]",
+        value,
+    ) or "-----BEGIN " in value:
+        return True
     return any(ord(char) < 32 and char not in "\n\t" for char in value)
+
+
+def normalize_origin_terms(values: Iterable[str] | None) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise SpecialistError("origin terms must be a collection of strings")
+    terms: list[str] = []
+    for raw in values or ():
+        if not isinstance(raw, str):
+            raise SpecialistError("origin terms must be strings")
+        term = " ".join(raw.split()).casefold()
+        if not term or len(term) > 120:
+            raise SpecialistError("origin terms must be 1-120 characters")
+        if contains_forbidden_persistent_data(term):
+            raise SpecialistError("origin term contains unsafe persistent data")
+        if term not in terms:
+            terms.append(term)
+    if not terms:
+        raise SpecialistError(
+            "at least one non-empty origin term is required for semantic persistence"
+        )
+    return tuple(terms)
+
+
+def _comparison_form(value: str) -> str:
+    return re.sub(r"[\s_.:/\\-]+", "", value.casefold())
+
+
+def reject_origin_terms(value: str, origin_terms: Iterable[str], *, field: str) -> None:
+    folded = value.casefold()
+    compact = _comparison_form(value)
+    for term in origin_terms:
+        if term in folded or _comparison_form(term) in compact:
+            raise SpecialistError(f"{field} contains project/plugin origin term: {term}")
+
+
+def validate_global_domain_key(value: str) -> str:
+    try:
+        return validate_role_key(value)
+    except SpecialistError as exc:
+        raise SpecialistError("global_domain_key must use the role-key format") from exc
+
+
+GLOBAL_CONTRACT_FIELDS = (
+    "domain",
+    "input_shapes",
+    "responsibilities",
+    "deliverables",
+    "hard_boundaries",
+)
+
+
+def normalize_global_contract(
+    value: dict[str, Any] | str,
+    *,
+    domain_key: str,
+    origin_terms: Iterable[str] = (),
+) -> tuple[str, str, dict[str, Any]]:
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise SpecialistError("global contract must be valid UTF-8 JSON") from exc
+    else:
+        parsed = value
+    if not isinstance(parsed, dict) or set(parsed) != set(GLOBAL_CONTRACT_FIELDS):
+        raise SpecialistError(
+            "global contract must contain exactly domain, input_shapes, responsibilities, "
+            "deliverables, and hard_boundaries"
+        )
+    domain = " ".join(str(parsed["domain"]).split())
+    if not domain or len(domain) > 120:
+        raise SpecialistError("global contract domain must be 1-120 characters")
+    normalized: dict[str, Any] = {"domain": domain}
+    for field in GLOBAL_CONTRACT_FIELDS[1:]:
+        raw_items = parsed[field]
+        if not isinstance(raw_items, list) or not raw_items or len(raw_items) > 32:
+            raise SpecialistError(f"global contract {field} must be a non-empty JSON array")
+        items: list[str] = []
+        for raw in raw_items:
+            if not isinstance(raw, str):
+                raise SpecialistError(f"global contract {field} entries must be strings")
+            item = " ".join(raw.split())
+            if not item or len(item) > 500:
+                raise SpecialistError(
+                    f"global contract {field} entries must be 1-500 characters"
+                )
+            if item not in items:
+                items.append(item)
+        normalized[field] = items
+    canonical = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(canonical.encode("utf-8")) > 16 * 1024:
+        raise SpecialistError("global contract exceeds 16 KiB")
+    if contains_forbidden_persistent_data(canonical):
+        raise SpecialistError(
+            "global contract contains a URL, absolute path, credential-like data, or control characters"
+        )
+    reject_origin_terms(domain_key, origin_terms, field="global_domain_key")
+    reject_origin_terms(canonical, origin_terms, field="global_contract")
+    return canonical, sha256_bytes(canonical.encode("utf-8")), normalized
+
+
+def global_contract_instruction(contract: dict[str, Any]) -> str:
+    def joined(field: str) -> str:
+        return "；".join(contract[field])
+
+    return (
+        f"全局领域合同：领域={contract['domain']}；输入形状={joined('input_shapes')}；"
+        f"通用职责={joined('responsibilities')}；交付={joined('deliverables')}；"
+        f"硬边界={joined('hard_boundaries')}。该职责跨任务、跨项目、跨会话复用；"
+        "每次调用中的项目名称、仓库路径和一次性事实只能放在任务卡，不得写回角色或经验。"
+    )
 
 
 def validate_lesson(value: str) -> str:
@@ -414,6 +563,7 @@ def base_instructions(
     effort: str,
     authority: str,
     speed: str = "standard",
+    global_contract: dict[str, Any] | None = None,
 ) -> str:
     speed = validate_speed(speed)
     speed_label = "快速" if speed == "fast" else "标准"
@@ -422,9 +572,14 @@ def base_instructions(
         if authority == "write"
         else "保持只读，不修改文件或外部状态。"
     )
+    contract_rule = (
+        " " + global_contract_instruction(global_contract)
+        if global_contract is not None
+        else ""
+    )
     role_opening = (
         f"你是专门负责“{display_name}”的子代理，可复用专长标识为 {role_key}。"
-        f"{role_instructions} {write_rule}"
+        f"{role_instructions} {write_rule}{contract_rule}"
     )
     declaration = (
         f"我是{display_name}。\n"
@@ -536,6 +691,8 @@ def _render_agent_bytes(
     instruction_base: str,
     memory: str,
     speed: str = "standard",
+    global_domain_key: str,
+    global_contract_digest: str,
 ) -> bytes:
     speed = validate_speed(speed)
     developer_instructions = compose_instructions(instruction_base, memory)
@@ -547,6 +704,9 @@ def _render_agent_bytes(
         f"{AGENT_ID_PREFIX}{agent_id}\n"
         f"{ROLE_KEY_PREFIX}{role_key}\n"
         f"{OWNER_TOKEN_PREFIX}{owner_token}\n"
+        f"{GLOBAL_SCOPE_PREFIX}{GLOBAL_SCOPE}\n"
+        f"{GLOBAL_DOMAIN_KEY_PREFIX}{global_domain_key}\n"
+        f"{GLOBAL_CONTRACT_DIGEST_PREFIX}{global_contract_digest}\n"
         f"name = {json_text(name)}\n"
         f"description = {json_text(display_name + '：' + description)}\n"
         f"model = {json_text(model)}\n"
@@ -575,6 +735,8 @@ def build_agent_bytes(
     instruction_base: str,
     memory: str,
     speed: str = "standard",
+    global_domain_key: str,
+    global_contract_digest: str,
 ) -> bytes:
     data = _render_agent_bytes(
         agent_id=agent_id,
@@ -589,6 +751,8 @@ def build_agent_bytes(
         instruction_base=instruction_base,
         memory=memory,
         speed=speed,
+        global_domain_key=global_domain_key,
+        global_contract_digest=global_contract_digest,
     )
     if len(data) > MAX_AGENT_BYTES:
         raise SpecialistError("generated agent exceeds 16 KiB")
@@ -603,10 +767,13 @@ def parse_header(text: str) -> dict[str, str]:
         "agent_id": AGENT_ID_PREFIX,
         "role_key": ROLE_KEY_PREFIX,
         "owner_token": OWNER_TOKEN_PREFIX,
+        "scope": GLOBAL_SCOPE_PREFIX,
+        "global_domain_key": GLOBAL_DOMAIN_KEY_PREFIX,
+        "global_contract_digest": GLOBAL_CONTRACT_DIGEST_PREFIX,
     }
     values: dict[str, str] = {}
     for key, prefix in prefixes.items():
-        matches = [line[len(prefix) :] for line in lines[:8] if line.startswith(prefix)]
+        matches = [line[len(prefix) :] for line in lines[:12] if line.startswith(prefix)]
         if len(matches) != 1:
             raise SpecialistError(f"agent has invalid {key} marker")
         values[key] = matches[0]
@@ -615,6 +782,34 @@ def parse_header(text: str) -> dict[str, str]:
     validate_role_key(values["role_key"])
     if not TOKEN_RE.fullmatch(values["owner_token"]):
         raise SpecialistError("owner token marker is invalid")
+    if values["scope"] != GLOBAL_SCOPE:
+        raise SpecialistError("agent scope marker is not the global domain contract")
+    validate_global_domain_key(values["global_domain_key"])
+    if not SHA256_RE.fullmatch(values["global_contract_digest"]):
+        raise SpecialistError("agent global contract digest marker is invalid")
+    return values
+
+
+def parse_legacy_header(text: str) -> dict[str, str]:
+    lines = text.splitlines()
+    if len(lines) < 4 or lines[0] != MANAGED_MARKER:
+        raise SpecialistError("legacy agent is not owned by the specialist registry")
+    prefixes = {
+        "agent_id": AGENT_ID_PREFIX,
+        "role_key": ROLE_KEY_PREFIX,
+        "owner_token": OWNER_TOKEN_PREFIX,
+    }
+    values: dict[str, str] = {}
+    for key, prefix in prefixes.items():
+        matches = [line[len(prefix) :] for line in lines[:8] if line.startswith(prefix)]
+        if len(matches) != 1:
+            raise SpecialistError(f"legacy agent has invalid {key} marker")
+        values[key] = matches[0]
+    if not UUID_RE.fullmatch(values["agent_id"]):
+        raise SpecialistError("legacy agent id marker is invalid")
+    validate_role_key(values["role_key"])
+    if not TOKEN_RE.fullmatch(values["owner_token"]):
+        raise SpecialistError("legacy owner token marker is invalid")
     return values
 
 
@@ -648,6 +843,40 @@ def replace_exact_file(path: Path, *, expected: bytes, replacement: bytes) -> No
     finally:
         with contextlib.suppress(FileNotFoundError):
             temporary.unlink()
+
+
+def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    data = (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+def exact_schema(connection: sqlite3.Connection) -> dict[tuple[str, str], str]:
+    return {
+        (str(row[0]), str(row[1])): normalize_schema_sql(row[2])
+        for row in connection.execute(
+            "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+        )
+    }
+
+
+def expected_schema(tables: dict[str, str]) -> dict[tuple[str, str], str]:
+    return {
+        ("table", table): normalize_schema_sql(sql) for table, sql in tables.items()
+    }
 
 
 class SpecialistRegistry:
@@ -693,45 +922,10 @@ class SpecialistRegistry:
                     + ";\n".join(SCHEMA_TABLE_SQL.values())
                     + f";\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
                 )
-            elif version == 1:
-                expected_v1 = {
-                    ("table", table): normalize_schema_sql(sql)
-                    for table, sql in SCHEMA_V1_TABLE_SQL.items()
-                }
-                if actual_schema != expected_v1:
-                    raise AuxiliarySkipped(
-                        "specialist database schema 1 differs from the exact migratable schema"
-                    )
-                connection.executescript(
-                    "BEGIN IMMEDIATE;\n"
-                    "ALTER TABLE experience_events RENAME TO experience_events_v1;\n"
-                    + SCHEMA_TABLE_SQL["experience_events"]
-                    + ";\n"
-                    "INSERT INTO experience_events("
-                    "sequence,agent_id,event_id,event_digest,lesson,retracts_event_id,created_at"
-                    ") SELECT sequence,agent_id,event_id,event_digest,lesson,NULL,created_at "
-                    "FROM experience_events_v1;\n"
-                    "DROP TABLE experience_events_v1;\n"
-                    + SCHEMA_TABLE_SQL["agent_runs"]
-                    + ";\n"
-                    f"PRAGMA user_version = {SCHEMA_VERSION};\n"
-                    "COMMIT;"
-                )
-            elif version == 2:
-                expected_v2 = {
-                    ("table", table): normalize_schema_sql(sql)
-                    for table, sql in SCHEMA_V2_TABLE_SQL.items()
-                }
-                if actual_schema != expected_v2:
-                    raise AuxiliarySkipped(
-                        "specialist database schema 2 differs from the exact migratable schema"
-                    )
-                connection.executescript(
-                    "BEGIN IMMEDIATE;\n"
-                    + SCHEMA_TABLE_SQL["agent_runs"]
-                    + ";\n"
-                    f"PRAGMA user_version = {SCHEMA_VERSION};\n"
-                    "COMMIT;"
+            elif version in (1, 2, 3):
+                raise AuxiliarySkipped(
+                    f"specialist database schema {version} requires explicit migrate-global; "
+                    "ordinary registry commands do not globalize legacy roles"
                 )
             elif version != SCHEMA_VERSION:
                 raise AuxiliarySkipped(
@@ -754,6 +948,600 @@ class SpecialistRegistry:
             return connection
         except BaseException:
             connection.close()
+            raise
+
+    def _legacy_connection(self) -> tuple[sqlite3.Connection, int]:
+        ensure_plain_database(self.db_path)
+        connection = sqlite3.connect(
+            self.db_path,
+            timeout=BUSY_TIMEOUT_MS / 1000,
+            isolation_level=None,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        schemas = {
+            1: SCHEMA_V1_TABLE_SQL,
+            2: SCHEMA_V2_TABLE_SQL,
+            3: SCHEMA_V3_TABLE_SQL,
+        }
+        if version not in schemas or exact_schema(connection) != expected_schema(schemas[version]):
+            connection.close()
+            raise AuxiliarySkipped(
+                "migrate-global accepts only the exact published v1, v2, or v3 schema"
+            )
+        return connection, version
+
+    def _migration_journal_path(self) -> Path:
+        return self.state_dir / GLOBAL_MIGRATION_JOURNAL
+
+    def _write_migration_journal(self, journal: dict[str, Any]) -> None:
+        write_json_atomic(self._migration_journal_path(), journal)
+        archive = Path(journal["archive_dir"])
+        ensure_plain_directory(archive, create=True)
+        write_json_atomic(archive / "journal.json", journal)
+
+    def _verify_v4_receipt_agents(
+        self, connection: sqlite3.Connection, receipt_agents: Sequence[dict[str, str]]
+    ) -> None:
+        if len(receipt_agents) != int(
+            connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
+        ):
+            raise AuxiliarySkipped("completed migration receipt does not cover current v4 agents")
+        for identity in receipt_agents:
+            if not isinstance(identity, dict) or set(identity) != {
+                "agent_id", "name", "role_key", "sha256", "contract_digest"
+            }:
+                raise AuxiliarySkipped("completed migration receipt agent identity is invalid")
+            row = connection.execute(
+                "SELECT * FROM agents WHERE agent_id=?", (identity["agent_id"],)
+            ).fetchone()
+            if row is None or any(
+                row[column] != identity[key]
+                for column, key in (
+                    ("name", "name"), ("role_key", "role_key"),
+                    ("expected_sha256", "sha256"),
+                    ("global_contract_digest", "contract_digest"),
+                )
+            ):
+                raise AuxiliarySkipped("completed migration receipt differs from current v4 state")
+            self._owned_agent(
+                connection, name=identity["name"], expected_sha256=identity["sha256"]
+            )
+
+    def _finalize_committed_migration(
+        self, journal: dict[str, Any], connection: sqlite3.Connection
+    ) -> dict[str, Any]:
+        identities: list[dict[str, str]] = []
+        for item in journal["files"]:
+            row = connection.execute(
+                "SELECT agent_id,name,role_key,expected_sha256,global_contract_digest "
+                "FROM agents WHERE agent_id=?",
+                (item["agent_id"],),
+            ).fetchone()
+            if row is None or row["expected_sha256"] != item["new_sha256"]:
+                raise AuxiliarySkipped(
+                    "migration is committed but its v4 identity verification failed"
+                )
+            self._owned_agent(
+                connection, name=row["name"], expected_sha256=row["expected_sha256"]
+            )
+            identities.append({
+                "agent_id": row["agent_id"],
+                "name": row["name"],
+                "role_key": row["role_key"],
+                "sha256": row["expected_sha256"],
+                "contract_digest": row["global_contract_digest"],
+            })
+        archive_root = ensure_plain_directory(
+            self.state_dir / GLOBAL_MIGRATION_ARCHIVE_DIR, create=False
+        )
+        archive_dir = Path(journal["archive_dir"]).absolute()
+        if archive_dir.parent != archive_root:
+            raise AuxiliarySkipped("migration archive is outside its owned root")
+        pending_root = ensure_plain_directory(self.pending_deletion_dir, create=True)
+        backup_root = ensure_plain_directory(
+            pending_root / GLOBAL_MIGRATION_PENDING_BACKUP_DIR, create=True
+        )
+        target = backup_root / archive_dir.name
+        journal["status"] = "commit_verified_cleanup_pending"
+        journal["backup_target"] = str(target)
+        journal["verified_at"] = utc_now()
+        if path_exists_without_following_links(archive_dir):
+            ensure_plain_directory(archive_dir, create=False)
+            if path_exists_without_following_links(target):
+                raise AuxiliarySkipped(
+                    "migration is committed but both active archive and backup target exist"
+                )
+            self._write_migration_journal(journal)
+            rename_no_replace(archive_dir, target)
+        else:
+            if not path_exists_without_following_links(target):
+                raise AuxiliarySkipped(
+                    "migration is committed but neither archive nor backup target exists"
+                )
+            ensure_plain_directory(target, create=False)
+        for item in journal["files"]:
+            backup = target / Path(item["backup_path"]).name
+            validate_direct_plain_file(
+                backup, target, kind="pending global migration backup",
+                max_bytes=MAX_AGENT_BYTES,
+            )
+            if sha256_bytes(backup.read_bytes()) != item["old_sha256"]:
+                raise AuxiliarySkipped(
+                    "migration is committed but a pending legacy backup drifted"
+                )
+        completion = {
+            "format_version": 1,
+            "receipt_kind": GLOBAL_MIGRATION_COMPLETION_KIND,
+            "status": "committed",
+            "schema_version": SCHEMA_VERSION,
+            "plan_digest": journal["plan_digest"],
+            "migrated_count": len(identities),
+            "correction_count": int(journal.get("correction_count", 0)),
+            "backup_disposition": "plugin_pending_deletion",
+            "backup_id": target.name,
+            "agents": sorted(identities, key=lambda item: item["agent_id"]),
+            "completed_at": utc_now(),
+        }
+        write_json_atomic(self._migration_journal_path(), completion)
+        return completion
+
+    def _recover_global_migration(self, plan_digest: str) -> dict[str, Any] | None:
+        journal_path = self._migration_journal_path()
+        if not path_exists_without_following_links(journal_path):
+            return None
+        validate_direct_plain_file(
+            journal_path,
+            self.state_dir,
+            kind="global migration journal",
+            max_bytes=MAX_MIGRATION_PLAN_BYTES,
+        )
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        if not isinstance(journal, dict) or journal.get("format_version") != 1:
+            raise AuxiliarySkipped("global migration journal requires manual review")
+        if journal.get("plan_digest") != plan_digest:
+            raise AuxiliarySkipped(
+                "a different global migration journal exists; recover it with its original plan"
+            )
+        if journal.get("receipt_kind") == GLOBAL_MIGRATION_COMPLETION_KIND:
+            if journal.get("status") != "committed" or journal.get("schema_version") != SCHEMA_VERSION:
+                raise AuxiliarySkipped("completed migration receipt is inconsistent")
+            connection = self.connect()
+            try:
+                self._verify_v4_receipt_agents(connection, journal.get("agents", []))
+            finally:
+                connection.close()
+            return {
+                "ok": True,
+                "action": "global_migration_already_committed",
+                "schema_version": SCHEMA_VERSION,
+                "migrated_count": journal["migrated_count"],
+                "plan_digest": plan_digest,
+                "backup_disposition": journal["backup_disposition"],
+            }
+        archive_root = ensure_plain_directory(
+            self.state_dir / GLOBAL_MIGRATION_ARCHIVE_DIR, create=False
+        )
+        archive_dir = Path(journal.get("archive_dir", "")).absolute()
+        if archive_dir.parent != archive_root:
+            raise AuxiliarySkipped("global migration journal archive path is outside its owned root")
+        status = journal.get("status")
+        ensure_plain_database(self.db_path)
+        with contextlib.closing(sqlite3.connect(self.db_path)) as probe:
+            version = int(probe.execute("PRAGMA user_version").fetchone()[0])
+        if version == SCHEMA_VERSION:
+            connection = self.connect()
+            try:
+                completion = self._finalize_committed_migration(journal, connection)
+            finally:
+                connection.close()
+            return {
+                "ok": True,
+                "action": "global_migration_already_committed",
+                "schema_version": SCHEMA_VERSION,
+                "migrated_count": completion["migrated_count"],
+                "plan_digest": plan_digest,
+                "backup_disposition": completion["backup_disposition"],
+            }
+        if version not in (1, 2, 3):
+            raise AuxiliarySkipped("migration journal database version requires manual review")
+        if status == "rolled_back":
+            return None
+        rollback_errors: list[str] = []
+        for item in reversed(journal.get("files", [])):
+            old_path = Path(item["old_path"])
+            new_path = Path(item["new_path"])
+            backup_path = Path(item["backup_path"])
+            try:
+                old_exists = path_exists_without_following_links(old_path)
+                new_exists = path_exists_without_following_links(new_path)
+                if old_exists:
+                    validate_direct_agent_file(old_path, self.agents_dir)
+                if new_exists and new_path != old_path:
+                    validate_direct_agent_file(new_path, self.agents_dir)
+                if (
+                    old_exists
+                    and sha256_bytes(old_path.read_bytes()) == item["old_sha256"]
+                    and (item["same_path"] or not new_exists)
+                ):
+                    continue
+                validate_direct_plain_file(
+                    backup_path,
+                    archive_dir,
+                    kind="global migration backup",
+                    max_bytes=MAX_AGENT_BYTES,
+                )
+                backup = backup_path.read_bytes()
+                if sha256_bytes(backup) != item["old_sha256"]:
+                    raise SpecialistError("migration backup digest changed")
+                if item["same_path"]:
+                    if old_exists and sha256_bytes(old_path.read_bytes()) == item["new_sha256"]:
+                        replace_exact_file(old_path, expected=old_path.read_bytes(), replacement=backup)
+                else:
+                    if new_exists and sha256_bytes(new_path.read_bytes()) == item["new_sha256"]:
+                        failed_path = backup_path.with_name(backup_path.name + ".failed-new.toml")
+                        rename_no_replace(new_path, failed_path)
+                    if not old_exists and path_exists_without_following_links(backup_path):
+                        rename_no_replace(backup_path, old_path)
+                if sha256_bytes(old_path.read_bytes()) != item["old_sha256"]:
+                    raise SpecialistError("legacy file was not exactly restored")
+            except (OSError, SpecialistError) as exc:
+                rollback_errors.append(f"{item.get('old_name')}: {exc}")
+        if rollback_errors:
+            raise AuxiliarySkipped(
+                "global migration recovery was incomplete: " + "; ".join(rollback_errors)
+            )
+        journal["status"] = "rolled_back"
+        journal["recovered_at"] = utc_now()
+        self._write_migration_journal(journal)
+        return None
+
+    @staticmethod
+    def _load_migration_plan(plan_path: Path) -> tuple[dict[str, Any], str]:
+        absolute = plan_path.expanduser().absolute()
+        metadata = os.lstat(absolute)
+        if stat.S_ISLNK(metadata.st_mode) or is_reparse_point(metadata) or not stat.S_ISREG(metadata.st_mode):
+            raise SpecialistError("migration plan must be a regular non-link file")
+        if metadata.st_size > MAX_MIGRATION_PLAN_BYTES:
+            raise SpecialistError("migration plan exceeds the bounded size")
+        raw = absolute.read_bytes()
+        try:
+            plan = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise SpecialistError("migration plan must be valid UTF-8 JSON") from exc
+        if not isinstance(plan, dict) or set(plan) != {"format_version", "roles"}:
+            raise SpecialistError("migration plan must contain exactly format_version and roles")
+        if plan["format_version"] != 1 or not isinstance(plan["roles"], list):
+            raise SpecialistError("migration plan format_version or roles is invalid")
+        canonical = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return plan, sha256_bytes(canonical.encode("utf-8"))
+
+    def migrate_global(self, *, plan_path: Path) -> dict[str, Any]:
+        plan, plan_digest = self._load_migration_plan(plan_path)
+        recovered = self._recover_global_migration(plan_digest)
+        if recovered is not None:
+            return recovered
+        connection, legacy_version = self._legacy_connection()
+        prepared: list[dict[str, Any]] = []
+        archive_dir = self.state_dir / GLOBAL_MIGRATION_ARCHIVE_DIR / uuid.uuid4().hex
+        try:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("BEGIN IMMEDIATE")
+            legacy_rows = list(connection.execute("SELECT * FROM agents ORDER BY agent_id"))
+            if len(plan["roles"]) != len(legacy_rows):
+                raise SpecialistError("migration plan must cover every legacy specialist exactly once")
+            by_name = {row["name"]: row for row in legacy_rows}
+            if len(by_name) != len(legacy_rows):
+                raise SpecialistError("legacy agent names are not unique")
+            seen_old: set[str] = set()
+            seen_role_keys: set[str] = set()
+            seen_names: set[str] = set()
+            seen_paths: set[str] = set()
+            for index, raw_item in enumerate(plan["roles"]):
+                required = {
+                    "old_name", "old_role_key", "expected_sha256", "new_role_key",
+                    "display_name", "description", "instructions", "global_domain_key",
+                    "global_contract", "origin_terms", "experience_corrections",
+                }
+                if not isinstance(raw_item, dict) or set(raw_item) != required:
+                    raise SpecialistError(f"migration role {index} has invalid fields")
+                old_name = raw_item["old_name"]
+                if old_name in seen_old or old_name not in by_name:
+                    raise SpecialistError("migration old_name is duplicate or unknown")
+                seen_old.add(old_name)
+                row = by_name[old_name]
+                if row["role_key"] != raw_item["old_role_key"]:
+                    raise SpecialistError("migration old role_key does not match the ledger")
+                expected_hash = validate_sha256(raw_item["expected_sha256"])
+                if expected_hash != row["expected_sha256"]:
+                    raise SpecialistError("migration expected SHA-256 does not match the ledger")
+                old_path = Path(row["path"]).absolute()
+                validate_direct_agent_file(old_path, self.agents_dir)
+                old_data = old_path.read_bytes()
+                if sha256_bytes(old_data) != expected_hash:
+                    raise SpecialistError("migration source agent drifted from the ledger")
+                header = parse_legacy_header(old_data.decode("utf-8"))
+                if header["agent_id"] != row["agent_id"] or header["role_key"] != row["role_key"] or header["owner_token"] != row["owner_token"]:
+                    raise SpecialistError("migration source markers do not match the ledger")
+                payload = tomllib.loads(old_data.decode("utf-8"))
+                if payload.get("name") != old_name or old_path.stem != old_name:
+                    raise SpecialistError("migration source name/path identity is invalid")
+                if not isinstance(raw_item["origin_terms"], list) or any(
+                    not isinstance(term, str) for term in raw_item["origin_terms"]
+                ):
+                    raise SpecialistError("migration origin_terms must be an array of strings")
+                terms = normalize_origin_terms(raw_item["origin_terms"])
+                new_role_key = validate_role_key(raw_item["new_role_key"])
+                display_name = validate_display_name(raw_item["display_name"])
+                description = validate_description(raw_item["description"])
+                instructions = validate_role_instructions(raw_item["instructions"])
+                domain_key = validate_global_domain_key(raw_item["global_domain_key"])
+                contract_text, contract_digest, contract = normalize_global_contract(
+                    raw_item["global_contract"], domain_key=domain_key, origin_terms=terms
+                )
+                for field, value in {
+                    "new_role_key": new_role_key,
+                    "display_name": display_name,
+                    "description": description,
+                    "instructions": instructions,
+                }.items():
+                    if contains_forbidden_persistent_data(value):
+                        raise SpecialistError(f"migration {field} contains unsafe persistent data")
+                    reject_origin_terms(value, terms, field=field)
+                new_name = specialist_name(new_role_key, row["agent_id"])
+                new_path = self.agents_dir / f"{new_name}.toml"
+                for value, seen, label in (
+                    (new_role_key, seen_role_keys, "role_key"),
+                    (new_name, seen_names, "name"),
+                    (str(new_path), seen_paths, "path"),
+                ):
+                    if value in seen:
+                        raise SpecialistError(f"migration target {label} conflict")
+                    seen.add(value)
+                if new_path != old_path and path_exists_without_following_links(new_path):
+                    raise SpecialistError("migration target path already exists")
+                corrections = raw_item["experience_corrections"]
+                if not isinstance(corrections, list):
+                    raise SpecialistError("experience_corrections must be an array")
+                correction_rows: list[dict[str, str]] = []
+                correction_targets: set[str] = set()
+                for correction in corrections:
+                    if not isinstance(correction, dict) or set(correction) != {"event_id", "lesson"}:
+                        raise SpecialistError("migration correction must contain event_id and lesson")
+                    target_id = correction["event_id"]
+                    if not isinstance(target_id, str) or not UUID_RE.fullmatch(target_id) or target_id in correction_targets:
+                        raise SpecialistError("migration correction target is invalid or duplicate")
+                    target = connection.execute(
+                        "SELECT event_id" + (", retracts_event_id" if legacy_version >= 2 else "") +
+                        " FROM experience_events WHERE agent_id = ? AND event_id = ?",
+                        (row["agent_id"], target_id),
+                    ).fetchone()
+                    if target is None:
+                        raise SpecialistError("migration correction target does not exist")
+                    if legacy_version >= 2:
+                        prior = connection.execute(
+                            "SELECT event_id FROM experience_events WHERE agent_id = ? AND retracts_event_id = ?",
+                            (row["agent_id"], target_id),
+                        ).fetchone()
+                        if target["retracts_event_id"] is not None or prior is not None:
+                            raise SpecialistError("migration correction target is not active raw experience")
+                    lesson = validate_lesson(correction["lesson"])
+                    reject_origin_terms(lesson, terms, field="migration correction lesson")
+                    correction_id = str(uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"codex-lean-stack:migrate-global:{row['agent_id']}:{target_id}:{sha256_bytes(lesson.encode('utf-8'))}",
+                    ))
+                    digest = sha256_bytes(json.dumps(
+                        {"lesson": lesson, "retracts_event_id": target_id},
+                        ensure_ascii=False, sort_keys=True,
+                    ).encode("utf-8"))
+                    correction_rows.append({
+                        "event_id": correction_id, "lesson": lesson,
+                        "retracts_event_id": target_id, "event_digest": digest,
+                    })
+                    correction_targets.add(target_id)
+                if legacy_version == 1:
+                    event_rows = list(connection.execute(
+                        "SELECT sequence,event_id,event_digest,lesson,NULL AS retracts_event_id FROM experience_events WHERE agent_id=? ORDER BY sequence",
+                        (row["agent_id"],),
+                    ))
+                else:
+                    event_rows = list(connection.execute(
+                        "SELECT sequence,event_id,event_digest,lesson,retracts_event_id FROM experience_events WHERE agent_id=? ORDER BY sequence",
+                        (row["agent_id"],),
+                    ))
+                already_retracted = {
+                    event["retracts_event_id"] for event in event_rows if event["retracts_event_id"]
+                }
+                summary_row = connection.execute(
+                    "SELECT summary,covered_through_sequence FROM experience_summaries WHERE agent_id=?",
+                    (row["agent_id"],),
+                ).fetchone()
+                preserved_summary = (
+                    summary_row["summary"]
+                    if summary_row is not None and not correction_rows
+                    else ""
+                )
+                covered = (
+                    int(summary_row["covered_through_sequence"])
+                    if summary_row is not None and not correction_rows
+                    else 0
+                )
+                active_lessons = [
+                    event["lesson"] for event in event_rows
+                    if event["event_id"] not in already_retracted
+                    and event["event_id"] not in correction_targets
+                    and event["retracts_event_id"] is None
+                    and int(event["sequence"]) > covered
+                ] + [item["lesson"] for item in correction_rows]
+                if preserved_summary:
+                    reject_origin_terms(
+                        preserved_summary, terms, field="preserved experience summary"
+                    )
+                for lesson in active_lessons:
+                    reject_origin_terms(lesson, terms, field="preserved active experience")
+                model = validate_model(str(payload.get("model")))
+                effort = validate_effort(str(payload.get("model_reasoning_effort")))
+                authority = "write" if payload.get("sandbox_mode") == "workspace-write" else "read"
+                speed = speed_from_payload(payload)
+                base = base_instructions(
+                    display_name=display_name, role_key=new_role_key,
+                    role_instructions=instructions, model=model, effort=effort,
+                    authority=authority, speed=speed, global_contract=contract,
+                )
+                def render_migrated_memory(candidate: str) -> bytes:
+                    return _render_agent_bytes(
+                        agent_id=row["agent_id"], role_key=new_role_key,
+                        owner_token=row["owner_token"], name=new_name,
+                        display_name=display_name, description=description,
+                        model=model, effort=effort, authority=authority,
+                        instruction_base=base, memory=candidate, speed=speed,
+                        global_domain_key=domain_key,
+                        global_contract_digest=contract_digest,
+                    )
+                migrated_memory = self._memory_for_toml(
+                    preserved_summary, [{"lesson": lesson} for lesson in active_lessons],
+                    fits=lambda candidate: len(render_migrated_memory(candidate)) <= MAX_AGENT_BYTES,
+                )
+                desired = build_agent_bytes(
+                    agent_id=row["agent_id"], role_key=new_role_key,
+                    owner_token=row["owner_token"], name=new_name,
+                    display_name=display_name, description=description,
+                    model=model, effort=effort, authority=authority,
+                    instruction_base=base, memory=migrated_memory,
+                    speed=speed, global_domain_key=domain_key,
+                    global_contract_digest=contract_digest,
+                )
+                prepared.append({
+                    "row": row, "old_name": old_name, "old_path": old_path,
+                    "old_data": old_data, "old_sha256": expected_hash,
+                    "new_name": new_name, "new_role_key": new_role_key,
+                    "new_path": new_path, "new_data": desired,
+                    "new_sha256": sha256_bytes(desired), "domain_key": domain_key,
+                    "contract_text": contract_text, "contract_digest": contract_digest,
+                    "corrections": correction_rows,
+                })
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                connection.execute("ROLLBACK")
+            connection.close()
+            raise
+
+        ensure_plain_directory(archive_dir, create=True)
+        journal = {
+            "format_version": 1, "plan_digest": plan_digest,
+            "legacy_schema_version": legacy_version, "status": "prepared",
+            "created_at": utc_now(), "archive_dir": str(archive_dir), "files": [],
+            "correction_count": sum(len(item["corrections"]) for item in prepared),
+        }
+        for item in prepared:
+            backup = archive_dir / f"{item['row']['agent_id']}.{item['old_sha256']}.legacy.toml"
+            journal["files"].append({
+                "agent_id": item["row"]["agent_id"], "old_name": item["old_name"],
+                "old_path": str(item["old_path"]), "new_path": str(item["new_path"]),
+                "backup_path": str(backup), "old_sha256": item["old_sha256"],
+                "new_sha256": item["new_sha256"], "same_path": item["old_path"] == item["new_path"],
+            })
+        file_mutated = False
+        db_committed = False
+        try:
+            self._write_migration_journal(journal)
+            for item, receipt in zip(prepared, journal["files"]):
+                old_path, new_path = item["old_path"], item["new_path"]
+                backup = Path(receipt["backup_path"])
+                if old_path.read_bytes() != item["old_data"]:
+                    raise SpecialistError("migration source changed after preflight")
+                file_mutated = True
+                if receipt["same_path"]:
+                    write_new_file(backup, item["old_data"])
+                    replace_exact_file(old_path, expected=item["old_data"], replacement=item["new_data"])
+                else:
+                    rename_no_replace(old_path, backup)
+                    write_new_file(new_path, item["new_data"])
+            journal["status"] = "files_replaced"
+            self._write_migration_journal(journal)
+            if legacy_version == 1:
+                connection.execute("ALTER TABLE experience_events RENAME TO experience_events_v1")
+                connection.execute(SCHEMA_V3_TABLE_SQL["experience_events"])
+                connection.execute(
+                    "INSERT INTO experience_events(sequence,agent_id,event_id,event_digest,lesson,retracts_event_id,created_at) "
+                    "SELECT sequence,agent_id,event_id,event_digest,lesson,NULL,created_at FROM experience_events_v1"
+                )
+                connection.execute("DROP TABLE experience_events_v1")
+                connection.execute(SCHEMA_V3_TABLE_SQL["agent_runs"])
+            elif legacy_version == 2:
+                connection.execute(SCHEMA_V3_TABLE_SQL["agent_runs"])
+            connection.execute("DROP TABLE agents")
+            connection.execute(SCHEMA_TABLE_SQL["agents"])
+            for item in prepared:
+                row = item["row"]
+                connection.execute(
+                    "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,"
+                    "created_at,updated_at,global_contract_version,global_domain_key,global_contract,global_contract_digest) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        row["agent_id"], item["new_name"], item["new_role_key"],
+                        str(item["new_path"]), row["owner_token"], item["new_sha256"],
+                        row["created_at"], utc_now(), GLOBAL_CONTRACT_VERSION,
+                        item["domain_key"], item["contract_text"], item["contract_digest"],
+                    ),
+                )
+                for correction in item["corrections"]:
+                    connection.execute(
+                        "INSERT INTO experience_events(agent_id,event_id,event_digest,lesson,retracts_event_id,created_at) VALUES(?,?,?,?,?,?)",
+                        (
+                            row["agent_id"], correction["event_id"], correction["event_digest"],
+                            correction["lesson"], correction["retracts_event_id"], utc_now(),
+                        ),
+                    )
+                if item["corrections"]:
+                    connection.execute(
+                        "DELETE FROM experience_summaries WHERE agent_id=?", (row["agent_id"],)
+                    )
+            if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise SpecialistError("migrated SQLite integrity_check failed")
+            if list(connection.execute("PRAGMA foreign_key_check")):
+                raise SpecialistError("migrated SQLite foreign_key_check failed")
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            connection.execute("COMMIT")
+            db_committed = True
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.close()
+            verified = self.connect()
+            try:
+                for item in prepared:
+                    self._owned_agent(verified, name=item["new_name"], expected_sha256=item["new_sha256"])
+                completion = self._finalize_committed_migration(journal, verified)
+            finally:
+                verified.close()
+            return {
+                "ok": True, "action": "global_migration_committed",
+                "schema_version": SCHEMA_VERSION, "migrated_count": len(prepared),
+                "correction_count": sum(len(item["corrections"]) for item in prepared),
+                "plan_digest": plan_digest,
+                "backup_disposition": completion["backup_disposition"],
+            }
+        except BaseException as exc:
+            if db_committed:
+                raise AuxiliarySkipped(
+                    "global migration committed but pending-backup finalization is incomplete; "
+                    f"retry the same plan: {exc}"
+                ) from exc
+            with contextlib.suppress(sqlite3.Error):
+                connection.execute("ROLLBACK")
+            connection.close()
+            if file_mutated:
+                journal["status"] = "recovery_required"
+                journal["failure"] = type(exc).__name__
+                self._write_migration_journal(journal)
+                try:
+                    self._recover_global_migration(plan_digest)
+                except BaseException as recovery_exc:
+                    raise AuxiliarySkipped(
+                        f"global migration failed and recovery is incomplete: {recovery_exc}"
+                    ) from exc
             raise
 
     def _unowned_role_files(
@@ -824,11 +1612,26 @@ class SpecialistRegistry:
             raise SpecialistError("agent markers do not match the ownership ledger")
         if header["owner_token"] != row["owner_token"]:
             raise SpecialistError("agent owner token does not match the ownership ledger")
+        if int(row["global_contract_version"]) != GLOBAL_CONTRACT_VERSION:
+            raise SpecialistError("agent global contract version is invalid")
+        if header["global_domain_key"] != row["global_domain_key"]:
+            raise SpecialistError("agent domain marker does not match the ownership ledger")
+        canonical, contract_digest, contract = normalize_global_contract(
+            row["global_contract"],
+            domain_key=row["global_domain_key"],
+        )
+        if canonical != row["global_contract"] or contract_digest != row["global_contract_digest"]:
+            raise SpecialistError("agent global contract ledger is not canonical")
+        if header["global_contract_digest"] != contract_digest:
+            raise SpecialistError("agent contract marker does not match the ownership ledger")
         if owner_token is not None and header["owner_token"] != owner_token:
             raise SpecialistError("provided owner token is incorrect")
         payload = tomllib.loads(text)
         if payload.get("name") != name or path.stem != name or not NAME_RE.fullmatch(name):
             raise SpecialistError("agent name/path identity is invalid")
+        developer = payload.get("developer_instructions")
+        if not isinstance(developer, str) or global_contract_instruction(contract) not in developer:
+            raise SpecialistError("agent duties do not contain the canonical global contract")
         return row, path, data, payload, header
 
     def _summary_row(self, connection: sqlite3.Connection, agent_id: str) -> sqlite3.Row | None:
@@ -970,6 +1773,9 @@ class SpecialistRegistry:
         authority: str,
         speed: str = "standard",
         expected_sha256: str | None = None,
+        global_domain_key: str,
+        global_contract: dict[str, Any] | str,
+        origin_terms: Iterable[str] = (),
     ) -> dict[str, Any]:
         role_key = validate_role_key(role_key)
         display_name = validate_display_name(display_name)
@@ -979,6 +1785,25 @@ class SpecialistRegistry:
         effort = validate_effort(effort)
         authority = validate_authority(authority)
         speed = validate_speed(speed)
+        terms = normalize_origin_terms(origin_terms)
+        global_domain_key = validate_global_domain_key(global_domain_key)
+        canonical_contract, contract_digest, contract = normalize_global_contract(
+            global_contract,
+            domain_key=global_domain_key,
+            origin_terms=terms,
+        )
+        persistent_fields = {
+            "role_key": role_key,
+            "display_name": display_name,
+            "description": description,
+            "role_instructions": role_instructions,
+        }
+        for field, value in persistent_fields.items():
+            if contains_forbidden_persistent_data(value):
+                raise SpecialistError(
+                    f"{field} contains a URL, absolute path, credential-like data, or control characters"
+                )
+            reject_origin_terms(value, terms, field=field)
         if expected_sha256 is not None:
             expected_sha256 = validate_sha256(expected_sha256)
         connection = self.connect()
@@ -1007,6 +1832,10 @@ class SpecialistRegistry:
                     else 0
                 )
                 pending = self._pending_events(connection, row["agent_id"], covered)
+                if summary:
+                    reject_origin_terms(summary, terms, field="existing experience summary")
+                for event in pending:
+                    reject_origin_terms(event["lesson"], terms, field="existing experience")
                 desired_base = base_instructions(
                     display_name=display_name,
                     role_key=role_key,
@@ -1015,6 +1844,7 @@ class SpecialistRegistry:
                     effort=effort,
                     authority=authority,
                     speed=speed,
+                    global_contract=contract,
                 )
                 def render_desired(candidate: str) -> bytes:
                     return _render_agent_bytes(
@@ -1030,6 +1860,8 @@ class SpecialistRegistry:
                         instruction_base=desired_base,
                         memory=candidate,
                         speed=speed,
+                        global_domain_key=global_domain_key,
+                        global_contract_digest=contract_digest,
                     )
                 memory = self._memory_for_toml(
                     summary,
@@ -1050,6 +1882,8 @@ class SpecialistRegistry:
                     instruction_base=desired_base,
                     memory=memory,
                     speed=speed,
+                    global_domain_key=global_domain_key,
+                    global_contract_digest=contract_digest,
                 )
                 if desired == original:
                     connection.execute("COMMIT")
@@ -1089,6 +1923,17 @@ class SpecialistRegistry:
                     "UPDATE agents SET expected_sha256 = ?, updated_at = ? WHERE agent_id = ?",
                     (digest, utc_now(), row["agent_id"]),
                 )
+                connection.execute(
+                    "UPDATE agents SET global_contract_version = ?, global_domain_key = ?, "
+                    "global_contract = ?, global_contract_digest = ? WHERE agent_id = ?",
+                    (
+                        GLOBAL_CONTRACT_VERSION,
+                        global_domain_key,
+                        canonical_contract,
+                        contract_digest,
+                        row["agent_id"],
+                    ),
+                )
                 connection.execute("COMMIT")
                 return {
                     "ok": True,
@@ -1127,6 +1972,7 @@ class SpecialistRegistry:
                 effort=effort,
                 authority=authority,
                 speed=speed,
+                global_contract=contract,
             )
             data = build_agent_bytes(
                 agent_id=agent_id,
@@ -1141,6 +1987,8 @@ class SpecialistRegistry:
                 instruction_base=base,
                 memory=memory_block("", []),
                 speed=speed,
+                global_domain_key=global_domain_key,
+                global_contract_digest=contract_digest,
             )
             write_new_file(path, data)
             created_path = path
@@ -1148,9 +1996,13 @@ class SpecialistRegistry:
             digest = sha256_bytes(data)
             now = utc_now()
             connection.execute(
-                "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (agent_id, name, role_key, str(path), owner_token, digest, now, now),
+                "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at,"
+                "global_contract_version,global_domain_key,global_contract,global_contract_digest) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    agent_id, name, role_key, str(path), owner_token, digest, now, now,
+                    GLOBAL_CONTRACT_VERSION, global_domain_key, canonical_contract, contract_digest,
+                ),
             )
             connection.execute("COMMIT")
             return {
@@ -1234,6 +2086,8 @@ class SpecialistRegistry:
                 instruction_base=current_instructions,
                 memory=candidate,
                 speed=speed,
+                global_domain_key=row["global_domain_key"],
+                global_contract_digest=row["global_contract_digest"],
             )
         memory = self._memory_for_toml(
             summary,
@@ -1253,6 +2107,8 @@ class SpecialistRegistry:
             instruction_base=current_instructions,
             memory=memory,
             speed=speed,
+            global_domain_key=row["global_domain_key"],
+            global_contract_digest=row["global_contract_digest"],
         )
         if rewritten != original:
             validate_direct_agent_file(path, self.agents_dir)
@@ -1272,8 +2128,11 @@ class SpecialistRegistry:
         lesson: str,
         event_id: str | None,
         retracts_event_id: str | None = None,
+        origin_terms: Iterable[str] = (),
     ) -> dict[str, Any]:
         lesson = validate_lesson(lesson)
+        terms = normalize_origin_terms(origin_terms)
+        reject_origin_terms(lesson, terms, field="experience")
         event_id = event_id or str(uuid.uuid4())
         if not UUID_RE.fullmatch(event_id):
             raise SpecialistError("event_id must be a UUID")
@@ -1418,8 +2277,11 @@ class SpecialistRegistry:
         summary: str,
         covered_through: int,
         source_digest: str,
+        origin_terms: Iterable[str] = (),
     ) -> dict[str, Any]:
         summary = validate_summary(summary)
+        terms = normalize_origin_terms(origin_terms)
+        reject_origin_terms(summary, terms, field="summary")
         if covered_through < 1:
             raise SpecialistError("covered_through must be positive")
         if not re.fullmatch(r"[0-9a-f]{64}", source_digest):
@@ -1602,6 +2464,11 @@ class SpecialistRegistry:
                         "sha256": row["expected_sha256"],
                         "survival_rounds": int(row["survival_rounds"]),
                         "experience_count": int(row["experience_count"]),
+                        "scope": GLOBAL_SCOPE,
+                        "global_contract_version": int(row["global_contract_version"]),
+                        "global_domain_key": row["global_domain_key"],
+                        "global_contract": json.loads(row["global_contract"]),
+                        "global_contract_digest": row["global_contract_digest"],
                     }
                 )
             disk_names = sorted(path.name for path in self.agents_dir.glob("lean_*.toml"))
@@ -1610,12 +2477,32 @@ class SpecialistRegistry:
                     f"managed specialist scan exceeded {MAX_MANAGED_SCAN_FILES} files"
                 )
             registered_files = {Path(item["path"]).name for item in registered}
+            legacy_count = 0
+            for disk_name in disk_names:
+                disk_path = self.agents_dir / disk_name
+                with contextlib.suppress(OSError, UnicodeError):
+                    metadata = os.lstat(disk_path)
+                    if (
+                        stat.S_ISLNK(metadata.st_mode)
+                        or is_reparse_point(metadata)
+                        or not stat.S_ISREG(metadata.st_mode)
+                        or metadata.st_nlink != 1
+                        or metadata.st_size > MAX_AGENT_BYTES
+                    ):
+                        continue
+                    disk_text = disk_path.read_text(encoding="utf-8")
+                    if disk_text.startswith(MANAGED_MARKER + "\n") and (
+                        GLOBAL_SCOPE_PREFIX + GLOBAL_SCOPE
+                    ) not in disk_text.splitlines()[:12]:
+                        legacy_count += 1
             return {
                 "ok": True,
                 "action": "status",
                 "schema_version": SCHEMA_VERSION,
                 "registered_agents": registered,
                 "registered_count": len(registered),
+                "global_count": len(registered),
+                "legacy_count": legacy_count,
                 "lean_agent_files_total": len(disk_names),
                 "unregistered_lean_agent_files": [
                     name for name in disk_names if name not in registered_files
@@ -1698,6 +2585,10 @@ class SpecialistRegistry:
             "created_at",
             "updated_at",
             "retired_at",
+            "global_contract_version",
+            "global_domain_key",
+            "global_contract",
+            "global_contract_digest",
         }
         if not isinstance(receipt, dict) or not required.issubset(receipt):
             raise SpecialistError("retirement receipt is missing required fields")
@@ -1705,7 +2596,7 @@ class SpecialistRegistry:
             raise SpecialistError("retirement receipt must not contain owner_token")
         if receipt["format_version"] != RETIREMENT_RECEIPT_FORMAT_VERSION:
             raise SpecialistError("retirement receipt format_version is unsupported")
-        string_fields = required - {"format_version"}
+        string_fields = required - {"format_version", "global_contract_version"}
         if any(not isinstance(receipt[field], str) for field in string_fields):
             raise SpecialistError("retirement receipt field types are invalid")
         if not UUID_RE.fullmatch(receipt["agent_id"]):
@@ -1713,6 +2604,14 @@ class SpecialistRegistry:
         if not NAME_RE.fullmatch(receipt["name"]):
             raise SpecialistError("retirement receipt name is invalid")
         validate_role_key(receipt["role_key"])
+        if receipt["global_contract_version"] != GLOBAL_CONTRACT_VERSION:
+            raise SpecialistError("retirement receipt global contract version is invalid")
+        domain_key = validate_global_domain_key(receipt["global_domain_key"])
+        canonical_contract, contract_digest, _ = normalize_global_contract(
+            receipt["global_contract"], domain_key=domain_key
+        )
+        if canonical_contract != receipt["global_contract"] or contract_digest != receipt["global_contract_digest"]:
+            raise SpecialistError("retirement receipt global contract is inconsistent")
         if receipt["sha256"] != expected_sha256:
             raise SpecialistError("expected SHA-256 does not match the retirement receipt")
         for field in ("created_at", "updated_at", "retired_at"):
@@ -1743,6 +2642,8 @@ class SpecialistRegistry:
         if (
             header["agent_id"] != receipt["agent_id"]
             or header["role_key"] != receipt["role_key"]
+            or header["global_domain_key"] != receipt["global_domain_key"]
+            or header["global_contract_digest"] != receipt["global_contract_digest"]
             or payload.get("name") != receipt["name"]
         ):
             raise SpecialistError("pending specialist identity does not match the receipt")
@@ -1868,6 +2769,10 @@ class SpecialistRegistry:
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "retired_at": retired_at,
+                "global_contract_version": int(row["global_contract_version"]),
+                "global_domain_key": row["global_domain_key"],
+                "global_contract": row["global_contract"],
+                "global_contract_digest": row["global_contract_digest"],
             }
             receipt_bytes = receipt_json_bytes(receipt)
             write_new_file(receipt_path, receipt_bytes)
@@ -2003,8 +2908,9 @@ class SpecialistRegistry:
             if original_path.read_bytes() != data:
                 raise SpecialistError("restored specialist changed immediately after restore")
             connection.execute(
-                "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at,"
+                "global_contract_version,global_domain_key,global_contract,global_contract_digest) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     receipt_data["agent_id"],
                     receipt_data["name"],
@@ -2014,6 +2920,10 @@ class SpecialistRegistry:
                     expected_sha256,
                     receipt_data["created_at"],
                     receipt_data["updated_at"],
+                    receipt_data["global_contract_version"],
+                    receipt_data["global_domain_key"],
+                    receipt_data["global_contract"],
+                    receipt_data["global_contract_digest"],
                 ),
             )
             connection.execute("COMMIT")
@@ -2106,6 +3016,13 @@ def build_parser() -> argparse.ArgumentParser:
     ensure.add_argument("--reasoning-effort", required=True, choices=sorted(EFFORTS))
     ensure.add_argument("--speed", choices=sorted(SPEEDS), default="standard")
     ensure.add_argument("--authority", required=True, choices=sorted(AUTHORITIES))
+    ensure.add_argument("--global-domain-key", required=True)
+    ensure.add_argument(
+        "--global-contract",
+        required=True,
+        help="canonicalizable JSON object defining the global domain contract",
+    )
+    ensure.add_argument("--origin-term", action="append", default=[])
     ensure.add_argument(
         "--expected-sha256",
         help="CAS guard required only when replacing an existing role configuration",
@@ -2124,6 +3041,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     improve.add_argument("--covered-through", type=int)
     improve.add_argument("--source-digest")
+    improve.add_argument("--origin-term", action="append", default=[])
+
+    migrate = subparsers.add_parser(
+        "migrate-global",
+        help="explicitly globalize every exact v1/v2/v3 retained specialist from one UTF-8 JSON plan",
+    )
+    migrate.add_argument("--plan", required=True, type=Path)
 
     record_run = subparsers.add_parser(
         "record-run",
@@ -2176,6 +3100,9 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             authority=arguments.authority,
             speed=arguments.speed,
             expected_sha256=arguments.expected_sha256,
+            global_domain_key=arguments.global_domain_key,
+            global_contract=arguments.global_contract,
+            origin_terms=arguments.origin_term,
         )
     if arguments.command == "improve":
         if arguments.lesson is not None:
@@ -2187,6 +3114,7 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
                 lesson=arguments.lesson,
                 event_id=arguments.event_id,
                 retracts_event_id=arguments.retracts_event_id,
+                origin_terms=arguments.origin_term,
             )
         if arguments.covered_through is None or arguments.source_digest is None:
             raise SpecialistError("summary mode requires --covered-through and --source-digest")
@@ -2200,7 +3128,10 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             summary=arguments.summary,
             covered_through=arguments.covered_through,
             source_digest=arguments.source_digest,
+            origin_terms=arguments.origin_term,
         )
+    if arguments.command == "migrate-global":
+        return registry.migrate_global(plan_path=arguments.plan)
     if arguments.command == "record-run":
         return registry.record_run(
             name=arguments.name,
