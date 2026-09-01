@@ -65,11 +65,13 @@ class SkillContractTests(unittest.TestCase):
         )
 
     def test_value_sensitive_priority_and_safety_floor_remain(self) -> None:
-        for content in (self.skill, self.routing, self.readme, self.flowcharts):
+        for content in (self.skill, self.routing, self.flowcharts):
             self.assertIn("高价值工作", content)
             self.assertIn("普通工作", content)
             self.assertIn("质量优先", content)
             self.assertIn("速度优先", content)
+        for readme_term in ("提高质量或缩短时间", "风险", "成本"):
+            self.assertIn(readme_term, self.readme)
         for floor in ("安全", "权限", "数据完整性", "诚实证据"):
             self.assertIn(floor, self.skill + self.readme)
         for principle in (
@@ -348,10 +350,12 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("运行时新子代理或变体", tool_flow)
 
     def test_tools_are_used_before_model_subagents(self) -> None:
-        for content in (self.skill, self.routing, self.readme):
+        for content in (self.skill, self.routing):
             self.assertIn("工具", content)
             self.assertIn("短命令", content)
             self.assertIn("后台", content)
+        for readme_term in ("先用工具", "短命令", "不启动模型子代理"):
+            self.assertIn(readme_term, self.readme)
         self.assertIn("不启动模型子代理", self.skill)
         self.assertIn("一次工具调用并发运行", self.flowcharts)
 
@@ -643,8 +647,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("语义审查不是所有主任务", self.skill)
         self.assertIn("调查、解释、简单工具工作和纯只读任务", self.skill)
         self.assertIn("只重跑受影响检查", self.skill)
-        self.assertIn("Run the narrowest checks affected by your change", self.readme)
-        self.assertIn("schema、迁移、生命周期或公共约定", self.readme)
+        self.assertIn("run the narrowest checks affected by your change", self.readme)
+        self.assertIn("只运行受影响的最窄检查", self.readme)
 
     def test_parent_parallelism_permissions_and_source_coverage_remain(self) -> None:
         combined = self.skill + self.delegation + self.write_parallelism + self.readme
@@ -842,10 +846,10 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertIn("不得用新增关键步骤续期", self.delegation)
         self.assertIn(
-            "[Delegation / 子代理委派](skills/lean-stack/references/delegation.md)",
+            "](skills/lean-stack/references/delegation.md)",
             self.readme,
         )
-        self.assertIn("bounded, verifiable slices", self.readme)
+        self.assertIn("ready, bounded, independently verifiable task", self.readme)
 
     def test_retained_self_reads_and_declares_while_parent_configures_new_or_variant(self) -> None:
         combined = self.skill + self.delegation + self.readme + self.handoff
@@ -1241,7 +1245,6 @@ class SkillContractTests(unittest.TestCase):
     def test_flowcharts_are_auxiliary_and_not_frozen_to_a_count(self) -> None:
         self.assertGreaterEqual(self.flowcharts.count("```mermaid"), 4)
         self.assertIn("只是代码和规则的辅助说明", self.flowcharts)
-        self.assertIn("链路图只是辅助说明", self.readme)
         self.assertNotRegex(self.readme, r"全部[一二三四五六七八九十百\d]+张")
         self.assertNotIn("八张", self.flowcharts + self.readme)
         self.assertNotIn("十四张", self.flowcharts + self.readme)
@@ -1366,8 +1369,9 @@ class SkillContractTests(unittest.TestCase):
             "默认调用已安装的 `codex-lean-stack` 插件；"
             "是否启动子代理仍由插件自身规则决定。"
         )
-        for document in (self.skill, self.readme, self.versioning, self.installer):
+        for document in (self.skill, self.versioning, self.installer):
             self.assertIn(default_line, document)
+        self.assertIn("普通 `codex plugin add` 不会修改全局 `AGENTS.md`", self.readme)
         self.assertIn("通用项目交接规则", self.handoff)
         self.assertIn("未经用户当次明确同意", self.handoff)
         self.assertIn("不能复制插件的子代理加速规则", self.handoff)
@@ -1419,30 +1423,36 @@ class SkillContractTests(unittest.TestCase):
         combined = self.skill + self.readme
         self.assertIn("子代理加速规则由本技能自身承载", self.skill)
         self.assertIn(
-            "[Main skill / 主技能](skills/lean-stack/SKILL.md)",
+            "](skills/lean-stack/SKILL.md)",
             self.readme,
         )
         self.assertIn("Plain `codex plugin add` does not edit", self.readme)
         self.assertIn("普通 `codex plugin add` 不会修改", self.readme)
         self.assertIn("只有用户当次明确同意时才能修改", combined)
 
-    def test_readme_is_a_concise_bilingual_repository_landing_page(self) -> None:
-        self.assertLessEqual(len(self.readme.splitlines()), 240)
+    def test_readme_is_a_concrete_bilingual_agent_calling_guide(self) -> None:
+        self.assertLessEqual(len(self.readme.splitlines()), 140)
         for term in (
-            '<div align="center">',
-            "<h1>Codex Lean Stack</h1>",
-            "让 Codex 把精力花在主任务上",
-            "Keep Codex focused on the work",
-            "## 一眼看懂 / At a glance",
+            "# 代理调用和精简流程",
+            "插件标识：`codex-lean-stack`",
+            "决定什么时候直接用工具、什么时候调用代理",
+            "when to use tools, when to call agents",
             "## 中文",
+            "### 具体功能",
+            "### 调用流程",
+            "### 不调用代理的情况",
             "## English",
-            "## Quick start / 快速开始",
-            "## How it works / 工作方式",
-            "## Documentation / 文档",
+            "### Concrete features",
+            "## 安装与使用 / Install and use",
+            "## 文档 / Docs",
             "official OpenAI plugin documentation",
             "OpenAI 官方插件文档",
-            "我做这个插件，是因为",
-            "I built this because",
+            "模型 + 思考程度 + 速度",
+            "支持协作父代理",
+            "没有项目保留层",
+            "同一输入不重复散列",
+            "只运行受影响的最窄检查",
+            "普通文件进入 Windows 回收站",
         ):
             self.assertIn(term, self.readme)
         for linked_authority in (
@@ -1454,6 +1464,12 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(linked_authority, self.readme)
         for mirrored_detail in (
+            '<div align="center">',
+            "img.shields.io",
+            "我做这个插件，是因为",
+            "I built this because",
+            "Keep Codex focused on the work",
+            "## 一眼看懂 / At a glance",
             "关键步骤：<",
             "完整角色文件不超过 16 KiB",
             "--expected-state-sha256",
