@@ -26,6 +26,7 @@ class SkillContractTests(unittest.TestCase):
         cls.anti_overengineering = (REFERENCES / "anti-overengineering.md").read_text(
             encoding="utf-8"
         )
+        cls.ablation = (REFERENCES / "ablation-loop.md").read_text(encoding="utf-8")
         cls.write_parallelism = (REFERENCES / "write-parallelism.md").read_text(
             encoding="utf-8"
         )
@@ -112,7 +113,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("没有把握时由父代理完成", combined)
         self.assertNotIn("任一关键答案是否定时不调用", combined)
 
-    def test_active_main_task_chain_survives_adjustments_and_drives_final_summary(
+    def test_active_requirement_anchor_retires_completed_delivered_work(
         self,
     ) -> None:
         metadata = " ".join(
@@ -130,36 +131,65 @@ class SkillContractTests(unittest.TestCase):
             + self.flowcharts
             + metadata
         )
+        compact_combined = re.sub(r"\s+", "", combined)
         for required in (
-            "主任务链锚点",
-            "上一次已经明确确认完成",
-            "第一个要求",
-            "明确取消、停止、放弃或替换",
-            "追加调整",
-            "不得丢弃",
-            "自动恢复并继续",
-            "不得只回答最新调整",
-            "从锚点",
-            "逐项",
-            "调整前已经完成",
+            "未完成要求锚点",
+            "尚未完成",
+            "已完成但还没有通过用户可见回复交付",
+            "自动退出清单",
+            "不要求用户再次确认",
+            "只重新打开受影响的要求",
+            "“继续”只恢复剩余",
+            "锚点前移到最早剩余项",
+            "上一次用户可见交付之后新完成但尚未报告",
+            "已经在先前回复中交付的完成项不重复总结",
             "不建立数据库、后台队列或持久状态机",
         ):
-            self.assertIn(required, combined)
+            self.assertIn(re.sub(r"\s+", "", required), compact_combined)
+
+        for retired_contract in (
+            "上一次已经明确确认完成的主任务之后",
+            "锚点之后的全部要求",
+            "覆盖直到最新消息为止的全部有效要求",
+            "调整前已经完成的子任务",
+            "完整总结整条主任务链",
+        ):
+            self.assertNotIn(retired_contract, combined)
 
         flow = self.flowcharts.split("## 一、主任务链路", 1)[1].split(
             "## 二、工具、子代理与安全并行链路", 1
         )[0]
-        active_chain = flow.index("已有尚未完整交付并确认完成的")
-        replacement = flow.index("用户明确取消、停止、放弃", active_chain)
-        additive = flow.index("作为追加调整", replacement)
-        resume = flow.index("自动恢复", additive)
-        full_review = flow.index("从主任务链锚点到最新消息", resume)
-        final_summary = flow.index("完整总结整条主任务链", full_review)
-        self.assertLess(active_chain, replacement)
-        self.assertLess(replacement, additive)
-        self.assertLess(additive, resume)
-        self.assertLess(resume, full_review)
-        self.assertLess(full_review, final_summary)
+        active = flow.index("有未完成，或已完成")
+        retire = flow.index("已完成且已交付的要求退出", active)
+        current_delivery = flow.index("本次新完成但尚未交付的结果", retire)
+        advance = flow.index("已报告完成项退出，锚点自动前移", current_delivery)
+        self.assertLess(active, retire)
+        self.assertLess(retire, current_delivery)
+        self.assertLess(current_delivery, advance)
+
+    def test_parent_gives_a_fast_first_explanation_then_keeps_working(self) -> None:
+        combined = self.skill + self.routing + self.readme + self.handoff + self.flowcharts
+        compact = re.sub(r"\s+", "", combined)
+        for boundary in (
+            "每条新用户要求",
+            "首条快速说明",
+            "当前理解",
+            "立即动作",
+            "必要边界",
+            "不等待用户确认",
+            "能够一次直接答完",
+            "最终答案本身就是首条快速说明",
+            "不额外发送重复前言",
+        ):
+            self.assertIn(re.sub(r"\s+", "", boundary), compact)
+        main = self.flowcharts.split("## 一、主任务链路", 1)[1].split(
+            "## 二、工具、子代理与安全并行链路", 1
+        )[0]
+        received = main.index("收到新消息")
+        first_explanation = main.index("首条快速说明", received)
+        main_chain = main.index("有未完成，或已完成", first_explanation)
+        self.assertLess(received, first_explanation)
+        self.assertLess(first_explanation, main_chain)
 
     def test_main_flow_is_primary_and_locates_every_auxiliary_entry(self) -> None:
         main = self.flowcharts.split("## 一、主任务链路", 1)[1].split(
@@ -170,7 +200,7 @@ class SkillContractTests(unittest.TestCase):
         retention = main.index("默认只尝试一次 ensure", unique)
         experience = main.index("一次 improve 合并追加一条经验", retention)
         removal = main.index("其他子代理移出组、结束", experience)
-        completion = main.index("主任务完成条件满足吗", removal)
+        completion = main.index("当前活动要求达到", removal)
         self.assertLess(group_close, unique)
         self.assertLess(unique, retention)
         self.assertLess(retention, experience)
@@ -358,6 +388,52 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(readme_term, self.readme)
         self.assertIn("不启动模型子代理", self.skill)
         self.assertIn("一次工具调用并发运行", self.flowcharts)
+
+    def test_complex_powershell_uses_one_temporary_script_not_escape_retries(
+        self,
+    ) -> None:
+        compact_routing = re.sub(r"\s+", "", self.routing)
+        for boundary in (
+            "简单、短小",
+            "多层引号",
+            "嵌套 JSON",
+            "正则表达式",
+            "反引号",
+            "多行脚本",
+            "复杂变量插值",
+            "任务专属临时 `.ps1`",
+            "第一次内联失败",
+            "解析或转义问题",
+            "停止继续改写长 one-liner",
+            "同一个临时脚本本体",
+            "`param()`",
+            "`-LiteralPath`",
+            "不能误判为转义问题",
+            "凭据、令牌或秘密",
+            "不进入仓库或提交",
+            "Windows 回收站",
+            "任务专属 `待删文件`",
+            "不为这条规则建立 PowerShell 包装框架",
+        ):
+            self.assertIn(re.sub(r"\s+", "", boundary), compact_routing)
+
+        self.assertIn("PowerShell\n   短小且转义简单时内联", self.skill)
+        for readme_term in (
+            "复杂 PowerShell 及时落到脚本",
+            "Move complex PowerShell into a script",
+        ):
+            self.assertIn(readme_term, self.readme)
+
+        tool_flow = self.flowcharts.split(
+            "## 二、工具、子代理与安全并行链路", 1
+        )[1].split("## 三、调用容量与成本快判链路", 1)[0]
+        first_gate = tool_flow.index("PowerShell 命令需要复杂转义吗")
+        script = tool_flow.index("任务专属临时 .ps1", first_gate)
+        escape_failure = tool_flow.index("首次解析或转义失败", script)
+        same_script = tool_flow.index("后续编辑同一脚本", first_gate)
+        self.assertLess(first_gate, script)
+        self.assertLess(first_gate, same_script)
+        self.assertLess(script, escape_failure)
 
     def test_runtime_capacity_replaces_plugin_numeric_caps(self) -> None:
         combined = self.skill + self.routing + self.delegation + self.readme
@@ -1154,6 +1230,67 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("只更新会作出错误承诺的表面", self.flowcharts)
         self.assertIn("不留桩、注释或假想测试", self.flowcharts)
 
+    def test_ablation_is_an_explicit_independent_feedback_loop(self) -> None:
+        compact_ablation = re.sub(r"\s+", "", self.ablation)
+        for content in (
+            self.skill,
+            self.anti_overengineering,
+            self.build,
+            self.routing,
+            self.readme,
+        ):
+            self.assertIn("ablation-loop.md", content)
+        for trigger in (
+            "进行消融实验",
+            "精简代码",
+            "精简设计",
+            "去掉不必要抽象",
+        ):
+            self.assertIn(trigger, self.skill + self.ablation)
+        for boundary in (
+            "只有用户明确要求",
+            "不含原作者推理历史",
+            "核心功能",
+            "用户设计意图",
+            "一次只消融一个候选",
+            "删除、内联或合并",
+            "改名、移动、别名或转发包装",
+            "同一组最窄相关验收",
+            "不能声称完成正式消融实验",
+        ):
+            self.assertIn(re.sub(r"\s+", "", boundary), compact_ablation)
+        self.assertIn("普通设计或实现完成不自动启动", self.build)
+        self.assertIn("不例行", self.routing)
+
+    def test_ablation_removes_paranoid_defense_by_evidence_not_fake_precision(self) -> None:
+        compact_ablation = re.sub(r"\s+", "", self.ablation)
+        for decision_axis in ("发生频率", "影响", "可检测性", "人工恢复"):
+            self.assertIn(decision_axis, self.ablation)
+        for boundary in (
+            "用户举例中的数字只是比喻",
+            "不写入插件规则、阈值或校准尺度",
+            "当前正常路径",
+            "反复出现的异常",
+            "极少出现、只有孤立记录或仍只是理论可能",
+            "没有频率证据时写 `unknown`",
+            "不把模型担忧、任务形状或比喻换算成概率和档位",
+            "明确失败",
+            "有界巡检",
+            "人工修复",
+            "自动补偿或自愈",
+            "安全、权限、数据完整性",
+            "灾难性或不可逆",
+        ):
+            self.assertIn(re.sub(r"\s+", "", boundary), compact_ablation)
+        for removed_scale in (
+            "99 万 / 100 万",
+            "10 万 / 100 万",
+            "1–2 / 100 万",
+            "频率校准",
+            "给出的校准尺",
+        ):
+            self.assertNotIn(removed_scale, self.ablation + self.readme + self.handoff)
+
     def test_explicit_global_only_boundary_has_one_minimal_negative_guard(self) -> None:
         # The user explicitly prohibited project-scoped retained agents. This is a public
         # boundary, so a narrow absence guard is justified; hypothetical non-features do
@@ -1223,8 +1360,8 @@ class SkillContractTests(unittest.TestCase):
             + self.memory
         )
         for contract_term in (
-            "主任务链锚点",
-            "追加调整",
+            "未完成要求锚点",
+            "只重新打开真正受影响",
             "为每个子任务分别指定",
             "父代理规范任务名",
             "multi_agent_version=v2",
@@ -1353,8 +1490,8 @@ class SkillContractTests(unittest.TestCase):
             "不设置同时调用数字",
             "不在每个任务重新搜索费率",
             "链路图只是辅助说明",
-            "主任务链锚点",
-            "不能只总结最后一条消息",
+            "未完成要求锚点",
+            "此前已经交付的完成项不重复总结",
             "multi_agent_version=v2",
             "include_instructions=false",
             "ALL_TOOLS",
@@ -1392,7 +1529,7 @@ class SkillContractTests(unittest.TestCase):
             "根本准则",
             "项目级父代理跨会话记忆",
             "用户全局文件边界",
-            "主任务链连续性与最终说明",
+            "未完成要求锚点与当前交付",
             "任务类型与任务类型组",
             "主任务链与辅助链入口",
             "工具、子代理与调用规则",
@@ -1435,11 +1572,9 @@ class SkillContractTests(unittest.TestCase):
         for term in (
             "# 代理调用和精简流程",
             "插件标识：`codex-lean-stack`",
-            "原版 Codex 已经提供并行子代理",
-            "本插件不重复实现这些底层能力",
-            "Stock Codex already provides parallel subagents",
             "## 中文",
             "### 调用前",
+            "首条说明先到",
             "### 运行中",
             "### 收口与复用",
             "### 精简与安全",
@@ -1447,6 +1582,7 @@ class SkillContractTests(unittest.TestCase):
             "### 不调用代理的情况",
             "## English",
             "### Before delegation",
+            "A fast first explanation",
             "### While agents run",
             "### Closing and reuse",
             "### Process removal and safety",
@@ -1481,6 +1617,7 @@ class SkillContractTests(unittest.TestCase):
             "skills/lean-stack/references/specialist-memory.md",
             "skills/lean-stack/references/write-parallelism.md",
             "skills/lean-stack/references/anti-overengineering.md",
+            "skills/lean-stack/references/ablation-loop.md",
             "Jiao-Jie.md",
         ):
             self.assertIn(linked_authority, self.readme)

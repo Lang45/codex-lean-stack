@@ -2,17 +2,18 @@
 
 插件标识：`codex-lean-stack`
 
-
-
 ## 中文
 
 ### 调用前
 
-1. **工具先行。** 短命令、批量查询和步骤确定的工作直接用工具或持续终端完成，不启动只会代跑命令的模型子代理。
-2. **一次调用判断。** 任务已就绪、边界清楚、可独立核验、需要持续模型判断且有质量或速度收益时直接调用，不叠加一串互相重复的审批门槛。
-3. **不追求代理数量。** 插件使用运行环境的真实并发容量，但容量只是上限，不设置“必须调用几个”或“必须占满”的目标。
-4. **先分任务类型再选代理。** 父代理先判断具体任务类型并匹配或建立运行时任务类型组，之后才复用保留子代理或定制新子代理。
-5. **联合选择完整配置。** 模型、思考程度和速度按任务类型、风险、证据、时延和成本一起确定，不按三个单列分别凑数。
+1. **首条说明先到。** 每次要求先快速说明当前理解、立即动作和必要边界，需要工具或代理时随即继续、不等确认；能直接答完时直接给答案，不重复铺垫。
+2. **锚点只保留剩余要求。** 已完成并在上一条回复中交付的要求自动退出；纠正只重新打开受影响项，“继续”只恢复尚未完成或尚未交付的事项。
+3. **工具先行。** 短命令、批量查询和步骤确定的工作直接用工具或持续终端完成，不启动只会代跑命令的模型子代理。
+4. **复杂 PowerShell 及时落到脚本。** 简单命令仍内联；多层引号、嵌套 JSON/正则、反引号、多行逻辑或复杂变量插值直接写入任务专属临时 `.ps1`。首次失败确认是解析或转义后就停止改写 one-liner，后续只编辑同一脚本；脚本不入库、不含秘密，清理时进入 Windows 回收站或任务专属 `待删文件`。
+5. **一次调用判断。** 任务已就绪、边界清楚、可独立核验、需要持续模型判断且有质量或速度收益时直接调用，不叠加一串互相重复的审批门槛。
+6. **不追求代理数量。** 插件使用运行环境的真实并发容量，但容量只是上限，不设置“必须调用几个”或“必须占满”的目标。
+7. **先分任务类型再选代理。** 父代理先判断具体任务类型并匹配或建立运行时任务类型组，之后才复用保留子代理或定制新子代理。
+8. **联合选择完整配置。** 模型、思考程度和速度按任务类型、风险、证据、时延和成本一起确定，不按三个单列分别凑数。
 
 ### 运行中
 
@@ -46,6 +47,7 @@
 5. **同一规则只有一个权威源。** README 只解释用户需要知道的行为，详细规则留在技能和参考文档，不在 UI、流程图、测试和交接中逐字维护多份副本。
 6. **没有后台编排系统。** 插件不建立认领数据库、锁租约、代理评分、心跳服务、守护进程或第二套任务状态机。
 7. **删除保持可恢复。** 普通文件进入 Windows 回收站，重要文件进入任务或插件专属 `待删文件`；委派不自动获得提交、推送、部署、外部消息或重启权限。
+8. **消融只在你明确要求时启动。** 说“进行消融实验”或明确要求精简当前代码/设计后，一个不含作者推理历史的新上下文每次真实删除、内联或合并一个候选，并用同一验收集比较前后；改名、搬移或再包一层不算精简，核心功能和设计意图先冻结。防御候选同时按发生频率、影响、可检测性和人工恢复成本判断：可检测、可人工修复的极低频问题不默认增加自动补偿或自愈，安全、权限、数据完整性或不可逆损失仍保留相称防护。
 
 ### 调用流程
 
@@ -77,11 +79,14 @@
 
 ### Before delegation
 
-1. **Tool first.** Run deterministic commands, batch queries, and long predictable processes directly instead of spawning a model to relay an exit code.
-2. **One call decision.** Delegate a ready, bounded, independently verifiable task when it needs continuing judgment and offers a real quality or speed gain.
-3. **Capacity is not a quota.** Use available runtime capacity without targeting a fixed agent count or filling every slot.
-4. **Classify before selecting.** Identify the task type and runtime task-type group before reusing a retained agent or configuring a new one.
-5. **Select one complete configuration.** Choose model, reasoning effort, and speed together from task type, risk, evidence, latency, and cost.
+1. **A fast first explanation.** State the current understanding, immediate action, and necessary boundary first, then continue tool or agent work without waiting for acknowledgement; answer directly when no work preface is needed.
+2. **The anchor contains only remaining work.** A completed requirement leaves the active list after delivery; a correction reopens only affected work, and “continue” resumes only unfinished or not-yet-delivered items.
+3. **Tool first.** Run deterministic commands, batch queries, and long predictable processes directly instead of spawning a model to relay an exit code.
+4. **Move complex PowerShell into a script.** Keep simple commands inline; use a task-scoped temporary `.ps1` for nested quoting, JSON/regex, backticks, multiline logic, or complex interpolation. After the first confirmed parse or escaping failure, stop rewriting the one-liner and edit the same script; keep it out of the repository and free of secrets, then move it recoverably to the Windows Recycle Bin or a scoped `待删文件` when cleaning up.
+5. **One call decision.** Delegate a ready, bounded, independently verifiable task when it needs continuing judgment and offers a real quality or speed gain.
+6. **Capacity is not a quota.** Use available runtime capacity without targeting a fixed agent count or filling every slot.
+7. **Classify before selecting.** Identify the task type and runtime task-type group before reusing a retained agent or configuring a new one.
+8. **Select one complete configuration.** Choose model, reasoning effort, and speed together from task type, risk, evidence, latency, and cost.
 
 ### While agents run
 
@@ -115,6 +120,7 @@
 5. **Keep one authoritative source.** README explains the user-facing behavior while detailed rules remain in the skill and focused references.
 6. **No background orchestrator.** The plugin creates no claim database, lease system, scorecard, heartbeat service, daemon, or second task state machine.
 7. **Cleanup remains recoverable.** Ordinary files go to the Windows Recycle Bin; important files go to a scoped `待删文件`, and delegation grants no extra external authority.
+8. **Ablation is explicitly requested.** When asked to run an ablation or simplify the current code or design, a fresh context with no author rationale removes, inlines, or merges one candidate at a time and reruns the same acceptance checks; renaming, moving, or wrapping it does not count, and core behavior is frozen first. Defensive candidates are judged by frequency, impact, detectability, and manual recovery cost: detectable, manually recoverable outliers do not automatically earn compensation or self-healing, while security, permission, data-integrity, and irreversible-loss protections remain proportionate to impact.
 
 ## 安装与使用 / Install and use
 
@@ -156,6 +162,7 @@ py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace <marke
 - [全局领域经验 / Global-domain experience](skills/lean-stack/references/specialist-memory.md)
 - [可写子代理并行 / Writable parallelism](skills/lean-stack/references/write-parallelism.md)
 - [反 AI 过度工程 / Anti-overengineering](skills/lean-stack/references/anti-overengineering.md)
+- [消融反馈循环 / Ablation loop](skills/lean-stack/references/ablation-loop.md)
 - [项目交接 / Project handoff](Jiao-Jie.md)
 
 本仓库是唯一可编辑源码；安装缓存只用于核对。提交代码前运行当前改动真正影响的最窄检查。
