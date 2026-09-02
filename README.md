@@ -2,9 +2,7 @@
 
 插件标识：`codex-lean-stack`
 
-原版 Codex 已经提供并行子代理、自定义 TOML 代理、模型与思考程度配置、运行中纠偏和 Git 工作树；本插件不重复实现这些底层能力，而是补上可审计的调用、交流、收口、经验和精简流程。原版能力见 [OpenAI Codex 子代理文档](https://learn.chatgpt.com/docs/agent-configuration/subagents?surface=app)与[工作树文档](https://learn.chatgpt.com/docs/environments/git-worktrees)。
 
-Stock Codex already provides parallel subagents, custom TOML agents, model and reasoning configuration, runtime steering, and Git worktrees. This plugin adds explicit, auditable rules for calling, communication, closeout, experience, and process removal.
 
 ## 中文
 
