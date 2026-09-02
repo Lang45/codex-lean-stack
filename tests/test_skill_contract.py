@@ -70,7 +70,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("普通工作", content)
             self.assertIn("质量优先", content)
             self.assertIn("速度优先", content)
-        for readme_term in ("提高质量或缩短时间", "风险", "成本"):
+        for readme_term in ("质量或速度收益", "风险", "成本"):
             self.assertIn(readme_term, self.readme)
         for floor in ("安全", "权限", "数据完整性", "诚实证据"):
             self.assertIn(floor, self.skill + self.readme)
@@ -354,7 +354,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("工具", content)
             self.assertIn("短命令", content)
             self.assertIn("后台", content)
-        for readme_term in ("先用工具", "短命令", "不启动模型子代理"):
+        for readme_term in ("工具先行", "短命令", "模型子代理"):
             self.assertIn(readme_term, self.readme)
         self.assertIn("不启动模型子代理", self.skill)
         self.assertIn("一次工具调用并发运行", self.flowcharts)
@@ -647,8 +647,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("语义审查不是所有主任务", self.skill)
         self.assertIn("调查、解释、简单工具工作和纯只读任务", self.skill)
         self.assertIn("只重跑受影响检查", self.skill)
-        self.assertIn("run the narrowest checks affected by your change", self.readme)
-        self.assertIn("只运行受影响的最窄检查", self.readme)
+        self.assertIn("Run only affected checks", self.readme)
+        self.assertIn("测试只覆盖受影响边界", self.readme)
 
     def test_parent_parallelism_permissions_and_source_coverage_remain(self) -> None:
         combined = self.skill + self.delegation + self.write_parallelism + self.readme
@@ -1431,27 +1431,47 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("只有用户当次明确同意时才能修改", combined)
 
     def test_readme_is_a_concrete_bilingual_agent_calling_guide(self) -> None:
-        self.assertLessEqual(len(self.readme.splitlines()), 140)
+        self.assertLessEqual(len(self.readme.splitlines()), 190)
         for term in (
             "# 代理调用和精简流程",
             "插件标识：`codex-lean-stack`",
-            "决定什么时候直接用工具、什么时候调用代理",
-            "when to use tools, when to call agents",
+            "原版 Codex 已经提供并行子代理",
+            "本插件不重复实现这些底层能力",
+            "Stock Codex already provides parallel subagents",
             "## 中文",
-            "### 具体功能",
+            "### 调用前",
+            "### 运行中",
+            "### 收口与复用",
+            "### 精简与安全",
             "### 调用流程",
             "### 不调用代理的情况",
             "## English",
-            "### Concrete features",
+            "### Before delegation",
+            "### While agents run",
+            "### Closing and reuse",
+            "### Process removal and safety",
             "## 安装与使用 / Install and use",
             "## 文档 / Docs",
             "official OpenAI plugin documentation",
             "OpenAI 官方插件文档",
-            "模型 + 思考程度 + 速度",
-            "支持协作父代理",
+            "Luna 使用真实内部交流",
+            "multi_agent_version=v2",
+            "agent_message",
+            "子代理开头主动声明自己",
+            "父代理不中断主线",
+            "同类子任务可以复制加速",
+            "变体只为真实改进",
+            "子代理可以成为协作父代理",
+            "SOURCE_COVERAGE",
+            "子代理会积累经过采用的经验",
+            "UUID `run_id`",
+            "`ensure` 和 `improve`",
             "没有项目保留层",
-            "同一输入不重复散列",
-            "只运行受影响的最窄检查",
+            "没有后台编排系统",
+            "Verified Luna messaging",
+            "Copies accelerate repeated work",
+            "Accepted work becomes experience",
+            "No background orchestrator",
             "普通文件进入 Windows 回收站",
         ):
             self.assertIn(term, self.readme)
@@ -1459,6 +1479,7 @@ class SkillContractTests(unittest.TestCase):
             "skills/lean-stack/SKILL.md",
             "skills/lean-stack/references/delegation.md",
             "skills/lean-stack/references/specialist-memory.md",
+            "skills/lean-stack/references/write-parallelism.md",
             "skills/lean-stack/references/anti-overengineering.md",
             "Jiao-Jie.md",
         ):
