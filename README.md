@@ -12,8 +12,9 @@
 4. **复杂 PowerShell 及时落到脚本。** 简单命令仍内联；多层引号、嵌套 JSON/正则、反引号、多行逻辑或复杂变量插值直接写入任务专属临时 `.ps1`。首次失败确认是解析或转义后就停止改写 one-liner，后续只编辑同一脚本；脚本不入库、不含秘密，清理时进入 Windows 回收站或任务专属 `待删文件`。
 5. **一次调用判断。** 任务已就绪、边界清楚、可独立核验、需要持续模型判断且有质量或速度收益时直接调用，不叠加一串互相重复的审批门槛。
 6. **不追求代理数量。** 插件使用运行环境的真实并发容量，但容量只是上限，不设置“必须调用几个”或“必须占满”的目标。
-7. **先分任务类型再选代理。** 父代理先判断具体任务类型并匹配或建立运行时任务类型组，之后才复用保留子代理或定制新子代理。
-8. **联合选择完整配置。** 模型、思考程度和速度按任务类型、风险、证据、时延和成本一起确定，不按三个单列分别凑数。
+7. **先分任务类型再选代理。** 按职责、输入与证据匹配保留角色；描述不足时通过 `status --for-routing` 读取一次跨项目目录并复用，不因项目名或所需档位不同就另建角色。
+8. **联合选择完整配置。** 所有父代理按三原则比较完整的“模型 + 思考程度 + 速度”组合，三个字段可以一起调整，同一模型不固定一档；Luna 默认快速。保留用户的父代理选择，独立子任务显式选配，必要时只适配当前调用；声明直接写具体配置，实际冲突另行说明。
+9. **交接能直接接着做。** 跨项目交接保留用户操作验收、权威路径、已否定路线和末尾唯一当前快照；具体规则见[可执行项目交接](skills/lean-stack/references/project-handoff.md)。
 
 ### 运行中
 
@@ -43,7 +44,7 @@
 1. **兼容只服务现实消费者。** 没有已安装或已发布版本、真实调用方、用户数据、公共约定或持久状态，就不写 legacy reader、双写、永久别名或回退分支。
 2. **决定不实现的功能不留维护物。** 不为被拒绝的功能保留分支、桩、TODO、解释其缺席的注释、假想测试、预留字段或空目录。
 3. **哈希只在必要位置计算一次。** 哈希只服务所有权、CAS、迁移、恢复、真实产物和最终安装一致性；同一输入未变化时复用已有结果，不反复散列全树。
-4. **测试只覆盖受影响边界。** 迭代时先跑最窄检查，代码、依赖、配置和环境没变就复用通过证据，只有真实高风险边界变化才扩大验证。
+4. **测试只覆盖受影响边界。** 迭代时先跑最窄检查，代码、依赖、配置和环境没变就复用通过证据，只有真实高风险边界变化才扩大验证。复核修补后做增量检查；剩余疑问需要真实运行时，进入已授权的窄验证，不循环追加静态意见。
 5. **同一规则只有一个权威源。** README 只解释用户需要知道的行为，详细规则留在技能和参考文档，不在 UI、流程图、测试和交接中逐字维护多份副本。
 6. **没有后台编排系统。** 插件不建立认领数据库、锁租约、代理评分、心跳服务、守护进程或第二套任务状态机。
 7. **删除保持可恢复。** 普通文件进入 Windows 回收站，重要文件进入任务或插件专属 `待删文件`；委派不自动获得提交、推送、部署、外部消息或重启权限。
@@ -85,8 +86,9 @@
 4. **Move complex PowerShell into a script.** Keep simple commands inline; use a task-scoped temporary `.ps1` for nested quoting, JSON/regex, backticks, multiline logic, or complex interpolation. After the first confirmed parse or escaping failure, stop rewriting the one-liner and edit the same script; keep it out of the repository and free of secrets, then move it recoverably to the Windows Recycle Bin or a scoped `待删文件` when cleaning up.
 5. **One call decision.** Delegate a ready, bounded, independently verifiable task when it needs continuing judgment and offers a real quality or speed gain.
 6. **Capacity is not a quota.** Use available runtime capacity without targeting a fixed agent count or filling every slot.
-7. **Classify before selecting.** Identify the task type and runtime task-type group before reusing a retained agent or configuring a new one.
-8. **Select one complete configuration.** Choose model, reasoning effort, and speed together from task type, risk, evidence, latency, and cost.
+7. **Classify before selecting.** Match retained roles by responsibility, inputs, and evidence; when descriptions are insufficient, read `status --for-routing` once and reuse the cross-project catalog instead of creating a role for each project or effort level.
+8. **Select one complete configuration.** Every parent compares complete model, reasoning, and speed combinations under the three principles; all three may change together, with no fixed effort per model. Luna defaults to Fast. Preserve the user's parent choice, adapt only the current subtask when needed, and disclose concrete settings with a separate note only for actual conflicts.
+9. **Make handoffs actionable.** Preserve user-operation acceptance, authoritative paths, rejected routes, and one current snapshot; see [project handoffs](skills/lean-stack/references/project-handoff.md).
 
 ### While agents run
 
@@ -116,7 +118,7 @@
 1. **Compatibility needs a real consumer.** No shipped version, caller, user data, public contract, or persistent state means no legacy reader, dual write, permanent alias, or fallback branch.
 2. **Rejected features leave no scaffolding.** Keep no branch, stub, TODO, absence comment, speculative test, reserved field, or empty directory for a feature that will not exist.
 3. **Hash only risk-relevant targets once.** Reuse results for unchanged inputs and reserve hashing for ownership, CAS, migration, recovery, real artifacts, and final install parity.
-4. **Run only affected checks.** Reuse unchanged evidence and broaden validation only when the changed behavior or risk requires it.
+4. **Run only affected checks.** Reuse unchanged evidence and broaden validation only when the changed behavior or risk requires it. Check review fixes incrementally and move to authorized runtime validation when more static opinions cannot resolve the remaining question.
 5. **Keep one authoritative source.** README explains the user-facing behavior while detailed rules remain in the skill and focused references.
 6. **No background orchestrator.** The plugin creates no claim database, lease system, scorecard, heartbeat service, daemon, or second task state machine.
 7. **Cleanup remains recoverable.** Ordinary files go to the Windows Recycle Bin; important files go to a scoped `待删文件`, and delegation grants no extra external authority.

@@ -65,6 +65,21 @@ class SkillContractTests(unittest.TestCase):
             )
         )
 
+    def test_entry_and_verification_nodes_are_distinct_in_main_flow(self) -> None:
+        main = self.flowcharts.split("```mermaid", 1)[1].split("```", 1)[0]
+        labels = (
+            r"(\w+)\{新会话开始",
+            r"(\w+)\[父代理亲自完整读取",
+            r"(\w+)\[修复真实发现并运行必要验证",
+            r"(\w+)\{必要验证通过吗",
+        )
+        nodes = []
+        for label in labels:
+            match = re.search(label, main)
+            self.assertIsNotNone(match, label)
+            nodes.append(match.group(1))
+        self.assertEqual(len(nodes), len(set(nodes)), "entry and validation nodes must not merge")
+
     def test_value_sensitive_priority_and_safety_floor_remain(self) -> None:
         for content in (self.skill, self.routing, self.flowcharts):
             self.assertIn("高价值工作", content)
@@ -583,6 +598,27 @@ class SkillContractTests(unittest.TestCase):
             "不能一次改变多个轴",
         ):
             self.assertNotIn(removed_hard_rule, combined)
+
+        # Candidate selection must not regress into a one-axis experiment recipe.
+        self.assertIn("允许三个字段同时变化", self.cost)
+        self.assertIn("普通配置选择不强制实验或穷举", self.cost)
+        self.assertNotIn("缺推理深度才提高档位，能力不足才换模型", self.cost)
+
+    def test_cross_project_reuse_discovery_and_handoff_receipt_are_actionable(self) -> None:
+        for content in (self.skill, self.memory):
+            compact = re.sub(r"\s+", "", content)
+            self.assertIn("status--for-routing", compact)
+            self.assertIn("绝对目录", content)
+        self.assertIn("有界经验", self.skill)
+        self.assertIn("必要经验", self.memory)
+        self.assertIn("这不是每次委派的前置检查", self.skill)
+        self.assertNotIn("普通分派不访问数据库", self.skill)
+        self.assertIn("不冒充已复用保留身份", self.skill)
+        self.assertIn("临时调用不记作原保留身份的成功运行", self.memory)
+        self.assertIn("不能用“已调用插件”代替交付", self.skill)
+        self.assertIn("完整读取完成后", self.skill)
+        self.assertIn("只能在实际读完后报告", self.skill)
+        self.assertIn("不为补通知重复读取", self.skill)
 
     def test_retention_and_experience_are_default_nonblocking_side_chain(self) -> None:
         combined = (
@@ -1482,7 +1518,7 @@ class SkillContractTests(unittest.TestCase):
             "已经决定不实现的假想功能",
             "第二事实源",
             "schema v4",
-            "17名全局领域保留子代理",
+            "agents.py status",
             "只追加原始经验和纠正事件",
             "经验数量不封顶",
             "经验摘要压缩",

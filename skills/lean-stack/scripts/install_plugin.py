@@ -22,6 +22,7 @@ PLUGIN_NAME = "codex-lean-stack"
 DEFAULT_INVOCATION_LINE = (
     "默认调用已安装的 `codex-lean-stack` 插件；是否启动子代理仍由插件自身规则决定。"
 )
+USER_GLOBAL_INVOCATION_LINE = "必须调用已安装的 `codex-lean-stack` 插件。"
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_MARKETPLACE_BYTES = 4 * 1024 * 1024
 MAX_AGENTS_BYTES = 1024 * 1024
@@ -227,11 +228,15 @@ def _atomic_replace(
 
 def _preflight_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
     _, text, _, _, _ = _read_agents(agents_path)
+    lines = text.splitlines()
     return {
         "ok": True,
         "action": (
             "agents_default_present"
-            if DEFAULT_INVOCATION_LINE in text.splitlines()
+            if (
+                DEFAULT_INVOCATION_LINE in lines
+                or USER_GLOBAL_INVOCATION_LINE in lines
+            )
             else "agents_default_ready"
         ),
         "agents_path": str(agents_path),
@@ -240,7 +245,8 @@ def _preflight_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
 
 def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
     original, text, has_bom, newline, mode = _read_agents(agents_path)
-    if DEFAULT_INVOCATION_LINE in text.splitlines():
+    lines = text.splitlines()
+    if DEFAULT_INVOCATION_LINE in lines or USER_GLOBAL_INVOCATION_LINE in lines:
         return {
             "ok": True,
             "action": "agents_default_present",

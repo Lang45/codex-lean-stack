@@ -75,6 +75,28 @@ class CostCheckTests(unittest.TestCase):
         self.assertFalse(recorded["network_used"])
         self.assertFalse(recorded["plugin_modified"])
 
+    def test_future_record_and_existing_future_state_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = self.make_home(temporary)
+            future = dt.datetime(2099, 1, 1, tzinfo=UTC)
+            with self.assertRaisesRegex(COST_CHECK.CostCheckError, "cannot be in the future"):
+                self.record(home, future)
+
+            state_dir = home / "lean-stack"
+            state_dir.mkdir()
+            (state_dir / COST_CHECK.STATE_NAME).write_text(
+                json.dumps(
+                    {"version": 1, "checked_at": "2099-01-01T00:00:00Z"}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(COST_CHECK.CostCheckError, "timestamp is in the future"):
+                COST_CHECK.status(
+                    codex_home=home,
+                    now=dt.datetime(2026, 9, 5, tzinfo=UTC),
+                )
+
     def test_existing_state_requires_its_current_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = self.make_home(temporary)

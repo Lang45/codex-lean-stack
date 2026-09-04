@@ -50,7 +50,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         role_instructions: str = "交付直接可消费的结果和必要证据。",
         model: str = "gpt-5.6-terra",
         effort: str = "high",
-        speed: str = "standard",
+        speed: str | None = None,
         expected_sha256: str | None = None,
         global_domain_key: str = "interface-binding-diagnostics",
         global_contract: dict[str, object] | None = None,
@@ -300,6 +300,11 @@ class SpecialistRegistryTests(unittest.TestCase):
             "只有任务卡明确写允许调用其他或新建 Codex 父代理为是并给出跨任务范围",
             "create_thread、read_thread、wait_threads 或 send_message_to_thread",
             "不需要再向用户询问",
+            "所有跨任务动作还必须同时满足当前工具合同",
+            "create_thread 要求用户明确提出新建任务",
+            "任务卡或插件默认授权不能替代",
+            "不能为内部委派创建用户可见新任务",
+            "已有用户授权无需重复询问",
             "跨任务工具不能冒充内部消息",
             "不得建立非授权留言板、缓存或日志暗渠",
             "不得共享凭据或私密数据",
@@ -487,6 +492,90 @@ class SpecialistRegistryTests(unittest.TestCase):
             instructions.index("最终回复固定写"),
             instructions.rindex(opening),
         )
+
+    def test_ensure_omitted_speed_defaults_luna_fast_and_other_models_standard(self) -> None:
+        luna = self.ensure(
+            role_key="luna-default-speed-review",
+            global_domain_key="luna-default-speed-review",
+            model="gpt-5.6-luna",
+            effort="medium",
+        )
+        terra = self.ensure(
+            role_key="terra-default-speed-review",
+            global_domain_key="terra-default-speed-review",
+            model="gpt-5.6-terra",
+            effort="medium",
+        )
+        explicit_standard = self.ensure(
+            role_key="luna-explicit-standard-review",
+            global_domain_key="luna-explicit-standard-review",
+            model="gpt-5.6-luna",
+            effort="medium",
+            speed="standard",
+        )
+
+        luna_payload = tomllib.loads(Path(luna["path"]).read_text(encoding="utf-8"))
+        terra_payload = tomllib.loads(Path(terra["path"]).read_text(encoding="utf-8"))
+        standard_payload = tomllib.loads(
+            Path(explicit_standard["path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(luna_payload["service_tier"], "fast")
+        self.assertIn("速度：快速", luna_payload["developer_instructions"])
+        self.assertNotIn("service_tier", terra_payload)
+        self.assertIn("速度：标准", terra_payload["developer_instructions"])
+        self.assertNotIn("service_tier", standard_payload)
+
+    def test_luna_default_fast_reconfiguration_requires_cas_and_preserves_identity(self) -> None:
+        created = self.ensure(
+            role_key="luna-default-reconfiguration",
+            global_domain_key="luna-default-reconfiguration",
+            model="gpt-5.6-luna",
+            effort="medium",
+            speed="standard",
+        )
+        improved = self.improve_with_lesson(
+            name=created["name"],
+            expected_sha256=created["sha256"],
+            lesson="安全重配必须保留身份、所有权和既有经验。",
+            event_id=str(uuid.uuid4()),
+        )
+        path = Path(created["path"])
+        before = path.read_bytes()
+
+        preview = self.ensure(
+            role_key="luna-default-reconfiguration",
+            global_domain_key="luna-default-reconfiguration",
+            model="gpt-5.6-luna",
+            effort="medium",
+        )
+        self.assertEqual(preview["action"], "reconfiguration_required")
+        self.assertEqual(path.read_bytes(), before)
+
+        reconfigured = self.ensure(
+            role_key="luna-default-reconfiguration",
+            global_domain_key="luna-default-reconfiguration",
+            model="gpt-5.6-luna",
+            effort="medium",
+            expected_sha256=improved["sha256"],
+        )
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(reconfigured["action"], "reconfigured")
+        self.assertEqual(reconfigured["agent_id"], created["agent_id"])
+        self.assertEqual(reconfigured["owner_token"], created["owner_token"])
+        self.assertEqual(reconfigured["path"], created["path"])
+        self.assertEqual(payload["service_tier"], "fast")
+        self.assertIn("安全重配必须保留身份", payload["developer_instructions"])
+
+        fast_bytes = path.read_bytes()
+        explicit_standard = self.ensure(
+            role_key="luna-default-reconfiguration",
+            global_domain_key="luna-default-reconfiguration",
+            model="gpt-5.6-luna",
+            effort="medium",
+            speed="standard",
+        )
+        self.assertEqual(explicit_standard["action"], "reconfiguration_required")
+        self.assertEqual(path.read_bytes(), fast_bytes)
 
     def test_distinct_reusable_work_gets_distinct_writable_or_read_specialists(self) -> None:
         reader = self.ensure(role_key="qml-binding-diagnostics", authority="read")
@@ -773,6 +862,39 @@ class SpecialistRegistryTests(unittest.TestCase):
 
         self.assertEqual(old.read_bytes(), before)
         self.assertNotEqual(old, self.registry.db_path)
+
+    def test_astra_ultra_configuration_is_preserved_and_idempotent(self) -> None:
+        first = self.ensure(model="gpt-6-astra", effort="ultra")
+        second = self.ensure(model="gpt-6-astra", effort="ultra")
+        payload = tomllib.loads(Path(first["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["model"], "gpt-6-astra")
+        self.assertEqual(payload["model_reasoning_effort"], "ultra")
+        self.assertEqual(second["action"], "reused")
+        self.assertEqual(first["sha256"], second["sha256"])
+
+    def test_configuration_evidence_boundary_survives_experience_rewrite(self) -> None:
+        for speed in ("standard", "fast"):
+            with self.subTest(speed=speed):
+                created = self.ensure(
+                    role_key=f"configuration-evidence-{speed}",
+                    global_domain_key=f"configuration-evidence-{speed}",
+                    speed=speed,
+                )
+                before = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
+                self.improve_with_lesson(
+                    name=created["name"], expected_sha256=created["sha256"],
+                    lesson="区分配置请求和实际生效证据，避免错误报告运行状态。",
+                    event_id=str(uuid.uuid4()),
+                )
+                after = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
+                for payload in (before, after):
+                    instructions = payload["developer_instructions"]
+                    for boundary in ("不附请求值", "配置声明不等于实测速度", "无法选择所需档位", "修改全局配置"):
+                        self.assertIn(boundary, instructions)
+                self.assertEqual(before.get("service_tier"), after.get("service_tier"))
+                self.assertEqual(after.get("service_tier"), "fast" if speed == "fast" else None)
+                self.assertEqual(before["model"], after["model"])
+                self.assertEqual(before["model_reasoning_effort"], after["model_reasoning_effort"])
 
     def test_experience_rewrite_preserves_fast_speed_configuration(self) -> None:
         created = self.ensure(role_key="fast-regression-review", speed="fast")
@@ -1734,6 +1856,77 @@ class SpecialistRegistryTests(unittest.TestCase):
                 origin_terms=("当前任务来源",),
             )
 
+    def test_status_for_routing_is_bounded_sorted_and_preserves_owned_validation(self) -> None:
+        later = self.ensure(
+            role_key="zeta-lifecycle-review",
+            global_domain_key="zeta-lifecycle-review",
+            display_name="生命周期复核员",
+            description="复核生命周期身份、事务和恢复边界。",
+            authority="write",
+        )
+        self.ensure(
+            role_key="alpha-source-review",
+            global_domain_key="alpha-source-review",
+            display_name="来源复核员",
+            description="复核来源覆盖和证据边界。",
+            model="gpt-5.6-luna",
+            effort="medium",
+        )
+
+        catalog = self.registry.status(for_routing=True)
+
+        self.assertEqual(
+            set(catalog),
+            {"ok", "action", "for_routing", "registered_agents", "registered_count"},
+        )
+        self.assertTrue(catalog["for_routing"])
+        self.assertEqual(catalog["registered_count"], 2)
+        items = catalog["registered_agents"]
+        self.assertEqual(
+            [item["global_domain_key"] for item in items],
+            ["alpha-source-review", "zeta-lifecycle-review"],
+        )
+        self.assertEqual(
+            set(items[0]),
+            {
+                "name", "description", "global_domain_key", "global_contract",
+                "model", "reasoning_effort", "speed", "authority",
+            },
+        )
+        self.assertEqual(items[0]["description"], "来源复核员：复核来源覆盖和证据边界。")
+        self.assertEqual(items[0]["speed"], "fast")
+        self.assertEqual(items[1]["authority"], "write")
+
+        path = Path(later["path"])
+        path.write_bytes(path.read_bytes() + b"\n")
+        with self.assertRaisesRegex(agents.SpecialistError, "content drifted"):
+            self.registry.status(for_routing=True)
+
+    def test_status_for_routing_cli_passthrough_and_ordinary_status_compatibility(self) -> None:
+        self.ensure()
+        ordinary = self.registry.status()
+        self.assertNotIn("for_routing", ordinary)
+        self.assertIn("lean_agent_files_total", ordinary)
+        self.assertIn("survival_rounds", ordinary["registered_agents"][0])
+        self.assertIn("path", ordinary["registered_agents"][0])
+        self.assertIn("sha256", ordinary["registered_agents"][0])
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = agents.main(
+                ["--codex-home", str(self.codex_home), "status", "--for-routing"]
+            )
+        catalog = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(catalog["for_routing"])
+        self.assertEqual(
+            set(catalog["registered_agents"][0]),
+            {
+                "name", "description", "global_domain_key", "global_contract",
+                "model", "reasoning_effort", "speed", "authority",
+            },
+        )
+
     def test_semantic_persistence_requires_current_origin_terms_in_api_cli_and_plan(self) -> None:
         kwargs = {
             "role_key": "missing-origin-review",
@@ -2106,6 +2299,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         created = json.loads(ensure_output.getvalue())
         self.assertEqual(ensure_exit, 0)
         self.assertEqual(created["action"], "created")
+        created_payload = tomllib.loads(
+            Path(created["path"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(created_payload["service_tier"], "fast")
 
         record_output = io.StringIO()
         with contextlib.redirect_stdout(record_output):

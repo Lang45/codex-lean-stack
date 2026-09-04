@@ -361,6 +361,12 @@ def validate_speed(value: str) -> str:
     return value
 
 
+def resolve_ensure_speed(model: str, speed: str | None) -> str:
+    if speed is not None:
+        return validate_speed(speed)
+    return "fast" if model == "gpt-5.6-luna" else "standard"
+
+
 def speed_from_payload(payload: dict[str, Any]) -> str:
     has_service_tier = "service_tier" in payload
     features = payload.get("features", {})
@@ -610,7 +616,10 @@ def base_instructions(
         "路径、模型名和原始错误用代码格式。"
         "作为可见保留子代理或其普通复制被复用时，先读取本配置末尾的可复用经验，并沿用"
         "本配置中的模型、思考程度和速度；父代理无需重复注入经验或强制重写已有配置，"
-        "由你自行声明。"
+        "由你自行声明。四行只列生成工具选定或已加载角色中的具体配置，不附请求值、"
+        "运行回执等重复括注；配置声明不等于实测速度或计费证明。只有实际配置冲突或"
+        "当前路线无法选择所需档位时，另外用一句话报告能力缺口。缺少独立速度参数时，"
+        "不能声称在 spawn_agent 中已设置速度；不猜测、不为补声明升模或修改全局配置。"
         "默认协作角色是普通子代理，不自行再委派。只有当前任务说明同时明确写出“协作角色: "
         "协作父代理”、“允许下游委派: 是”和有限下游范围，而且你真实拥有顶层 "
         "collaboration.spawn_agent 时，才可在获批子项目内成为协作父代理。必须直接调用该工具，"
@@ -631,7 +640,10 @@ def base_instructions(
         "允许调用其他或新建 Codex 父代理为是并给出跨任务范围时，才可使用 create_thread、"
         "read_thread、wait_threads 或 send_message_to_thread；整合父代理按三项原则给出这项"
         "任务卡授权，不需要再向用户询问。跨任务工具不能冒充内部消息，也不能用共享文件建立"
-        "横向通信。不得建立非授权留言板、"
+        "横向通信。所有跨任务动作还必须同时满足当前工具合同；create_thread 要求用户明确提出"
+        "新建任务时，任务卡或插件默认授权不能替代，也不能为内部委派创建用户可见新任务；"
+        "已有用户授权无需重复询问。"
+        "不得建立非授权留言板、"
         "缓存或日志暗渠，不得共享凭据或私密数据，不得以集体利益、未回复或无人否决扩大权限，"
         "也不得伪造、删除、编辑或隐藏消息、工具调用、测试、日志、文件变更、身份、权限和来源。"
         "最近的协作授权不改变原有删除、删减或候选清理的资格与尺度；原规则判定应删的目标仍处理，"
@@ -1771,7 +1783,7 @@ class SpecialistRegistry:
         model: str,
         effort: str,
         authority: str,
-        speed: str = "standard",
+        speed: str | None = None,
         expected_sha256: str | None = None,
         global_domain_key: str,
         global_contract: dict[str, Any] | str,
@@ -1784,7 +1796,7 @@ class SpecialistRegistry:
         model = validate_model(model)
         effort = validate_effort(effort)
         authority = validate_authority(authority)
-        speed = validate_speed(speed)
+        speed = resolve_ensure_speed(model, speed)
         terms = normalize_origin_terms(origin_terms)
         global_domain_key = validate_global_domain_key(global_domain_key)
         canonical_contract, contract_digest, contract = normalize_global_contract(
@@ -2429,7 +2441,7 @@ class SpecialistRegistry:
         finally:
             connection.close()
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, for_routing: bool = False) -> dict[str, Any]:
         connection = self.connect()
         try:
             rows = list(
@@ -2443,6 +2455,7 @@ class SpecialistRegistry:
                 )
             )
             registered: list[dict[str, Any]] = []
+            routing_catalog: list[dict[str, Any]] = []
             for row in rows:
                 _, path, _, payload, _ = self._owned_agent(
                     connection,
@@ -2452,25 +2465,47 @@ class SpecialistRegistry:
                 authority = (
                     "write" if payload.get("sandbox_mode") == "workspace-write" else "read"
                 )
-                registered.append(
-                    {
+                speed = speed_from_payload(payload)
+                contract = json.loads(row["global_contract"])
+                registered.append({
+                    "name": row["name"],
+                    "role_key": row["role_key"],
+                    "path": str(path),
+                    "model": payload.get("model"),
+                    "reasoning_effort": payload.get("model_reasoning_effort"),
+                    "speed": speed,
+                    "authority": authority,
+                    "sha256": row["expected_sha256"],
+                    "survival_rounds": int(row["survival_rounds"]),
+                    "experience_count": int(row["experience_count"]),
+                    "scope": GLOBAL_SCOPE,
+                    "global_contract_version": int(row["global_contract_version"]),
+                    "global_domain_key": row["global_domain_key"],
+                    "global_contract": contract,
+                    "global_contract_digest": row["global_contract_digest"],
+                })
+                if for_routing:
+                    description = payload.get("description")
+                    if not isinstance(description, str):
+                        raise SpecialistError("agent description configuration is invalid")
+                    routing_catalog.append({
                         "name": row["name"],
-                        "role_key": row["role_key"],
-                        "path": str(path),
+                        "description": description,
+                        "global_domain_key": row["global_domain_key"],
+                        "global_contract": contract,
                         "model": payload.get("model"),
                         "reasoning_effort": payload.get("model_reasoning_effort"),
-                        "speed": speed_from_payload(payload),
+                        "speed": speed,
                         "authority": authority,
-                        "sha256": row["expected_sha256"],
-                        "survival_rounds": int(row["survival_rounds"]),
-                        "experience_count": int(row["experience_count"]),
-                        "scope": GLOBAL_SCOPE,
-                        "global_contract_version": int(row["global_contract_version"]),
-                        "global_domain_key": row["global_domain_key"],
-                        "global_contract": json.loads(row["global_contract"]),
-                        "global_contract_digest": row["global_contract_digest"],
-                    }
-                )
+                    })
+            if for_routing:
+                return {
+                    "ok": True,
+                    "action": "status",
+                    "for_routing": True,
+                    "registered_agents": routing_catalog,
+                    "registered_count": len(registered),
+                }
             disk_names = sorted(path.name for path in self.agents_dir.glob("lean_*.toml"))
             if len(disk_names) > MAX_MANAGED_SCAN_FILES:
                 raise AuxiliarySkipped(
@@ -3014,7 +3049,11 @@ def build_parser() -> argparse.ArgumentParser:
     ensure.add_argument("--instructions", required=True)
     ensure.add_argument("--model", required=True)
     ensure.add_argument("--reasoning-effort", required=True, choices=sorted(EFFORTS))
-    ensure.add_argument("--speed", choices=sorted(SPEEDS), default="standard")
+    ensure.add_argument(
+        "--speed",
+        choices=sorted(SPEEDS),
+        help="explicit speed; omitted Luna roles default to fast and other models to standard",
+    )
     ensure.add_argument("--authority", required=True, choices=sorted(AUTHORITIES))
     ensure.add_argument("--global-domain-key", required=True)
     ensure.add_argument(
@@ -3062,9 +3101,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(INVOCATION_KINDS),
     )
 
-    subparsers.add_parser(
+    status = subparsers.add_parser(
         "status",
         help="report registered specialists, survival rounds, and unregistered lean files",
+    )
+    status.add_argument(
+        "--for-routing",
+        action="store_true",
+        help="return a bounded reusable-domain catalog without lifecycle internals",
     )
 
     delete = subparsers.add_parser(
@@ -3140,7 +3184,7 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             invocation_kind=arguments.invocation_kind,
         )
     if arguments.command == "status":
-        return registry.status()
+        return registry.status(for_routing=arguments.for_routing)
     if arguments.command == "delete":
         return registry.delete(
             name=arguments.name,

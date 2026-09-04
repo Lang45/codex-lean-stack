@@ -147,9 +147,12 @@ def load_state(codex_home: Path) -> tuple[dt.datetime, bytes | None, Path, bool]
 def status(*, codex_home: Path, now: dt.datetime) -> dict[str, Any]:
     if now.tzinfo is None or now.utcoffset() is None:
         raise CostCheckError("current time must include a time zone")
+    now_utc = now.astimezone(dt.timezone.utc)
     checked_at, data, state_path, legacy = load_state(codex_home)
+    if checked_at > now_utc:
+        raise CostCheckError("cost-check state timestamp is in the future")
     next_check = checked_at + CHECK_INTERVAL
-    due = now.astimezone(dt.timezone.utc) >= next_check
+    due = now_utc >= next_check
     return {
         "ok": True,
         "action": "official_check_due" if due else "fixed_baseline_current",
@@ -189,6 +192,8 @@ def record(
     checked_at: dt.datetime,
     expected_state_sha256: str | None,
 ) -> dict[str, Any]:
+    if checked_at.astimezone(dt.timezone.utc) > dt.datetime.now(dt.timezone.utc):
+        raise CostCheckError("checked_at cannot be in the future")
     checked_at_text = format_time(checked_at)
     home = plain_directory(codex_home, create=False)
     state_dir = plain_directory(home / "lean-stack", create=True)

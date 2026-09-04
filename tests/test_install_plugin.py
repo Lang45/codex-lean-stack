@@ -95,6 +95,30 @@ class PluginInstallTests(unittest.TestCase):
         )
         self.assertIn("第二行\r\n第三行\r第四行", text)
 
+    def test_existing_user_global_invocation_is_not_duplicated(self) -> None:
+        original = (
+            install_plugin.USER_GLOBAL_INVOCATION_LINE + "\n# 用户的其他全局规则\n"
+        ).encode("utf-8")
+        self.agents.write_bytes(original)
+
+        preflight = install_plugin.preflight_default_invocation(self.codex_home)
+
+        def successful_runner(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"ok":true}', stderr="")
+
+        with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+            result = install_plugin.install_plugin(
+                self.plugin_root,
+                marketplace="personal",
+                marketplace_path=self.marketplace,
+                codex_home=self.codex_home,
+                runner=successful_runner,
+            )
+
+        self.assertEqual(preflight["action"], "agents_default_present")
+        self.assertFalse(result["agents"]["modified"])
+        self.assertEqual(self.agents.read_bytes(), original)
+
     def test_successful_install_adds_line_after_codex_returns_zero(self) -> None:
         self.agents.write_text("保护现有内容。\n", encoding="utf-8")
         calls: list[list[str]] = []
