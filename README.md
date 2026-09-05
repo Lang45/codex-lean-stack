@@ -1,4 +1,4 @@
-# 代理调用和精简流程
+# codex代理调用和精简流程
 
 插件标识：`codex-lean-stack`
 
