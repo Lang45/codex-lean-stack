@@ -25,6 +25,10 @@ py -3 -X utf8 .\skills\lean-stack\scripts\bump_plugin_version.py <plugin-root> `
 版本、源文件集合和哈希。仅授权升版、提交或推送时不自动重装，交付时注明缓存尚未刷新。
 用户已明确授权全局默认调用指令时，使用本插件的显式安装入口完成这唯一一次重装：
 
+用户明确给出项目内逐轮升版、推送和重装的持续授权时，在交接记录适用范围，并于每轮有改动
+且验证完成后执行；同轮已交付发布或纯查询不重复操作。持续授权不自动扩大到其他项目、
+全局用户文件或应用重启。用户明确要求每轮升版时，纯文档改动也升修订版本。
+
 ```powershell
 py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace personal
 ```

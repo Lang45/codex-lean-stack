@@ -2,19 +2,23 @@
 
 插件标识：`codex-lean-stack`
 
+主技能是简短入口：先决定工具或子代理路线，只在实际委派、写入、维护经验等动作发生时读取
+相应细则。已有规则在当前上下文复用，简单修改不预读全部手册。
+
 ## 中文
 
 ### 调用前
 
-1. **首条说明先到。** 每次要求先快速说明当前理解、立即动作和必要边界，需要工具或代理时随即继续、不等确认；能直接答完时直接给答案，不重复铺垫。
+1. **首条说明先到，过程与结果说清。** 每次要求先说明理解与动作，持续实现也交代具体进展；最终说明改动原因、实际入口、验证对象与剩余问题，内部少发确认消息不等于让用户一直等待。
 2. **锚点只保留剩余要求。** 已完成并在上一条回复中交付的要求自动退出；纠正只重新打开受影响项，“继续”只恢复尚未完成或尚未交付的事项。
 3. **工具先行。** 短命令、批量查询和步骤确定的工作直接用工具或持续终端完成，不启动只会代跑命令的模型子代理。
 4. **复杂 PowerShell 及时落到脚本。** 简单命令仍内联；多层引号、嵌套 JSON/正则、反引号、多行逻辑或复杂变量插值直接写入任务专属临时 `.ps1`。首次失败确认是解析或转义后就停止改写 one-liner，后续只编辑同一脚本；脚本不入库、不含秘密，清理时进入 Windows 回收站或任务专属 `待删文件`。
 5. **一次调用判断。** 任务已就绪、边界清楚、可独立核验、需要持续模型判断且有质量或速度收益时直接调用，不叠加一串互相重复的审批门槛。
 6. **不追求代理数量。** 插件使用运行环境的真实并发容量，但容量只是上限，不设置“必须调用几个”或“必须占满”的目标。
-7. **先分任务类型再选代理。** 按职责、输入与证据匹配保留角色；描述不足时通过 `status --for-routing` 读取一次跨项目目录并复用，不因项目名或所需档位不同就另建角色。
+7. **先分任务类型再选代理。** 按职责、输入与证据匹配保留角色；描述不足或准备因无匹配而新建角色前，通过 `status --for-routing` 核对一次目录。角色未加载或配置需要适配时，用 `recall --name <角色名>` 取得经过身份核验的职责、配置与有界经验，复用已有专长，不另造同领域记录。
 8. **联合选择完整配置。** 所有父代理按三原则比较完整的“模型 + 思考程度 + 速度”组合，三个字段可以一起调整，同一模型不固定一档；Luna 默认快速。保留用户的父代理选择，独立子任务显式选配，必要时只适配当前调用；声明直接写具体配置，实际冲突另行说明。
 9. **交接能直接接着做。** 跨项目交接保留用户操作验收、权威路径、已否定路线和末尾唯一当前快照；具体规则见[可执行项目交接](skills/lean-stack/references/project-handoff.md)。
+10. **上下文按任务需要继承。** 独立窄任务优先 `fork_turns="none"`；依赖前面决策时才加历史。新上下文任务说明显式携带职责、工具与安全边界，继承父级历史也不自动获得父级编排权限。
 
 ### 运行中
 
@@ -28,16 +32,18 @@
 8. **可以协作其他 Codex 父代理任务。** 在当前授权和三项原则内可读取、调用或新建用户可见的 Codex 任务，但必须指定唯一整合者，并与内部父子消息严格分开。
 9. **并行写入有明确所有权。** 不重叠文件可以并行修改，共享清单、接口或数据库最后集中整合；没有独立工作树时，同一物理文件只允许一个实际写入者。
 10. **来源读取有覆盖回执。** 读取会话、文档或日志的子代理返回 `SOURCE_COVERAGE`，明确来源快照、完整或部分覆盖以及剩余缺口，不把大段原始日志塞回父代理。
+11. **依赖证据可以直达队友。** 同一团队已知队友之间可通过内部消息传递来源、发现与验证程度；影响职责、共享写入或安全的变化同时告知父代理裁决，不等待确认，也不代交队友最终结果。
 
 ### 收口与复用
 
 1. **每个子代理独立交付。** 子代理达到成功条件或停止条件后在自己的线程提交结果，普通子代理不能代交、隐藏或汇总其他子代理的最终回复。
 2. **竞争不会丢掉合格成果。** 复制和变体先分别交付并被采用，再比较哪种配置更适合以后复用；竞争只选未来保留者，不抹掉本轮有效结果。
 3. **只保留全局领域角色。** 角色持久化前删除项目名、路径、版本和一次任务事实，每个领域保留一个可跨任务、跨项目、跨会话复用的休眠角色，没有项目保留层。
-4. **子代理会积累经过采用的经验。** 已核验并采用的方法与失败避免信息经过泛化、去敏和去重后追加到 SQLite；被否定经验用纠正事件退出活跃提示，不伪装成物理删除。
+4. **子代理会积累经过采用的经验。** 区分规则缺陷、执行失误和原因未明；记录情境、做法、证据与例外，扩大适用范围须有独立样本。未采用路线只留核验后的短避坑结论及重开条件；用户否定的子代理结果不得回流。仍用现有追加与纠正机制，不引入优化器或训练任务。
 5. **存活轮次只记录真实成功。** 只有子任务完成、结果被采用且线程进入 Done 后才用 UUID `run_id` 幂等记录，失败、停止、否定或仍在运行都不计数。
 6. **经验写入不阻塞主任务。** `ensure` 和 `improve` 只各做一次短提交，遇到忙锁、结构漂移、权限或文件身份问题立即跳过，不排队、不轮询、不重试。
 7. **保留角色不会常驻耗费模型。** 跨会话保留的是休眠 TOML 配置和去敏经验，当前子代理线程完成后正常结束，未来任务需要时才重新生成。
+8. **初版不等于完成。** 实现任务持续到已授权的运行或测试、检查结果、修复本次失败并交付实际入口；用户明确只读、只要方案或先审阅时，按该范围停止。
 
 ### 精简与安全
 
@@ -78,17 +84,21 @@
 
 ## English
 
+The main skill is a short entry point. Load detailed references only when delegation, writes, or experience
+maintenance needs them, and reuse unchanged instructions already in context.
+
 ### Before delegation
 
-1. **A fast first explanation.** State the current understanding, immediate action, and necessary boundary first, then continue tool or agent work without waiting for acknowledgement; answer directly when no work preface is needed.
+1. **A fast first explanation, clear progress and delivery.** Explain understanding and action first, report concrete progress during implementation, and finish with changes, reasons, the actual entry point, verification scope, and remaining issues; sparse internal acknowledgements do not mean leaving the user uninformed.
 2. **The anchor contains only remaining work.** A completed requirement leaves the active list after delivery; a correction reopens only affected work, and “continue” resumes only unfinished or not-yet-delivered items.
 3. **Tool first.** Run deterministic commands, batch queries, and long predictable processes directly instead of spawning a model to relay an exit code.
 4. **Move complex PowerShell into a script.** Keep simple commands inline; use a task-scoped temporary `.ps1` for nested quoting, JSON/regex, backticks, multiline logic, or complex interpolation. After the first confirmed parse or escaping failure, stop rewriting the one-liner and edit the same script; keep it out of the repository and free of secrets, then move it recoverably to the Windows Recycle Bin or a scoped `待删文件` when cleaning up.
 5. **One call decision.** Delegate a ready, bounded, independently verifiable task when it needs continuing judgment and offers a real quality or speed gain.
 6. **Capacity is not a quota.** Use available runtime capacity without targeting a fixed agent count or filling every slot.
-7. **Classify before selecting.** Match retained roles by responsibility, inputs, and evidence; when descriptions are insufficient, read `status --for-routing` once and reuse the cross-project catalog instead of creating a role for each project or effort level.
+7. **Classify before selecting.** Match retained roles by responsibility, inputs, and evidence. Check `status --for-routing` once when descriptions are insufficient or before creating a role because no match was found. For an unloaded role or a configuration adaptation, use `recall --name <role-name>` to retrieve verified duties, configuration, and bounded experience without creating another domain record.
 8. **Select one complete configuration.** Every parent compares complete model, reasoning, and speed combinations under the three principles; all three may change together, with no fixed effort per model. Luna defaults to Fast. Preserve the user's parent choice, adapt only the current subtask when needed, and disclose concrete settings with a separate note only for actual conflicts.
 9. **Make handoffs actionable.** Preserve user-operation acceptance, authoritative paths, rejected routes, and one current snapshot; see [project handoffs](skills/lean-stack/references/project-handoff.md).
+10. **Inherit only useful context.** Prefer `fork_turns="none"` for independent bounded tasks and add history only when prior decisions matter. Include task-specific tool, safety, and ownership limits explicitly; inherited orchestration instructions do not grant the parent's authority.
 
 ### While agents run
 
@@ -102,6 +112,7 @@
 8. **Cross-task parent collaboration.** Read, continue, or create visible Codex tasks within current authority, with one integrator and no confusion with internal parent-child messaging.
 9. **Writable work has ownership.** Parallelize non-overlapping files, integrate shared hotspots once, and allow one real writer per physical file unless genuine worktree isolation exists.
 10. **Source coverage is explicit.** Reading agents return `SOURCE_COVERAGE` with the snapshot, coverage level, and remaining gap instead of flooding the parent with raw logs.
+11. **Dependencies can reach teammates directly.** Known teammates may exchange internal messages with sources, findings, and verification status. Send responsibility, shared-write, and safety conflicts to the parent; do not wait for acknowledgements or replace final results.
 
 ### Closing and reuse
 
@@ -112,6 +123,7 @@
 5. **Only real successes survive.** Record a run idempotently with UUID `run_id` only after completion, adoption, and Done state.
 6. **Persistence never blocks delivery.** Try `ensure` and `improve` once each, then skip immediately on locks, schema drift, permission, or file-identity problems.
 7. **Retained agents do not stay alive.** Only dormant TOML configuration and redacted experience persist; runtime threads end normally and consume no continuing model calls.
+8. **The first implementation is intermediate.** Continue through authorized execution or tests, inspection, repair of failures caused by the change, and delivery of the real entry point. Respect an explicit read-only, proposal-only, or review-first request.
 
 ### Process removal and safety
 

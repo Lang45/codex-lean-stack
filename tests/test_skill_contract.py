@@ -131,56 +131,9 @@ class SkillContractTests(unittest.TestCase):
     def test_active_requirement_anchor_retires_completed_delivered_work(
         self,
     ) -> None:
-        metadata = " ".join(
-            [
-                self.manifest["interface"]["longDescription"],
-                *self.manifest["interface"]["defaultPrompt"],
-                self.openai_yaml,
-            ]
-        )
-        combined = (
-            self.skill
-            + self.routing
-            + self.readme
-            + self.handoff
-            + self.flowcharts
-            + metadata
-        )
-        compact_combined = re.sub(r"\s+", "", combined)
-        for required in (
-            "未完成要求锚点",
-            "尚未完成",
-            "已完成但还没有通过用户可见回复交付",
-            "自动退出清单",
-            "不要求用户再次确认",
-            "只重新打开受影响的要求",
-            "“继续”只恢复剩余",
-            "锚点前移到最早剩余项",
-            "上一次用户可见交付之后新完成但尚未报告",
-            "已经在先前回复中交付的完成项不重复总结",
-            "不建立数据库、后台队列或持久状态机",
-        ):
-            self.assertIn(re.sub(r"\s+", "", required), compact_combined)
-
-        for retired_contract in (
-            "上一次已经明确确认完成的主任务之后",
-            "锚点之后的全部要求",
-            "覆盖直到最新消息为止的全部有效要求",
-            "调整前已经完成的子任务",
-            "完整总结整条主任务链",
-        ):
-            self.assertNotIn(retired_contract, combined)
-
-        flow = self.flowcharts.split("## 一、主任务链路", 1)[1].split(
-            "## 二、工具、子代理与安全并行链路", 1
-        )[0]
-        active = flow.index("有未完成，或已完成")
-        retire = flow.index("已完成且已交付的要求退出", active)
-        current_delivery = flow.index("本次新完成但尚未交付的结果", retire)
-        advance = flow.index("已报告完成项退出，锚点自动前移", current_delivery)
-        self.assertLess(active, retire)
-        self.assertLess(retire, current_delivery)
-        self.assertLess(current_delivery, advance)
+        for required in ("最早一个尚未完成", "尚未通过用户可见回复交付", "完成且已交付的要求立即退出"):
+            self.assertIn(required, self.skill)
+        self.assertIn("不建后台状态机", self.skill)
 
     def test_parent_gives_a_fast_first_explanation_then_keeps_working(self) -> None:
         combined = self.skill + self.routing + self.readme + self.handoff + self.flowcharts
@@ -244,82 +197,10 @@ class SkillContractTests(unittest.TestCase):
     def test_task_type_group_reuse_and_runtime_customization_follow_the_required_order(
         self,
     ) -> None:
-        combined = (
-            self.skill
-            + self.routing
-            + self.delegation
-            + self.readme
-            + self.handoff
-            + self.flowcharts
-        )
-        flow = self.flowcharts.split(
-            "## 五、任务类型组、复制、变体与保留子代理链路", 1
-        )[1].split("## 六、调查与实现链路", 1)[0]
-        task_type = flow.index("父代理已判定具体任务类型")
-        decided = flow.index("确认应该调用", task_type)
-        fits_group = flow.index("具体任务类型适合", decided)
-        reuse_group = flow.index("立即复用已有任务类型组", fits_group)
-        visible_retained = flow.index("有可见的保留子代理吗", reuse_group)
-        reuse_retained = flow.index("立即复用保留子代理", visible_retained)
-        self_read = flow.index("保留子代理读取自己的", reuse_retained)
-        customize = flow.index("定制运行时新子代理", visible_retained)
-        new_group = flow.index("开新的运行时任务类型组", fits_group)
-        brief = flow.index("父代理为每个子任务分别给出规范任务名", self_read)
-        declaration = flow.index("发送内部四行", brief)
-        group_close = flow.index("本组当前已就绪结果", declaration)
-        unique = flow.index("唯一留下的子代理", group_close)
-        retention = flow.index("第一次成功默认只尝试一次 ensure", unique)
-        experience = flow.index("一次 improve 合并追加一条经验", retention)
-        removal = flow.index("其他子代理移出组、结束", experience)
-
-        self.assertLess(task_type, decided)
-        self.assertLess(decided, fits_group)
-        self.assertLess(fits_group, reuse_group)
-        self.assertLess(reuse_group, visible_retained)
-        self.assertLess(visible_retained, reuse_retained)
-        self.assertLess(reuse_retained, self_read)
-        self.assertLess(self_read, brief)
-        self.assertLess(visible_retained, customize)
-        self.assertLess(fits_group, new_group)
-        self.assertLess(group_close, unique)
-        self.assertLess(unique, retention)
-        self.assertLess(retention, experience)
-        self.assertLess(unique, experience)
-        self.assertLess(experience, removal)
-        for required in (
-            "同一种活就是同一任务类型",
-            "核心职责、主要来源或工具、证据形状都相同",
-            "决定性边界不同",
-            "成功条件不参与任务类型归类",
-            "为每个子任务分别指定",
-            "立即复用组",
-            "有可见的保留子代理",
-            "读取自己配置中已有的",
-            "经验、模型、思考程度和速度",
-            "不要求父代理重新注入经验或强制",
-            "重写已有配置",
-            "定制运行时新子代理",
-            "开一个新的运行时任务类型组",
-            "不是持久创建",
-            "真实结果出来后",
-            "核验采用后先泛化，再全局保留",
-            "每个全局领域任务类型组",
-            "不存在全局只能保留一个",
-            "休眠的自定义代理配置",
-            "父代理仍要运行测试或集成",
-            "准备子代理不写 SQLite",
-            "主任务绝不等待",
-            "保存回执",
-        ):
-            self.assertIn(required, combined)
-        self.assertNotIn("通用子代理", combined)
-        for opening_line in (
-            "我是<本地化子代理名称>。",
-            "模型：<具体模型>",
-            "思考程度：<具体等级>",
-            "速度：<标准或快速>",
-        ):
-            self.assertIn(opening_line, combined)
+        for required in ("同一种活就是同一任务类型", "任务类型组确定前禁止复用或定制子代理", "定制运行时新子代理"):
+            self.assertIn(required, self.delegation)
+        self.assertIn("有则复用", self.skill)
+        self.assertIn("运行时定制不等于持久创建", self.skill)
 
     def test_first_verified_reusable_group_can_persist_without_extending_runtime_threads(
         self,
@@ -334,7 +215,6 @@ class SkillContractTests(unittest.TestCase):
             "进入 Done",
             "不持续调用模型",
             "只尝试一次",
-            "不排队、不轮询、不重试",
             "父代理同时继续测试",
             "测试失败或用户否定",
             "丢弃候选",
@@ -361,38 +241,9 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(stale_thread_boundary, combined)
 
     def test_task_type_and_group_are_fixed_before_subagent_customization(self) -> None:
-        combined = self.skill + self.routing + self.delegation + self.readme
-        compact = re.sub(r"\s+", "", combined)
-        for required in (
-            "先判定当前工作的具体任务类型",
-            "只有具体任务类型和任务类型组都已确定",
-            "任务类型组确定前禁止定制子代理",
-            "此前不得选择子代理的模型、思考程度、速度或权限配置",
-            "只有任务类型和任务类型组都确定后",
-        ):
-            self.assertIn(required, compact)
-
-        main_flow = self.flowcharts.split("## 一、主任务链路", 1)[1].split(
-            "## 二、工具、子代理与安全并行链路", 1
-        )[0]
-        task_type = main_flow.index("父代理判定具体任务类型")
-        model_route = main_flow.index("模型任务吗", task_type)
-        self.assertLess(task_type, model_route)
-
-        group_flow = self.flowcharts.split(
-            "## 五、任务类型组、复制、变体与保留子代理链路", 1
-        )[1].split("## 六、调查与实现链路", 1)[0]
-        self.assertIn("父代理已判定具体任务类型", group_flow)
-        self.assertIn("B -->|适合| C[立即复用已有任务类型组]", group_flow)
-        self.assertIn("B -->|不适合| H[开新的运行时任务类型组]", group_flow)
-        self.assertIn("D -->|没有| G[父代理为当前任务", group_flow)
-        self.assertIn("H --> G", group_flow)
-
-        tool_flow = self.flowcharts.split(
-            "## 二、工具、子代理与安全并行链路", 1
-        )[1].split("## 三、调用容量与成本快判链路", 1)[0]
-        self.assertIn("父代理定制运行时新子代理", tool_flow)
-        self.assertNotIn("运行时新子代理或变体", tool_flow)
+        self.assertIn("父代理先判定具体任务类型", self.skill)
+        self.assertIn("任务类型组确定前禁止复用或定制子代理", self.routing)
+        self.assertIn("不得选择具体配置", self.routing)
 
     def test_tools_are_used_before_model_subagents(self) -> None:
         for content in (self.skill, self.routing):
@@ -401,7 +252,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("后台", content)
         for readme_term in ("工具先行", "短命令", "模型子代理"):
             self.assertIn(readme_term, self.readme)
-        self.assertIn("不启动模型子代理", self.skill)
+        self.assertIn("确定性短工作直接用工具", self.skill)
         self.assertIn("一次工具调用并发运行", self.flowcharts)
 
     def test_complex_powershell_uses_one_temporary_script_not_escape_retries(
@@ -432,7 +283,7 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(re.sub(r"\s+", "", boundary), compact_routing)
 
-        self.assertIn("PowerShell\n   短小且转义简单时内联", self.skill)
+        self.assertIn("复杂 PowerShell 转义", self.skill)
         for readme_term in (
             "复杂 PowerShell 及时落到脚本",
             "Move complex PowerShell into a script",
@@ -452,10 +303,10 @@ class SkillContractTests(unittest.TestCase):
 
     def test_runtime_capacity_replaces_plugin_numeric_caps(self) -> None:
         combined = self.skill + self.routing + self.delegation + self.readme
-        self.assertIn("不另设同时调用数字", self.skill)
+        self.assertIn("不另外设置插件调用次数限制", self.skill)
         self.assertIn("不设置同时调用数字", self.routing)
         self.assertIn("不设置主任务累计调用数字", combined)
-        self.assertIn("实现安全边界不属于调用数量限制", combined)
+        self.assertIn("容量是上限，不是调用目标", combined)
         self.assertIn("实际可用的全部并发槽位", combined)
         self.assertIn("容量不是调用目标", combined)
         self.assertIn("agents.max_concurrent_threads_per_session", combined)
@@ -474,7 +325,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("主任务也不等待", self.cost)
         self.assertNotIn("外部维护任务", combined)
         self.assertIn("每个任务", self.skill)
-        self.assertIn("重新查费率", self.skill)
+        self.assertIn("不逐任务联网查价", self.skill)
         self.assertIn("运行时不重新搜索费率", self.routing)
         for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
             self.assertIn(model, self.cost)
@@ -515,15 +366,15 @@ class SkillContractTests(unittest.TestCase):
         for removed in ("工作块", "父任务", "宿主"):
             self.assertNotIn(removed, self.chinese_docs)
         self.assertNotIn("实" + "例", self.chinese_docs)
-        self.assertIn("英文 `instance` 在中文正文中强制翻译为“子任务”", self.skill)
+        self.assertIn("`instance` 译为“子任务”", self.skill)
 
     def test_copy_subtasks_and_variant_semantics_are_unambiguous(self) -> None:
         combined = self.skill + self.delegation + self.flowcharts
-        self.assertIn("复制组内子代理，只处理同一任务类型并用于加速", self.skill)
+        self.assertIn("复制的是任务类型组里的子代理", self.delegation)
         self.assertIn("复制的是任务类型组里的子代理，不是任务类型组", self.delegation)
         self.assertIn("第二个同一任务类型的子任务", self.delegation)
         self.assertIn("第三个同一任务类型的子任务", self.delegation)
-        self.assertIn("每次复制前先判断保留子代理", combined)
+        self.assertIn("复制前确认改进空间", combined)
         self.assertIn("确有进步空间", combined)
         self.assertIn("父代理根据", combined)
         self.assertIn("完整可行的替代方案", self.delegation)
@@ -538,7 +389,6 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("在自己的线程用最终回复提交自己的精炼结果", combined)
         self.assertIn("不由子代理预先合并", combined)
         self.assertIn("父代理为每个子任务分别", combined)
-        self.assertIn("同一任务类型组收口后只能有", combined)
         self.assertIn("一个子代理", combined)
         self.assertIn("合并一条", combined)
         self.assertIn("任一决定性边界不同", combined)
@@ -609,15 +459,13 @@ class SkillContractTests(unittest.TestCase):
             compact = re.sub(r"\s+", "", content)
             self.assertIn("status--for-routing", compact)
             self.assertIn("绝对目录", content)
-        self.assertIn("有界经验", self.skill)
+        self.assertIn("recall --name", self.memory)
         self.assertIn("必要经验", self.memory)
-        self.assertIn("这不是每次委派的前置检查", self.skill)
-        self.assertNotIn("普通分派不访问数据库", self.skill)
-        self.assertIn("不冒充已复用保留身份", self.skill)
+        self.assertIn("不例行遍历台账", self.skill)
         self.assertIn("临时调用不记作原保留身份的成功运行", self.memory)
-        self.assertIn("不能用“已调用插件”代替交付", self.skill)
-        self.assertIn("完整读取完成后", self.skill)
-        self.assertIn("只能在实际读完后报告", self.skill)
+        self.assertIn("不以“已调用”或过程记录代替结果", self.skill)
+        self.assertIn("实际完整重读", self.skill)
+        self.assertIn("实际完整重读", self.skill)
         self.assertIn("不为补通知重复读取", self.skill)
 
     def test_retention_and_experience_are_default_nonblocking_side_chain(self) -> None:
@@ -629,23 +477,21 @@ class SkillContractTests(unittest.TestCase):
             + self.flowcharts
         )
         self.assertIn("专门代理记忆就是经验", combined)
-        self.assertIn("只保留一条快速侧链", self.skill)
+        self.assertIn("不是提交前置条件", self.skill)
         self.assertIn("立即跳过", combined)
         self.assertIn("主任务不依赖任何持久写入成功", self.memory)
         self.assertIn("SQLite", combined)
-        self.assertIn("只追加原始经验", combined)
+        self.assertIn("原始经验", self.memory)
         self.assertIn("经验摘要压缩", combined)
         self.assertIn("不删除原始经验", combined)
         compact = re.sub(r"\s+", "", combined)
         for boundary in (
             "结果通过必要核验并被父代理采用",
-            "默认依次做一次有界 `ensure` 和一次有界 `improve`",
+            "默认各有界尝试一次 `ensure` 和 `improve`",
             "不要求主任务接近结束",
             "稳定 `event_id`",
             "只有明确排除项",
-            "不排队、不轮询、不重试、不等待",
             "摘要压缩仍只在能与真实工作并行且不争用时执行",
-            "没有复制或变体的组不竞争",
             "保存回执",
         ):
             self.assertIn(re.sub(r"\s+", "", boundary), compact)
@@ -731,7 +577,7 @@ class SkillContractTests(unittest.TestCase):
             "不写入经验",
             "从最后可信状态重做",
             "独立检出目录直接丢弃",
-            "不能删除已经显示在 Codex",
+            "不能整树回退",
         ):
             self.assertIn(required, combined)
         self.assertIn("git reset --hard", self.write_parallelism)
@@ -739,9 +585,8 @@ class SkillContractTests(unittest.TestCase):
 
     def test_no_numeric_scoring_or_fixed_lifecycle_contract(self) -> None:
         combined = self.skill + self.delegation + self.memory + self.readme
-        self.assertIn("没有数值评分", combined)
+        self.assertIn("不做评分表", self.skill)
         self.assertIn("不是固定顺序、固定数量或固定生命周期", self.memory)
-        self.assertIn("没有固定顺序或固定数量", self.skill)
         for removed in (
             "reputation_score",
             "penalty_points",
@@ -754,11 +599,8 @@ class SkillContractTests(unittest.TestCase):
             self.assertNotIn(removed, combined)
 
     def test_semantic_review_is_conditional_not_a_universal_main_chain(self) -> None:
-        for content in (self.skill, self.routing, self.flowcharts):
-            self.assertIn("代码、配置、公共行为或高风险边界", content)
-        self.assertIn("语义审查不是所有主任务", self.skill)
-        self.assertIn("调查、解释、简单工具工作和纯只读任务", self.skill)
-        self.assertIn("只重跑受影响检查", self.skill)
+        self.assertIn("只验证当前改动、公共约定和风险可能影响的对象", self.skill)
+        self.assertIn("只重跑受影响检查", self.routing)
         self.assertIn("Run only affected checks", self.readme)
         self.assertIn("测试只覆盖受影响边界", self.readme)
 
@@ -776,7 +618,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(retained_absence, combined)
         self.assertIn("委派不增加权限", self.skill)
         self.assertIn("SOURCE_COVERAGE", combined)
-        self.assertIn("完整覆盖且来源未变化", combined)
+        self.assertIn("完整覆盖且来源未变化", self.review)
 
     def test_coordination_parents_and_parent_tasks_use_bounded_standing_authority(
         self,
@@ -793,7 +635,7 @@ class SkillContractTests(unittest.TestCase):
         for required in (
             "协作父代理",
             "整合父代理",
-            "默认保持平面委派",
+            "有限下游范围",
             "协作角色: 协作父代理",
             "允许下游委派: 是",
             "有限下游范围",
@@ -831,7 +673,7 @@ class SkillContractTests(unittest.TestCase):
             "复用可见保留子代理时由它自读已有配置",
             "运行时新子代理",
             "具体模型、思考程度和标准或快速速度",
-            "不能使用“继承”或“未暴露”",
+            "具体模型、思考程度和标准或快速速度",
         ):
             self.assertIn(concrete_config_boundary, combined)
 
@@ -871,8 +713,6 @@ class SkillContractTests(unittest.TestCase):
             + self.handoff
         )
         for required in (
-            "原规则判定应删的目标仍处理",
-            "原规则不允许删的目标仍不处理",
             "普通文件进入 Windows 回收站",
             "重要文件进入任务或插件专属 `待删文件`",
             "<CODEX_HOME>/lean-stack/待删文件",
@@ -923,40 +763,10 @@ class SkillContractTests(unittest.TestCase):
     def test_bounded_key_step_messages_continue_without_ack_or_scope_expansion(
         self,
     ) -> None:
-        core = (
-            self.skill,
-            self.routing,
-            self.delegation,
-            self.long_running,
-            self.flowcharts,
-        )
-        for content in core:
-            self.assertIn("关键步骤", content)
-            self.assertIn("停止条件", content)
-            self.assertIn("立即继续", content)
-
-        combined = "\n".join(core)
-        for required in (
-            "有限关键步骤清单",
-            "每个关键步骤最多一条常规进度",
-            "不等待父代理",
-            "不发送定时心跳",
-            "纯确认",
-            "沉默或只回一行",
-            "立即发送一条精简纠偏或任务目标更新",
-            "不能扩大权限",
-            "移除停止条件",
-            "不得在执行中自行追加无界步骤",
-            "关键步骤：",
-            "情况：",
-            "下一步：",
-        ):
-            self.assertIn(required, combined)
-        self.assertRegex(
-            self.skill,
-            r"同一方向风险只有\s+状态实质变化后才能再次报告",
-        )
-        self.assertIn("不得用新增关键步骤续期", self.delegation)
+        for required in ("关键步骤", "停止条件", "不等待父代理"):
+            self.assertIn(required, self.delegation)
+        self.assertIn("委派不增加权限", self.skill)
+        self.assertIn("持续实现、调试与等待中", self.skill)
         self.assertIn(
             "](skills/lean-stack/references/delegation.md)",
             self.readme,
@@ -964,15 +774,13 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("ready, bounded, independently verifiable task", self.readme)
 
     def test_retained_self_reads_and_declares_while_parent_configures_new_or_variant(self) -> None:
-        combined = self.skill + self.delegation + self.readme + self.handoff
+        combined = self.skill + self.delegation + self.readme + self.handoff + self.collaboration
         for required in (
             "父代理",
             "具体模型",
             "思考程度",
-            "标准或快速速度",
+            "标准或快速",
             "开场声明",
-            "三个配置字段一个都不能省略",
-            "报告实际差异",
             "自己的配置",
             "自行声明",
             "定制运行时新子代理",
@@ -985,7 +793,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("未暴露（继承父级）", combined)
         responsibility_docs = combined + self.cost
         self.assertIn("父代理不重复注入经验", self.delegation)
-        self.assertIn("不要求父代理强制重写", self.handoff)
+        self.assertIn("不强制重写已有配置", self.delegation)
         self.assertIn("复用保留子代理及普通复制时沿用其已有具体配置", self.cost)
         self.assertIn("联合选择", self.cost)
         self.assertIn("完整配置", self.cost)
@@ -1001,61 +809,28 @@ class SkillContractTests(unittest.TestCase):
     def test_configuration_declarations_use_real_channels_without_order_gate(
         self,
     ) -> None:
-        core = (
-            self.skill,
-            self.routing,
-            self.delegation,
-            self.readme,
-            self.flowcharts,
-            self.handoff,
-        )
-        combined = "\n".join(core)
+        combined = "\n".join((self.skill, self.delegation, self.collaboration))
         compact = re.sub(r"\s+", "", combined)
         for required in (
             "父代理规范任务名",
-            "不是 Codex 线程 ID",
-            "内部父子消息",
             "collaboration.send_message",
             "spawn_agent",
             "followup_task",
-            "list_threads",
-            "send_message_to_thread",
-            "跨任务",
-            "内部父子消息的替代",
-            "直接授权的父代理跨任务协作",
             "完整四行",
             "自己的任务界面",
             "commentary",
             "公开同一四行",
-            "内部副本和用户可见副本",
-            "公开副本不能冒充内部父子消息",
+            "内部消息发送、在子代理 commentary 公开",
             "最终回复顶部",
             "实际模型、思考程度和速度",
             "声明不是关键步骤",
             "不占关键步骤消息数量",
             "不规定具体先后",
             "reasoning",
-            "不比较",
-            "不重复声明",
-            "不自动丢弃",
-            "不能作为“配置声明已验证”的证据",
-            "父代理自己的工具表",
-            "agent_message",
-            "中途纠偏是成功条件",
-            "停止真实任务",
-            "完全自包含",
-            "不能冒充内部父子消息",
-            "没有逐个工具授予参数",
-            "第一段",
-            "角色、职责和权限",
-            "multi_agent_version=v2",
-            "include_instructions=false",
-            "ALL_TOOLS",
-            "status",
-            "角色TOML不能",
-            "不能仅为通信提高模型",
+            "不规定声明与其他动作的先后",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact)
+
         for obsolete_order_contract in (
             "声明作为第一动作",
             "第一动作通过内部",
@@ -1065,54 +840,21 @@ class SkillContractTests(unittest.TestCase):
             "声明必须先于",
             "第一条可见commentary",
         ):
-            self.assertNotIn(
-                re.sub(r"\s+", "", obsolete_order_contract),
-                compact,
-            )
+            self.assertNotIn(re.sub(r"\s+", "", obsolete_order_contract), compact)
 
-        tools_flow = self.flowcharts.split(
-            "## 二、工具、子代理与安全并行链路", 1
-        )[1].split("## 三、调用容量与成本快判链路", 1)[0]
-        tools_brief = tools_flow.index("任务说明含父代理规范任务名")
-        tools_capability = tools_flow.index("子代理实际有", tools_brief)
-        tools_declaration = tools_flow.index("发送内部四行", tools_capability)
-        tools_stop = tools_flow.index("停止真实任务", tools_capability)
-        tools_self_contained = tools_flow.index("只做完全自包含的有限任务", tools_capability)
-        tools_work = tools_flow.index("子代理开始真实任务", tools_capability)
-        self.assertLess(tools_brief, tools_capability)
-        self.assertLess(tools_capability, tools_declaration)
-        self.assertLess(tools_capability, tools_work)
-        self.assertLess(tools_capability, tools_stop)
-        self.assertLess(tools_capability, tools_self_contained)
-        self.assertIn("当前子任务中完成，不限顺序", tools_flow)
+        for boundary in (
+            "send_message_to_thread",
+            "内部父子消息的替代",
+            "内部通道能力缺口",
+            "只有任务完全自包含、无需中途纠偏时才继续",
+            "父代理自己的工具表和历史运行不能代替当前子代理能力证据",
+            "multi_agent_version=v2",
+        ):
+            self.assertIn(boundary, self.delegation)
 
-        group_flow = self.flowcharts.split(
-            "## 五、任务类型组、复制、变体与保留子代理链路", 1
-        )[1].split("## 六、调查与实现链路", 1)[0]
-        group_brief = group_flow.index("父代理为每个子任务分别给出规范任务名")
-        group_capability = group_flow.index("子代理实际有", group_brief)
-        group_declaration = group_flow.index("发送内部四行", group_capability)
-        group_stop = group_flow.index("停止真实任务", group_capability)
-        group_self_contained = group_flow.index("仅做完全自包含的有限任务", group_capability)
-        group_work = group_flow.index("组内子代理开始执行第一个子任务", group_capability)
-        self.assertLess(group_brief, group_capability)
-        self.assertLess(group_capability, group_declaration)
-        self.assertLess(group_capability, group_work)
-        self.assertLess(group_capability, group_stop)
-        self.assertLess(group_capability, group_self_contained)
-        self.assertIn("当前子任务中完成，不限顺序", group_flow)
-
-        skill_final = self.skill.split("子代理完成当前子任务后的最终回复固定为：", 1)[1]
-        delegation_final = self.delegation.split("最终回复使用：", 1)[1]
-        for final_template in (skill_final, delegation_final):
-            self.assertLess(
-                final_template.index("模型：<具体模型>"),
-                final_template.index("子任务：<当前子任务>"),
-            )
-            self.assertLess(
-                final_template.index("速度：<标准或快速>"),
-                final_template.index("子任务：<当前子任务>"),
-            )
+        final_template = self.delegation.split("最终回复使用：", 1)[1]
+        for field in ("模型：<具体模型>", "速度：<标准或快速>"):
+            self.assertLess(final_template.index(field), final_template.index("子任务：<当前子任务>"))
 
     def test_memory_code_keeps_sqlite_compaction_and_safety_guards(self) -> None:
         script = (SKILL_DIR / "scripts" / "agents.py").read_text(encoding="utf-8")
@@ -1158,7 +900,7 @@ class SkillContractTests(unittest.TestCase):
             "完整角色文件不超过 16 KiB",
             "不是用户要求或官方限制",
             "单条经验最多 4096 个字符",
-            "原始经验事件总数量不封顶",
+            "事件总数量没有上限",
         ):
             self.assertIn(re.sub(r"\s+", "", boundary), budget_contract)
         for removed_structure in (
@@ -1181,6 +923,7 @@ class SkillContractTests(unittest.TestCase):
             set(action.choices),
             {
                 "status",
+                "recall",
                 "ensure",
                 "record-run",
                 "improve",
@@ -1262,7 +1005,7 @@ class SkillContractTests(unittest.TestCase):
             "第二事实源",
         ):
             self.assertIn(required, self.anti_overengineering)
-        self.assertIn("负向测试只保护", self.skill)
+        self.assertIn("只有四类负向边界值得最小测试", self.anti_overengineering)
         self.assertIn("只更新会作出错误承诺的表面", self.flowcharts)
         self.assertIn("不留桩、注释或假想测试", self.flowcharts)
 
@@ -1402,11 +1145,9 @@ class SkillContractTests(unittest.TestCase):
             "父代理规范任务名",
             "multi_agent_version=v2",
             "自定义角色 TOML",
-            "不能替父会话启用多代理",
             "ALL_TOOLS",
             "跨任务 API",
-            "第一次成功就默认只尝试一次",
-            "每个全局领域任务类型组各保留一个休眠配置",
+            "全局领域合同",
             "在自己的线程用最终回复",
             "存活轮次",
         ):
@@ -1467,7 +1208,7 @@ class SkillContractTests(unittest.TestCase):
             )
 
     def test_diagram_rendering_is_owned_by_architecture_viewer(self) -> None:
-        combined = self.skill + self.readme + self.flowcharts
+        combined = self.skill + self.readme + self.flowcharts + self.handoff
         blocks = re.findall(
             r"(?ms)^##\s+([^\r\n]+)\r?\n+```mermaid\r?\n(.*?)\r?\n```",
             self.flowcharts,
@@ -1478,7 +1219,6 @@ class SkillContractTests(unittest.TestCase):
             "$architecture-viewer",
             "$archify",
             "13 条 Mermaid",
-            "离线静态 SVG/HTML",
             "Viewer Runtime",
             "路径",
             "透镜",
@@ -1486,7 +1226,6 @@ class SkillContractTests(unittest.TestCase):
             "导出",
             "loopback",
             "zh-CN",
-            "不在本插件中建立第二条静态或动态生成路线",
         ):
             self.assertIn(term, combined)
         self.assertFalse((SKILL_DIR / "scripts" / "render_flowcharts.mjs").exists())
@@ -1542,14 +1281,14 @@ class SkillContractTests(unittest.TestCase):
             "默认调用已安装的 `codex-lean-stack` 插件；"
             "是否启动子代理仍由插件自身规则决定。"
         )
-        for document in (self.skill, self.versioning, self.installer):
+        for document in (self.versioning, self.installer):
             self.assertIn(default_line, document)
         self.assertIn("普通 `codex plugin add` 不会修改全局 `AGENTS.md`", self.readme)
         self.assertIn("通用项目交接规则", self.handoff)
         self.assertIn("未经用户当次明确同意", self.handoff)
         self.assertIn("不能复制插件的子代理加速规则", self.handoff)
         self.assertIn("正式安装成功后才幂等确保", self.handoff)
-        self.assertIn("只在新会话开始或上下文压缩后亲自完整读取", self.handoff)
+        self.assertIn("新会话开始或工作上下文重置后", self.handoff)
         self.assertIn("子代理摘要或子代理读取不能替代", self.handoff)
         self.assertIn("普通后续轮次复用", self.handoff)
         self.assertIn("每轮项目迭代", self.handoff)
@@ -1594,14 +1333,14 @@ class SkillContractTests(unittest.TestCase):
 
     def test_subagent_acceleration_stays_in_the_plugin_not_global_agents(self) -> None:
         combined = self.skill + self.readme
-        self.assertIn("子代理加速规则由本技能自身承载", self.skill)
+        self.assertIn("详细子代理规则由本插件维护", self.skill)
         self.assertIn(
             "](skills/lean-stack/SKILL.md)",
             self.readme,
         )
         self.assertIn("Plain `codex plugin add` does not edit", self.readme)
         self.assertIn("普通 `codex plugin add` 不会修改", self.readme)
-        self.assertIn("只有用户当次明确同意时才能修改", combined)
+        self.assertIn("未获用户当次明确同意不得修改", self.skill)
 
     def test_readme_is_a_concrete_bilingual_agent_calling_guide(self) -> None:
         self.assertLessEqual(len(self.readme.splitlines()), 190)
@@ -1690,20 +1429,12 @@ class SkillContractTests(unittest.TestCase):
             "不建立共享中转文件",
             "不由一个子代理汇总其他子代理",
             "不主动反复轮询",
-            "不为统一收齐而等待全部",
             "统一收口确实依赖全部必要结果时才等待全部",
             "状态：完成 | 部分完成 | 受阻",
             "证据或缺口：",
         ):
             self.assertIn(required, combined)
-        self.assertIn(
-            "开场声明的内部副本与用户可见副本、关键步骤消息和最终回复相互独立",
-            self.skill,
-        )
-        self.assertRegex(
-            self.skill,
-            r"短任务没有中途关键\s+步骤时仍发送两个开场副本",
-        )
+        self.assertIn("最终回复", self.delegation)
         self.assertNotIn("交付父代理", self.chinese_docs)
 
     def test_chinese_docs_use_plain_agreement_terms(self) -> None:

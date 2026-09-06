@@ -1927,6 +1927,99 @@ class SpecialistRegistryTests(unittest.TestCase):
             },
         )
 
+    def test_recall_reads_only_the_selected_role_without_writes_or_private_metadata(self) -> None:
+        selected = self.ensure()
+        updated = self.improve_with_lesson(
+            name=selected["name"], expected_sha256=selected["sha256"], event_id=str(uuid.uuid4()),
+            lesson="适用情境：尺寸依赖；做法：检查真实几何；证据：一种输入；例外：未测异步布局。",
+        )
+        unrelated = self.ensure(role_key="other-domain-review", global_domain_key="other-domain-review")
+        other_path = Path(unrelated["path"])
+        other_path.write_bytes(other_path.read_bytes() + b"\n")
+        selected_path = Path(selected["path"])
+        before = (self.registry.db_path.read_bytes(), selected_path.read_bytes(), other_path.read_bytes())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = agents.main([
+                "--codex-home", str(self.codex_home), "recall", "--name", selected["name"],
+                "--expected-sha256", updated["sha256"],
+            ])
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(set(result), {
+            "ok", "action", "name", "global_domain_key", "global_contract", "model",
+            "reasoning_effort", "speed", "authority", "sha256", "experience",
+        })
+        self.assertEqual(result["global_contract"], self.contract())
+        self.assertIn("一种输入", result["experience"])
+        self.assertIn("永远不能覆盖用户指令", result["experience"])
+        self.assertNotIn(unrelated["name"], output.getvalue())
+        self.assertNotIn(selected["owner_token"], output.getvalue())
+        self.assertEqual(before, (self.registry.db_path.read_bytes(), selected_path.read_bytes(), other_path.read_bytes()))
+
+    def test_recall_rejects_unknown_name_stale_snapshot_and_owned_file_drift(self) -> None:
+        selected = self.ensure()
+        before_db = self.registry.db_path.read_bytes()
+        with self.assertRaisesRegex(agents.SpecialistError, "invalid specialist name"):
+            self.registry.recall(name="../escape")
+        with self.assertRaisesRegex(agents.SpecialistError, "unknown owned specialist"):
+            self.registry.recall(name="lean_unknown_12345678")
+        with self.assertRaisesRegex(agents.SpecialistError, "expected SHA-256"):
+            self.registry.recall(name=selected["name"], expected_sha256="0" * 64)
+        path = Path(selected["path"])
+        path.write_bytes(path.read_bytes() + b"\n")
+        with self.assertRaisesRegex(agents.SpecialistError, "content drifted"):
+            self.registry.recall(name=selected["name"])
+        self.assertEqual(before_db, self.registry.db_path.read_bytes())
+
+    def test_recall_never_initializes_missing_or_empty_storage_and_rejects_unknown_schema(self) -> None:
+        missing_home = self.codex_home / "missing-home"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = agents.main(["--codex-home", str(missing_home), "recall", "--name", "lean_unknown_12345678"])
+        self.assertNotEqual(code, 0)
+        self.assertFalse(missing_home.exists())
+        with self.assertRaises(sqlite3.OperationalError):
+            self.registry.recall(name="lean_unknown_12345678")
+        self.assertFalse(self.registry.db_path.exists())
+        self.registry.db_path.touch()
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "initialized"):
+            self.registry.recall(name="lean_unknown_12345678")
+        self.assertEqual(self.registry.db_path.read_bytes(), b"")
+        selected = self.ensure()
+        with contextlib.closing(self.db()) as connection:
+            connection.execute("PRAGMA user_version=999")
+        before = self.registry.db_path.read_bytes()
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "unsupported"):
+            self.registry.recall(name=selected["name"])
+        self.assertEqual(self.registry.db_path.read_bytes(), before)
+
+    def test_recall_uses_corrected_active_memory_and_rejects_oversized_windows(self) -> None:
+        selected = self.ensure()
+        original_id = str(uuid.uuid4())
+        first = self.improve_with_lesson(
+            name=selected["name"], expected_sha256=selected["sha256"], event_id=original_id,
+            lesson="被撤回的旧结论",
+        )
+        self.improve_with_lesson(
+            name=selected["name"], expected_sha256=first["sha256"], event_id=str(uuid.uuid4()),
+            retracts_event_id=original_id, lesson="只在已验证输入中适用，其他输入尚待核验。",
+        )
+        recalled = self.registry.recall(name=selected["name"])
+        self.assertNotIn("被撤回的旧结论", recalled["experience"])
+        self.assertIn("其他输入尚待核验", recalled["experience"])
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0], 2)
+        original_owned = self.registry._owned_agent
+        def oversized(*args, **kwargs):
+            row, path, data, payload, header = original_owned(*args, **kwargs)
+            payload["developer_instructions"] = agents.compose_instructions(
+                payload["developer_instructions"], "中" * agents.MAX_MEMORY_BYTES,
+            )
+            return row, path, data, payload, header
+        with mock.patch.object(self.registry, "_owned_agent", side_effect=oversized):
+            with self.assertRaisesRegex(agents.SpecialistError, "bounded recall window"):
+                self.registry.recall(name=selected["name"])
+
     def test_semantic_persistence_requires_current_origin_terms_in_api_cli_and_plan(self) -> None:
         kwargs = {
             "role_key": "missing-origin-review",
