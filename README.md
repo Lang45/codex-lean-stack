@@ -13,7 +13,7 @@
 2. **锚点只保留剩余要求。** 已完成并在上一条回复中交付的要求自动退出；纠正只重新打开受影响项，“继续”只恢复尚未完成或尚未交付的事项。
 3. **工具先行。** 短命令、批量查询和步骤确定的工作直接用工具或持续终端完成，不启动只会代跑命令的模型子代理。
 4. **复杂 PowerShell 及时落到脚本。** 简单命令仍内联；多层引号、嵌套 JSON/正则、反引号、多行逻辑或复杂变量插值直接写入任务专属临时 `.ps1`。首次失败确认是解析或转义后就停止改写 one-liner，后续只编辑同一脚本；脚本不入库、不含秘密，清理时进入 Windows 回收站或任务专属 `待删文件`。
-5. **一次调用判断。** 任务已就绪、边界清楚、可独立核验、需要持续模型判断且有质量或速度收益时直接调用，不叠加一串互相重复的审批门槛。
+5. **三原则决定调用。** 任务已就绪、边界清楚、可独立核验且需模型判断时，质量或速度收益、或质量与总完成时间相当时的总成本优势都可触发委派。降成本服从三原则，不叠加“每次必须省钱”的门槛。
 6. **不追求代理数量。** 插件使用运行环境的真实并发容量，但容量只是上限，不设置“必须调用几个”或“必须占满”的目标。
 7. **先分任务类型再选代理。** 按职责、输入与证据匹配保留角色；描述不足或准备因无匹配而新建角色前，通过 `status --for-routing` 核对一次目录。角色未加载或配置需要适配时，用 `recall --name <角色名>` 取得经过身份核验的职责、配置与有界经验，复用已有专长，不另造同领域记录。
 8. **联合选择完整配置。** 所有父代理按三原则比较完整的“模型 + 思考程度 + 速度”组合，三个字段可以一起调整，同一模型不固定一档；Luna 默认快速。保留用户的父代理选择，独立子任务显式选配，必要时只适配当前调用；声明直接写具体配置，实际冲突另行说明。
@@ -31,7 +31,7 @@
 7. **子代理可以成为协作父代理。** 有边界的子项目包含多个独立切片时，一个子代理可在获批范围内协调下游；下游各自提交结果，最上层仍只有一个最终整合父代理。
 8. **可以协作其他 Codex 父代理任务。** 在当前授权和三项原则内可读取、调用或新建用户可见的 Codex 任务，但必须指定唯一整合者，并与内部父子消息严格分开。
 9. **并行写入有明确所有权。** 不重叠文件可以并行修改，共享清单、接口或数据库最后集中整合；没有独立工作树时，同一物理文件只允许一个实际写入者。
-10. **来源读取有覆盖回执。** 读取会话、文档或日志的子代理返回 `SOURCE_COVERAGE`，明确来源快照、完整或部分覆盖以及剩余缺口，不把大段原始日志塞回父代理。
+10. **委派替代重复劳动。** 工具先定位，在父代理大量预读或生成前交给合适角色；相关问题共享材料，已落盘结果只回定位、关键差异与验证。来源读取保留 `SOURCE_COVERAGE`，父代理按风险精读核验，用户要求全文不省略；按父子合计消耗与返工评估成本。
 11. **依赖证据可以直达队友。** 同一团队已知队友之间可通过内部消息传递来源、发现与验证程度；影响职责、共享写入或安全的变化同时告知父代理裁决，不等待确认，也不代交队友最终结果。
 
 ### 收口与复用
@@ -93,7 +93,7 @@ maintenance needs them, and reuse unchanged instructions already in context.
 2. **The anchor contains only remaining work.** A completed requirement leaves the active list after delivery; a correction reopens only affected work, and “continue” resumes only unfinished or not-yet-delivered items.
 3. **Tool first.** Run deterministic commands, batch queries, and long predictable processes directly instead of spawning a model to relay an exit code.
 4. **Move complex PowerShell into a script.** Keep simple commands inline; use a task-scoped temporary `.ps1` for nested quoting, JSON/regex, backticks, multiline logic, or complex interpolation. After the first confirmed parse or escaping failure, stop rewriting the one-liner and edit the same script; keep it out of the repository and free of secrets, then move it recoverably to the Windows Recycle Bin or a scoped `待删文件` when cleaning up.
-5. **One call decision.** Delegate a ready, bounded, independently verifiable task when it needs continuing judgment and offers a real quality or speed gain.
+5. **The three principles decide.** Delegate a ready, bounded, independently verifiable task needing model judgment for quality or speed gains, or lower total cost when quality and completion time are comparable. Cost saving remains subordinate to these priorities, not a requirement for every delegation.
 6. **Capacity is not a quota.** Use available runtime capacity without targeting a fixed agent count or filling every slot.
 7. **Classify before selecting.** Match retained roles by responsibility, inputs, and evidence. Check `status --for-routing` once when descriptions are insufficient or before creating a role because no match was found. For an unloaded role or a configuration adaptation, use `recall --name <role-name>` to retrieve verified duties, configuration, and bounded experience without creating another domain record.
 8. **Select one complete configuration.** Every parent compares complete model, reasoning, and speed combinations under the three principles; all three may change together, with no fixed effort per model. Luna defaults to Fast. Preserve the user's parent choice, adapt only the current subtask when needed, and disclose concrete settings with a separate note only for actual conflicts.

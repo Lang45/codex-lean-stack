@@ -97,6 +97,18 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(principle, self.skill)
 
+    def test_equal_quality_and_time_allow_lower_total_cost_without_overriding_priorities(self) -> None:
+        for content in (self.skill, self.routing, self.readme, self.flowcharts):
+            self.assertIn("质量与总完成时间相当", content)
+        self.assertIn("成本优势不覆盖前两项", self.routing)
+        self.assertIn("也不是每次调用的必要条件", self.routing)
+        self.assertIn("父代理仍核对关键差异、接口和安全边界", self.routing)
+        self.assertIn("用户要求全文或必要核验不受精简限制", self.delegation)
+        main = self.flowcharts.split("```mermaid", 1)[1].split("```", 1)[0]
+        decision = re.search(r"H\{([^}]+)\}", main)
+        self.assertIsNotNone(decision)
+        self.assertIn("二者相当时总成本更低", decision.group(1))
+
     def test_plugin_rule_is_mandatory_and_default_trigger_is_not_used(
         self,
     ) -> None:
@@ -1345,7 +1357,7 @@ class SkillContractTests(unittest.TestCase):
     def test_readme_is_a_concrete_bilingual_agent_calling_guide(self) -> None:
         self.assertLessEqual(len(self.readme.splitlines()), 190)
         for term in (
-            "# 代理调用和精简流程",
+            "# codex代理调用和精简流程",
             "插件标识：`codex-lean-stack`",
             "## 中文",
             "### 调用前",
