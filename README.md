@@ -26,7 +26,7 @@
 2. **子代理公开实际配置。** 每次启动新子任务时，子代理在自己的可见 `commentary` 和最终回复顶部声明名称、模型、思考程度和速度；普通任务不再向父代理重复发送相同四行，也不索要确认。
 3. **关键步骤只为真实依赖。** 只有中间结果会解锁下一动作时才报告一次并继续；不发送定时心跳、纯确认消息或普通过程复述。
 4. **父代理不中断主线。** 子代理运行时父代理继续约束、冲突、必要核验、集成或共享热点，不全面重做证据充分的子任务；只在下一步真实依赖某个结果时等待，不为“收齐所有代理”而空等。
-5. **同类子任务按收益复制。** 第二个及后续已就绪的同类型子任务只有能降低全任务总成本、提供必要质量收益，或在成本相近且用户有当前期限要求时才复制；各自保留输入、成功条件和权限边界。
+5. **持续多工作流任务尽早派发。** 多个独立就绪切片能替代父代理实际研究、实现或验收时，在父代理深入读取额外来源族或开始实现前，派发全部当前有收益且互不冲突的 GPT-5.6 切片；数量随真实工作流、边际收益与容量变化，不设最低数量或逐片量化门槛，无法精确量化本身不能否决调用。每个新增同类型切片仍按全任务总成本、必要质量收益，以及成本相近且用户有当前期限要求时的总完成时间判断。
 6. **变体只为真实改进。** 只有基准代理确有改进空间时才建立变体，并用完整的模型、思考程度和速度组合完成真实任务后比较，不为制造实验而改一个参数。
 7. **子代理可以成为协作父代理。** 有边界的子项目包含多个独立切片时，一个子代理可在获批范围内协调下游；下游各自提交结果，最上层仍只有一个最终整合父代理。
 8. **可以协作其他 Codex 父代理任务。** 在当前授权和三项原则内可读取、调用或新建用户可见的 Codex 任务，但必须指定唯一整合者，并与内部父子消息严格分开。
@@ -106,7 +106,7 @@ maintenance needs them, and reuse unchanged instructions already in context.
 2. **Agents disclose configuration visibly.** Every new subtask shows name, model, reasoning effort, and speed in its own commentary and again at the top of its final result. Ordinary tasks do not repeat the same four lines internally or request confirmation.
 3. **Key steps require dependencies.** Report a key step only when its intermediate result unlocks another action, then continue. Send no heartbeat, acknowledgement loop, or routine process recap.
 4. **The parent keeps moving.** Continue main-line work and wait only at a real dependency instead of waiting merely to collect every agent.
-5. **Copies must earn their cost.** Additional ready tasks of the same type reuse the baseline agent only for necessary quality, lower whole-task cost, or faster completion when costs are close and the user has a current deadline.
+5. **Dispatch sustained parallel workflows early.** When multiple independent ready slices can replace the parent's research, implementation, or acceptance work, dispatch all currently beneficial, non-conflicting GPT-5.6 slices before the parent deep-reads additional source families or begins implementation. The count follows actual workflows, marginal benefit, and runtime capacity; there is no minimum count or per-slice quantified-savings threshold, and inability to quantify precisely is not a veto. Each additional same-type slice still follows whole-task cost, required quality, and, when costs are close and the user has a current deadline, completion time.
 6. **Variants must earn their place.** Create a variant only for a plausible improvement, run a real task, and compare the complete configuration rather than changing one knob for appearance.
 7. **Bounded coordination parents.** A scoped subproject may coordinate downstream agents, while every child keeps its own result and one top-level parent owns the final integration.
 8. **Cross-task parent collaboration.** Read, continue, or create visible Codex tasks within current authority, with one integrator and no confusion with internal parent-child messaging.

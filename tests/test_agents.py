@@ -262,6 +262,13 @@ class SpecialistRegistryTests(unittest.TestCase):
             "普通工作达到质量底线后总成本优先，成本相近再比速度",
             "没有相应质量收益时不为单纯提速大幅增费",
             "安全、权限、数据完整性、明确验收条件和诚实证据始终是底线",
+            "当前出现多个互不依赖、已就绪、能替代你实际研究、实现或验收的工作流",
+            "默认尽早派发所有仍有边际收益且互不冲突的 GPT-5.6 切片",
+            "在自己深入读取这些来源或开始对应实现前完成派发",
+            "不设固定最低值或占槽目标",
+            "不能因为收益无法精确量化",
+            "稍后还能补一个复核",
+            "中途新要求使任务形状出现新的独立已就绪工作流时",
             "给每个下游子代理单独写完整任务卡",
             "task_id",
             "协作角色",
@@ -2348,6 +2355,15 @@ class SpecialistRegistryTests(unittest.TestCase):
             )
         self.assertEqual(exit_code, 2)
         self.assertEqual(json.loads(output.getvalue())["action"], "auxiliary_skipped")
+
+    def test_ensure_help_matches_the_omitted_speed_default(self) -> None:
+        help_output = io.StringIO()
+        with contextlib.redirect_stdout(help_output):
+            with self.assertRaises(SystemExit) as exited:
+                agents.build_parser().parse_args(["ensure", "--help"])
+        self.assertEqual(exited.exception.code, 0)
+        self.assertIn("omitted roles default to standard", help_output.getvalue())
+        self.assertNotIn("omitted Luna roles default to fast", help_output.getvalue())
 
     def test_cli_ensure_record_status_improve_delete_restore_round_trip(self) -> None:
         ensure_output = io.StringIO()

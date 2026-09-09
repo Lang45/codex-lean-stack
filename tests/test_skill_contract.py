@@ -320,6 +320,40 @@ class SkillContractTests(unittest.TestCase):
         self.assertLess(first_gate, same_script)
         self.assertLess(script, escape_failure)
 
+    def test_sustained_multi_workflow_work_dispatches_all_qualifying_slices_early(self) -> None:
+        """Protect qualitative early routing without introducing a mechanical quota."""
+        detailed_authority = self.delegation
+        for required in (
+            "持续多工作流任务",
+            "能替代父代理实际研究、实现或验收",
+            "当前有收益且互不冲突的 GPT-5.6 切片分别编写任务卡并尽早派发",
+            "调用数量随真实工作流、边际收益与运行容量变化",
+            "不设最低数量",
+            "不要求逐片量化节省",
+            "精确量化本身不能否决调用",
+            "只在后期增加一次复核不能替代前面的实际工作",
+            "新要求改变工作流时立即重新判断",
+        ):
+            self.assertIn(required, detailed_authority)
+
+        for exception in (
+            "确定性工具可以更快完成",
+            "多个互不依赖、已就绪",
+            "严格依赖",
+            "写入冲突无法隔离",
+            "显著增费且没有必要质量收益",
+        ):
+            self.assertIn(exception, detailed_authority)
+
+        for rejected_quota in (
+            "同类长任务的早期双派发",
+            "至少两个互不依赖",
+            "早期至少启动两个",
+            "所有任务至少派发两个子代理",
+            "不顾成本和安全凑足两个",
+        ):
+            self.assertNotIn(rejected_quota, detailed_authority)
+
     def test_runtime_capacity_replaces_plugin_numeric_caps(self) -> None:
         combined = self.skill + self.routing + self.delegation + self.readme
         self.assertIn("不另外设置插件调用次数限制", self.skill)
@@ -345,7 +379,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("外部维护任务", combined)
         self.assertIn("每个任务", self.skill)
         self.assertIn("不逐任务联网查价", self.skill)
-        self.assertIn("运行时不重新搜索费率", self.routing)
+        self.assertIn("不要求父代理在运行时重新计算令牌", self.cost)
         for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
             self.assertIn(model, self.cost)
         self.assertIn("只升级或重做该子任务", self.cost)
@@ -549,7 +583,7 @@ class SkillContractTests(unittest.TestCase):
             "不能取消",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact)
-        self.assertIn("准备只是优化", combined)
+        self.assertIn("准备子代理不写 SQLite，只是提前优化", combined)
         self.assertIn("不能取消已经完成", combined)
 
     def test_persistence_has_one_detailed_authority_and_discoverable_summaries(self) -> None:
@@ -1399,7 +1433,7 @@ class SkillContractTests(unittest.TestCase):
             "新选配全部默认标准速度",
             "普通任务不再向父代理重复发送相同四行",
             "父代理不中断主线",
-            "同类子任务按收益复制",
+            "持续多工作流任务尽早派发",
             "变体只为真实改进",
             "子代理可以成为协作父代理",
             "SOURCE_COVERAGE",

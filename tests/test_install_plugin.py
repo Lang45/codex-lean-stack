@@ -119,6 +119,49 @@ class PluginInstallTests(unittest.TestCase):
         self.assertFalse(result["agents"]["modified"])
         self.assertEqual(self.agents.read_bytes(), original)
 
+    def test_line_starting_with_user_plugin_requirement_is_preserved_after_install(self) -> None:
+        original = (
+            "必须调用已安装的 `codex-lean-stack` 插件，所有模型和思考程度的父代理均须使用本插件。\r\n"
+            "# 用户的其他全局规则\r\n"
+        ).encode("utf-8")
+        self.agents.write_bytes(original)
+
+        preflight = install_plugin.preflight_default_invocation(self.codex_home)
+
+        def successful_runner(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"ok":true}', stderr="")
+
+        with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+            result = install_plugin.install_plugin(
+                self.plugin_root,
+                marketplace="personal",
+                marketplace_path=self.marketplace,
+                codex_home=self.codex_home,
+                runner=successful_runner,
+            )
+
+        self.assertEqual(preflight["action"], "agents_default_present")
+        self.assertFalse(result["agents"]["modified"])
+        self.assertEqual(self.agents.read_bytes(), original)
+
+    def test_quoted_user_plugin_requirement_still_gets_the_precise_default_line(self) -> None:
+        original = (
+            "文档引用：必须调用已安装的 `codex-lean-stack` 插件，所有模型均适用。\n"
+        ).encode("utf-8")
+        self.agents.write_bytes(original)
+
+        preflight = install_plugin.preflight_default_invocation(self.codex_home)
+        ensured = install_plugin.ensure_default_invocation(self.codex_home)
+
+        self.assertEqual(preflight["action"], "agents_default_ready")
+        self.assertTrue(ensured["modified"])
+        self.assertEqual(
+            self.agents.read_text(encoding="utf-8").splitlines().count(
+                install_plugin.DEFAULT_INVOCATION_LINE
+            ),
+            1,
+        )
+
     def test_successful_install_adds_line_after_codex_returns_zero(self) -> None:
         self.agents.write_text("保护现有内容。\n", encoding="utf-8")
         calls: list[list[str]] = []

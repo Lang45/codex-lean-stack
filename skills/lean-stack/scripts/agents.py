@@ -635,7 +635,15 @@ def base_instructions(
         "底线后总成本优先，成本相近再比速度；没有相应质量收益时不为单纯提速大幅增费。"
         "总成本合计启动、父子上下文、操作输出、交流、整合、验证和返工。新选配默认标准速度，"
         "快速仅在当前用户明确速度或期限要求且完整路线有收益时选择；安全、权限、数据完整"
-        "性、明确验收条件和诚实证据始终是底线。给每个下游子代理单独写完整任务卡：task_id、"
+        "性、明确验收条件和诚实证据始终是底线。"
+        "获批子项目预计持续跨研究、实现或真实验收等多个阶段，并且当前出现多个互不依赖、"
+        "已就绪、能替代你实际研究、实现或验收的工作流时，默认尽早派发所有仍有边际收益且"
+        "互不冲突的 GPT-5.6 切片；在自己深入读取这些来源或开始对应实现前完成派发。数量由"
+        "真实工作流、收益和可用容量决定，不设固定最低值或占槽目标。不能因为收益无法精确量化、"
+        "自己也能完成，或稍后还能补一个复核，就默认把这些工作全部串行留给自己。只有确定性"
+        "短工具、输入未就绪、严格前后依赖、权限或写入冲突、重复工作，或明确大幅增费且没有"
+        "必要质量收益的切片才不派发。中途新要求使任务形状出现新的独立已就绪工作流时，立即"
+        "重新做同一次积极判断并派发当前合格切片。给每个下游子代理单独写完整任务卡：task_id、"
         "协作角色、目标、任务类型与任务类型组、子代理来源与运行配置、权威来源或输入快照、"
         "依赖与已就绪切片、写入所有权、是否允许下游"
         "委派及下游范围、是否允许调用其他或新建 Codex 父代理及跨任务范围、父代理规范任务名、成功条件、停止条件、有限关键步骤、证据与返回"
@@ -3118,7 +3126,7 @@ def build_parser() -> argparse.ArgumentParser:
     ensure.add_argument(
         "--speed",
         choices=sorted(SPEEDS),
-        help="explicit speed; omitted Luna roles default to fast and other models to standard",
+        help="explicit speed; omitted roles default to standard",
     )
     ensure.add_argument("--authority", required=True, choices=sorted(AUTHORITIES))
     ensure.add_argument("--global-domain-key", required=True)

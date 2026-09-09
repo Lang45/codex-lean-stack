@@ -23,6 +23,8 @@ DEFAULT_INVOCATION_LINE = (
     "默认调用已安装的 `codex-lean-stack` 插件；是否启动子代理仍由插件自身规则决定。"
 )
 USER_GLOBAL_INVOCATION_LINE = "必须调用已安装的 `codex-lean-stack` 插件。"
+USER_GLOBAL_INVOCATION_PREFIX = USER_GLOBAL_INVOCATION_LINE.removesuffix("。")
+INVOCATION_SEPARATOR_PUNCTUATION = frozenset("，。；：！？、,.;:!?")
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_MARKETPLACE_BYTES = 4 * 1024 * 1024
 MAX_AGENTS_BYTES = 1024 * 1024
@@ -226,17 +228,25 @@ def _atomic_replace(
             temporary.unlink()
 
 
+def _has_default_invocation(text: str) -> bool:
+    for line in text.splitlines():
+        if line == DEFAULT_INVOCATION_LINE:
+            return True
+        if not line.startswith(USER_GLOBAL_INVOCATION_PREFIX):
+            continue
+        remainder = line[len(USER_GLOBAL_INVOCATION_PREFIX) :]
+        if not remainder or remainder[0] in INVOCATION_SEPARATOR_PUNCTUATION:
+            return True
+    return False
+
+
 def _preflight_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
     _, text, _, _, _ = _read_agents(agents_path)
-    lines = text.splitlines()
     return {
         "ok": True,
         "action": (
             "agents_default_present"
-            if (
-                DEFAULT_INVOCATION_LINE in lines
-                or USER_GLOBAL_INVOCATION_LINE in lines
-            )
+            if _has_default_invocation(text)
             else "agents_default_ready"
         ),
         "agents_path": str(agents_path),
@@ -245,8 +255,7 @@ def _preflight_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
 
 def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
     original, text, has_bom, newline, mode = _read_agents(agents_path)
-    lines = text.splitlines()
-    if DEFAULT_INVOCATION_LINE in lines or USER_GLOBAL_INVOCATION_LINE in lines:
+    if _has_default_invocation(text):
         return {
             "ok": True,
             "action": "agents_default_present",
