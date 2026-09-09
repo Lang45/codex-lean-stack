@@ -80,34 +80,41 @@ class SkillContractTests(unittest.TestCase):
             nodes.append(match.group(1))
         self.assertEqual(len(nodes), len(set(nodes)), "entry and validation nodes must not merge")
 
-    def test_value_sensitive_priority_and_safety_floor_remain(self) -> None:
+    def test_quality_floor_then_total_cost_priority_and_safety_remain(self) -> None:
+        self.assertIn("高价值工作质量优先", self.skill)
         for content in (self.skill, self.routing, self.flowcharts):
-            self.assertIn("高价值工作", content)
-            self.assertIn("普通工作", content)
-            self.assertIn("质量优先", content)
-            self.assertIn("速度优先", content)
-        for readme_term in ("质量或速度收益", "风险", "成本"):
+            self.assertIn("总成本", content)
+        for readme_term in ("必要质量", "成本相近", "总成本"):
             self.assertIn(readme_term, self.readme)
         for floor in ("安全", "权限", "数据完整性", "诚实证据"):
             self.assertIn(floor, self.skill + self.readme)
         for principle in (
             "高价值工作质量优先",
-            "普通工作速度优先",
-            "总成本不得无收益地大幅增加",
+            "质量达标后总成本优先",
+            "成本相近时再比速度",
         ):
             self.assertIn(principle, self.skill)
+        self.assertNotIn("普通工作速度优先", self.skill)
 
-    def test_equal_quality_and_time_allow_lower_total_cost_without_overriding_priorities(self) -> None:
+    def test_quality_floor_allows_cost_first_then_speed_routing(self) -> None:
         for content in (self.skill, self.routing, self.readme, self.flowcharts):
-            self.assertIn("质量与总完成时间相当", content)
-        self.assertIn("成本优势不覆盖前两项", self.routing)
-        self.assertIn("也不是每次调用的必要条件", self.routing)
+            self.assertIn("总成本", content)
+        self.assertIn("质量达标后：先比较", self.routing)
+        self.assertIn("成本相近时：再比较总完成时间", self.routing)
         self.assertIn("父代理仍核对关键差异、接口和安全边界", self.routing)
         self.assertIn("用户要求全文或必要核验不受精简限制", self.delegation)
         main = self.flowcharts.split("```mermaid", 1)[1].split("```", 1)[0]
         decision = re.search(r"H\{([^}]+)\}", main)
         self.assertIsNotNone(decision)
-        self.assertIn("二者相当时总成本更低", decision.group(1))
+        self.assertIn("必要质量收益或质量达标时总成本更低", decision.group(1))
+        combined = self.skill + self.routing + self.readme + self.flowcharts
+        for stale_priority in (
+            "普通工作速度优先",
+            "质量与总完成时间相当",
+            "成本优势不覆盖前两项",
+            "二者相当时总成本更低",
+        ):
+            self.assertNotIn(stale_priority, combined)
 
     def test_plugin_rule_is_mandatory_and_default_trigger_is_not_used(
         self,
@@ -365,7 +372,7 @@ class SkillContractTests(unittest.TestCase):
             "第二个及后续调用",
             "只升级",
             "标准速度",
-            "真实关键路径",
+            "关键路径",
             "不是永久白名单",
         ):
             self.assertIn(boundary, combined)
@@ -375,8 +382,9 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("任务类型", content)
             self.assertIn("任务类型组", content)
             self.assertIn("保留子代理", content)
-        for removed in ("工作块", "父任务", "宿主"):
-            self.assertNotIn(removed, self.chinese_docs)
+        # “父任务”仍在内部消息与跨任务 API 的负向保护中出现；只有废弃的
+        # 分类术语应从中文合同中消失。
+        self.assertNotIn("工作块", self.chinese_docs)
         self.assertNotIn("实" + "例", self.chinese_docs)
         self.assertIn("`instance` 译为“子任务”", self.skill)
 
@@ -690,7 +698,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(concrete_config_boundary, combined)
 
         self.assertIn(
-            "只有新父代理任务能带来真实速度或质量收益时才调用 `create_thread`",
+            "只有新父代理任务能带来必要质量或质量达标后的总成本收益时才调用 `create_thread`",
             self.collaboration,
         )
         self.assertIn("只有任务卡明确写", self.agents_source)
@@ -775,15 +783,17 @@ class SkillContractTests(unittest.TestCase):
     def test_bounded_key_step_messages_continue_without_ack_or_scope_expansion(
         self,
     ) -> None:
-        for required in ("关键步骤", "停止条件", "不等待父代理"):
-            self.assertIn(required, self.delegation)
+        self.assertIn("关键步骤", self.delegation)
+        self.assertIn("停止条件", self.delegation)
+        self.assertIn("关键步骤只为真实依赖", self.readme)
+        self.assertIn("不发送定时心跳、纯确认消息或普通过程复述", self.readme)
         self.assertIn("委派不增加权限", self.skill)
         self.assertIn("持续实现、调试与等待中", self.skill)
         self.assertIn(
             "](skills/lean-stack/references/delegation.md)",
             self.readme,
         )
-        self.assertIn("ready, bounded, independently verifiable task", self.readme)
+        self.assertIn("只有中间结果会解锁下一动作时才报告一次并继续", self.readme)
 
     def test_retained_self_reads_and_declares_while_parent_configures_new_or_variant(self) -> None:
         combined = self.skill + self.delegation + self.readme + self.handoff + self.collaboration
@@ -821,7 +831,7 @@ class SkillContractTests(unittest.TestCase):
     def test_configuration_declarations_use_real_channels_without_order_gate(
         self,
     ) -> None:
-        combined = "\n".join((self.skill, self.delegation, self.collaboration))
+        combined = "\n".join((self.skill, self.delegation, self.collaboration, self.agents_source))
         compact = re.sub(r"\s+", "", combined)
         for required in (
             "父代理规范任务名",
@@ -831,15 +841,12 @@ class SkillContractTests(unittest.TestCase):
             "完整四行",
             "自己的任务界面",
             "commentary",
-            "公开同一四行",
-            "内部消息发送、在子代理 commentary 公开",
+            "公开完整四行",
             "最终回复顶部",
             "实际模型、思考程度和速度",
-            "声明不是关键步骤",
-            "不占关键步骤消息数量",
-            "不规定具体先后",
+            "不计入关键步骤",
+            "不设固定先后顺序",
             "reasoning",
-            "不规定声明与其他动作的先后",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact)
 
@@ -856,13 +863,27 @@ class SkillContractTests(unittest.TestCase):
 
         for boundary in (
             "send_message_to_thread",
-            "内部父子消息的替代",
-            "内部通道能力缺口",
-            "只有任务完全自包含、无需中途纠偏时才继续",
-            "父代理自己的工具表和历史运行不能代替当前子代理能力证据",
-            "multi_agent_version=v2",
+            "跨任务操作冒充内部消息",
+            "工具缺失或直接调用失败",
+            "自包含任务可继续",
+            "实际能力仍以真实调用为准",
         ):
-            self.assertIn(boundary, self.delegation)
+            self.assertIn(boundary, self.delegation + self.agents_source)
+
+        for boundary in (
+            "只有真实依赖解锁、必要纠偏、风险或阻断才使用内部消息",
+            "不为证明工具存在发送探针",
+        ):
+            self.assertIn(boundary, self.agents_source)
+        self.assertNotIn("向父代理发送以下四行", self.agents_source)
+        detailed_declaration_docs = combined + self.routing
+        for stale_internal_copy in (
+            "子代理在当前子任务中通过内部消息发送完整四行",
+            "发送完整四行声明",
+            "成功路线必须同时存在父代理收到的内部副本",
+        ):
+            self.assertNotIn(stale_internal_copy, detailed_declaration_docs)
+        self.assertNotIn("完整四行", self.handoff)
 
         final_template = self.delegation.split("最终回复使用：", 1)[1]
         for field in ("模型：<具体模型>", "速度：<标准或快速>"):
@@ -1155,7 +1176,6 @@ class SkillContractTests(unittest.TestCase):
             "只重新打开真正受影响",
             "为每个子任务分别指定",
             "父代理规范任务名",
-            "multi_agent_version=v2",
             "自定义角色 TOML",
             "ALL_TOOLS",
             "跨任务 API",
@@ -1279,9 +1299,6 @@ class SkillContractTests(unittest.TestCase):
             "链路图只是辅助说明",
             "未完成要求锚点",
             "此前已经交付的完成项不重复总结",
-            "multi_agent_version=v2",
-            "include_instructions=false",
-            "ALL_TOOLS",
             "Windows回收站",
             "待删文件",
         ):
@@ -1377,12 +1394,12 @@ class SkillContractTests(unittest.TestCase):
             "## 文档 / Docs",
             "official OpenAI plugin documentation",
             "OpenAI 官方插件文档",
-            "Luna 使用真实内部交流",
-            "multi_agent_version=v2",
-            "agent_message",
-            "子代理开头主动声明自己",
+            "内部交流只服务真实依赖",
+            "子代理公开实际配置",
+            "新选配全部默认标准速度",
+            "普通任务不再向父代理重复发送相同四行",
             "父代理不中断主线",
-            "同类子任务可以复制加速",
+            "同类子任务按收益复制",
             "变体只为真实改进",
             "子代理可以成为协作父代理",
             "SOURCE_COVERAGE",
@@ -1391,8 +1408,9 @@ class SkillContractTests(unittest.TestCase):
             "`ensure` 和 `improve`",
             "没有项目保留层",
             "没有后台编排系统",
-            "Verified Luna messaging",
-            "Copies accelerate repeated work",
+            "Internal messages serve real dependencies",
+            "Agents disclose configuration visibly",
+            "New selections default to Standard speed",
             "Accepted work becomes experience",
             "No background orchestrator",
             "普通文件进入 Windows 回收站",
@@ -1438,14 +1456,14 @@ class SkillContractTests(unittest.TestCase):
             "自己的线程",
             "最终回复",
             "提交自己的精炼结果",
-            "不建立共享中转文件",
             "不由一个子代理汇总其他子代理",
             "不主动反复轮询",
             "统一收口确实依赖全部必要结果时才等待全部",
-            "状态：完成 | 部分完成 | 受阻",
-            "证据或缺口：",
         ):
             self.assertIn(required, combined)
+        for final_field in ("状态：完成 | 部分完成 | 受阻", "证据或缺口："):
+            self.assertIn(final_field, self.agents_source)
+        self.assertIn("不建立共享中转文件", self.agents_source)
         self.assertIn("最终回复", self.delegation)
         self.assertNotIn("交付父代理", self.chinese_docs)
 

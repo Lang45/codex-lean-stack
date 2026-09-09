@@ -198,52 +198,42 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
         self.assertIn(opening, instructions)
         role = instructions.index(role_paragraph)
-        communication = instructions.index(
-            "需要在这个子任务中分别向父代理和用户声明实际配置",
-            role,
-        )
-        direct_channel = instructions.index("collaboration.send_message", communication)
-        declaration = instructions.index(opening, direct_channel)
+        communication = instructions.index("在自己的代理线程以 commentary", role)
+        declaration = instructions.index(opening, communication)
         visible = instructions.index(
-            "自己的代理线程（用户可见任务界面）以 commentary",
-            declaration,
+            "普通任务不再向父代理发送重复内部配置副本",
+            communication,
         )
         final_result = instructions.index("最终回复固定写", visible)
         final_declaration = instructions.index(opening, final_result)
         final_task = instructions.index("子任务：<当前子任务>", final_declaration)
         self.assertEqual(instructions.count(opening), 2)
         self.assertLess(role, communication)
-        self.assertLess(direct_channel, declaration)
+        self.assertLess(communication, declaration)
+        self.assertLess(visible, declaration)
         self.assertLess(final_result, final_declaration)
         self.assertLess(final_declaration, final_task)
         for opening_contract in (
-            "父代理规范任务名作为消息目标（例如 /root）",
-            "这个目标不是 Codex threadId",
             "multi_agent_version=v2",
-            "角色 TOML 不能替父会话授予协作工具",
             "collaboration.send_message 故意不在 functions.exec 的 ALL_TOOLS 中",
-            "必须直接用 collaboration.send_message",
+            "角色 TOML 不能授予工具",
             "list_threads 搜索父任务",
             "send_message_to_thread 等跨任务 API 替代内部消息",
-            "按当前任务卡和三项原则直接授权的父代理跨任务协作不受影响",
-            "直接调用不存在或报错时",
-            "自己的代理线程（用户可见任务界面）以 commentary",
-            "reasoning、文件读取、分析、其他工具调用和真实工作之间不设固定先后顺序",
-            "不能因为这些事件出现在声明前后就判定通信失败",
-            "成功路线的内部副本和用户可见副本缺一不可",
+            "有业务需要且真实可用时直接调用，不为证明工具存在发送探针",
+            "Luna 的 multi_agent_version=v2 和父会话启用多代理是内部通道的配置前提",
+            "实际能力仍以真实调用为准",
+            "内部交流是成功条件而工具缺失或直接调用失败时停止并报告",
+            "自包含任务可继续",
             "公开副本不能冒充内部消息",
-            "在最终回复报告缺口",
-            "内部交流是成功条件就停止",
-            "无需中途纠偏的自包含任务",
-            "不能宣称内部交流可用",
             "不能省略或只留到关键步骤、最终回复",
             "最终回复顶部再次写实际模型、思考程度和速度",
-            "声明不要求父代理确认",
             "声明不要求父代理确认，不计入关键步骤",
             "父代理用 send_message 纠偏不算启动新子任务，不重复开场声明",
             "三个字段不能省略",
         ):
             self.assertIn(opening_contract, instructions)
+        self.assertNotIn("向父代理发送以下四行", instructions)
+        self.assertNotIn("成功路线的内部副本和用户可见副本缺一不可", instructions)
         for obsolete_order_contract in (
             "你的第一动作必须",
             "第二动作必须紧接着",
@@ -269,8 +259,8 @@ class SpecialistRegistryTests(unittest.TestCase):
             "停止下游委派并向父代理报告",
             "协作父代理对每个下游切片继续应用三项原则",
             "高价值工作质量优先",
-            "普通工作达到质量底线后速度优先",
-            "没有相应质量或速度收益时不让总成本大幅增加",
+            "普通工作达到质量底线后总成本优先，成本相近再比速度",
+            "没有相应质量收益时不为单纯提速大幅增费",
             "安全、权限、数据完整性、明确验收条件和诚实证据始终是底线",
             "给每个下游子代理单独写完整任务卡",
             "task_id",
@@ -331,8 +321,9 @@ class SpecialistRegistryTests(unittest.TestCase):
             "为该子任务单独指定的成功条件",
             "有限关键步骤清单",
             "没有预设关键步骤时不自行追加",
-            "每完成一个预设关键步骤，只发送一条短消息并立即继续，不等待父代理",
-            "每个关键步骤最多一条常规进度",
+            "仅当预设关键步骤的结果会解锁父代理或队友下一动作时，发送一条短内部消息并立即继续",
+            "没有真实依赖的普通过程随最终回复交付，不按步骤机械发消息",
+            "每个依赖关键步骤最多一条内部进度",
             "同一方向风险只有状态实质变化后才能再次报告",
             "不发送定时心跳或纯确认消息",
             "父代理无异议时可沉默",
@@ -485,7 +476,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(instructions.count(opening), 2)
         self.assertLess(instructions.index("你是专门负责"), instructions.index(opening))
         self.assertLess(
-            instructions.index("自己的代理线程（用户可见任务界面）以 commentary"),
+            instructions.index("在自己的代理线程以 commentary"),
             instructions.index("只完成父代理分配的当前子任务"),
         )
         self.assertLess(
@@ -493,7 +484,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             instructions.rindex(opening),
         )
 
-    def test_ensure_omitted_speed_defaults_luna_fast_and_other_models_standard(self) -> None:
+    def test_ensure_omitted_speed_defaults_all_models_to_standard(self) -> None:
         luna = self.ensure(
             role_key="luna-default-speed-review",
             global_domain_key="luna-default-speed-review",
@@ -519,19 +510,19 @@ class SpecialistRegistryTests(unittest.TestCase):
         standard_payload = tomllib.loads(
             Path(explicit_standard["path"]).read_text(encoding="utf-8")
         )
-        self.assertEqual(luna_payload["service_tier"], "fast")
-        self.assertIn("速度：快速", luna_payload["developer_instructions"])
+        self.assertNotIn("service_tier", luna_payload)
+        self.assertIn("速度：标准", luna_payload["developer_instructions"])
         self.assertNotIn("service_tier", terra_payload)
         self.assertIn("速度：标准", terra_payload["developer_instructions"])
         self.assertNotIn("service_tier", standard_payload)
 
-    def test_luna_default_fast_reconfiguration_requires_cas_and_preserves_identity(self) -> None:
+    def test_omitted_standard_does_not_overwrite_explicit_fast_without_cas(self) -> None:
         created = self.ensure(
             role_key="luna-default-reconfiguration",
             global_domain_key="luna-default-reconfiguration",
             model="gpt-5.6-luna",
             effort="medium",
-            speed="standard",
+            speed="fast",
         )
         improved = self.improve_with_lesson(
             name=created["name"],
@@ -563,19 +554,18 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(reconfigured["agent_id"], created["agent_id"])
         self.assertEqual(reconfigured["owner_token"], created["owner_token"])
         self.assertEqual(reconfigured["path"], created["path"])
-        self.assertEqual(payload["service_tier"], "fast")
+        self.assertNotIn("service_tier", payload)
         self.assertIn("安全重配必须保留身份", payload["developer_instructions"])
 
-        fast_bytes = path.read_bytes()
-        explicit_standard = self.ensure(
+        standard_bytes = path.read_bytes()
+        repeated = self.ensure(
             role_key="luna-default-reconfiguration",
             global_domain_key="luna-default-reconfiguration",
             model="gpt-5.6-luna",
             effort="medium",
-            speed="standard",
         )
-        self.assertEqual(explicit_standard["action"], "reconfiguration_required")
-        self.assertEqual(path.read_bytes(), fast_bytes)
+        self.assertEqual(repeated["action"], "reused")
+        self.assertEqual(path.read_bytes(), standard_bytes)
 
     def test_distinct_reusable_work_gets_distinct_writable_or_read_specialists(self) -> None:
         reader = self.ensure(role_key="qml-binding-diagnostics", authority="read")
@@ -1894,7 +1884,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             },
         )
         self.assertEqual(items[0]["description"], "来源复核员：复核来源覆盖和证据边界。")
-        self.assertEqual(items[0]["speed"], "fast")
+        self.assertEqual(items[0]["speed"], "standard")
         self.assertEqual(items[1]["authority"], "write")
 
         path = Path(later["path"])
@@ -2395,7 +2385,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         created_payload = tomllib.loads(
             Path(created["path"]).read_text(encoding="utf-8")
         )
-        self.assertEqual(created_payload["service_tier"], "fast")
+        self.assertNotIn("service_tier", created_payload)
 
         record_output = io.StringIO()
         with contextlib.redirect_stdout(record_output):

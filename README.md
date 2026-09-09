@@ -13,26 +13,26 @@
 2. **锚点只保留剩余要求。** 已完成并在上一条回复中交付的要求自动退出；纠正只重新打开受影响项，“继续”只恢复尚未完成或尚未交付的事项。
 3. **工具先行。** 短命令、批量查询和步骤确定的工作直接用工具或持续终端完成，不启动只会代跑命令的模型子代理。
 4. **复杂 PowerShell 及时落到脚本。** 简单命令仍内联；多层引号、嵌套 JSON/正则、反引号、多行逻辑或复杂变量插值直接写入任务专属临时 `.ps1`。首次失败确认是解析或转义后就停止改写 one-liner，后续只编辑同一脚本；脚本不入库、不含秘密，清理时进入 Windows 回收站或任务专属 `待删文件`。
-5. **三原则决定调用。** 任务已就绪、边界清楚、可独立核验且需模型判断时，质量或速度收益、或质量与总完成时间相当时的总成本优势都可触发委派。降成本服从三原则，不叠加“每次必须省钱”的门槛。
+5. **三原则决定调用。** 高价值工作先守必要质量和决定性证据；质量达标后先比较父子输入输出、交流、核验和返工组成的全任务总成本，成本相近才比较总完成时间。当前用户明确速度或期限要求时再提高速度权重；没有必要质量收益时，不为单纯提速大幅增费。正向寻找能替代父代理阅读、实现或分析的切片，端到端任务也可委派。
 6. **不追求代理数量。** 插件使用运行环境的真实并发容量，但容量只是上限，不设置“必须调用几个”或“必须占满”的目标。
 7. **先分任务类型再选代理。** 按职责、输入与证据匹配保留角色；描述不足或准备因无匹配而新建角色前，通过 `status --for-routing` 核对一次目录。角色未加载或配置需要适配时，用 `recall --name <角色名>` 取得经过身份核验的职责、配置与有界经验，复用已有专长，不另造同领域记录。
-8. **联合选择完整配置。** 所有父代理按三原则比较完整的“模型 + 思考程度 + 速度”组合，三个字段可以一起调整，同一模型不固定一档；Luna 默认快速。保留用户的父代理选择，独立子任务显式选配，必要时只适配当前调用；声明直接写具体配置，实际冲突另行说明。
+8. **联合选择完整配置。** 所有父代理按三原则比较完整的“模型 + 思考程度 + 速度”组合，三个字段可以一起调整，同一模型不固定一档；Luna、Terra、Sol 是通常候选，Sol 可端到端承担复杂高价值工作。Astra 只在额外决定性质量或更少返工、token 等使全任务总成本更低时考虑，不能只凭更快。新选配全部默认标准速度；只有当前用户明确速度或期限要求且完整路线有收益时才用快速。已有显式快速配置保留真实值，不适配时只调整本次调用。
 9. **交接能直接接着做。** 跨项目交接保留用户操作验收、权威路径、已否定路线和末尾唯一当前快照；具体规则见[可执行项目交接](skills/lean-stack/references/project-handoff.md)。
 10. **上下文按任务需要继承。** 独立窄任务优先 `fork_turns="none"`；依赖前面决策时才加历史。新上下文任务说明显式携带职责、工具与安全边界，继承父级历史也不自动获得父级编排权限。
 
 ### 运行中
 
-1. **Luna 使用真实内部交流。** 新会话第一次使用 `gpt-5.6-luna` 前核对 `agents.enabled` 和实际 `multi_agent_version=v2`；只有父代理收到真实 `agent_message` 才算交流可用，跨任务消息不能冒充。
-2. **子代理开头主动声明自己。** 每次启动新子任务时，子代理在内部消息和自己的可见 `commentary` 中声明名称、模型、思考程度和速度，并在最终回复顶部再次声明。
-3. **关键步骤有限且不中断工作。** 每个预设关键步骤最多报告一次，发完立即继续，不发送定时心跳、纯确认消息或等待父代理逐条批准。
-4. **父代理不中断主线。** 子代理运行时父代理继续需求、架构、集成或共享热点，只在下一步真实依赖某个结果时等待，不为“收齐所有代理”而空等。
-5. **同类子任务可以复制加速。** 第二个及后续已就绪的同类型子任务复制组内基准子代理，沿用配置和经验，但分别获得输入、成功条件和权限边界。
+1. **内部交流只服务真实依赖。** 只有证据会解锁父代理或队友下一动作、需要输入纠偏，或出现风险和阻断时才发内部消息；普通过程随最终回复交付，不重复汇报。
+2. **子代理公开实际配置。** 每次启动新子任务时，子代理在自己的可见 `commentary` 和最终回复顶部声明名称、模型、思考程度和速度；普通任务不再向父代理重复发送相同四行，也不索要确认。
+3. **关键步骤只为真实依赖。** 只有中间结果会解锁下一动作时才报告一次并继续；不发送定时心跳、纯确认消息或普通过程复述。
+4. **父代理不中断主线。** 子代理运行时父代理继续约束、冲突、必要核验、集成或共享热点，不全面重做证据充分的子任务；只在下一步真实依赖某个结果时等待，不为“收齐所有代理”而空等。
+5. **同类子任务按收益复制。** 第二个及后续已就绪的同类型子任务只有能降低全任务总成本、提供必要质量收益，或在成本相近且用户有当前期限要求时才复制；各自保留输入、成功条件和权限边界。
 6. **变体只为真实改进。** 只有基准代理确有改进空间时才建立变体，并用完整的模型、思考程度和速度组合完成真实任务后比较，不为制造实验而改一个参数。
 7. **子代理可以成为协作父代理。** 有边界的子项目包含多个独立切片时，一个子代理可在获批范围内协调下游；下游各自提交结果，最上层仍只有一个最终整合父代理。
 8. **可以协作其他 Codex 父代理任务。** 在当前授权和三项原则内可读取、调用或新建用户可见的 Codex 任务，但必须指定唯一整合者，并与内部父子消息严格分开。
 9. **并行写入有明确所有权。** 不重叠文件可以并行修改，共享清单、接口或数据库最后集中整合；没有独立工作树时，同一物理文件只允许一个实际写入者。
-10. **委派替代重复劳动。** 工具先定位，在父代理大量预读或生成前交给合适角色；相关问题共享材料，已落盘结果只回定位、关键差异与验证。来源读取保留 `SOURCE_COVERAGE`，父代理按风险精读核验，用户要求全文不省略；按父子合计消耗与返工评估成本。
-11. **依赖证据可以直达队友。** 同一团队已知队友之间可通过内部消息传递来源、发现与验证程度；影响职责、共享写入或安全的变化同时告知父代理裁决，不等待确认，也不代交队友最终结果。
+10. **委派替代重复劳动。** 工具先定位并批量读取独立来源，在工具侧筛选和限制输出预算，再在昂贵父代理大量预读或生成前交给合适角色；已落盘结果只回定位、关键差异与验证。父代理按风险核验关键差异，不全面重做；按父子合计消耗、交流与返工评估成本。
+11. **依赖证据才直达队友。** 只有真正解锁下一动作的来源和发现才发内部消息；影响职责、共享写入或安全的变化同时告知父代理裁决，不等待确认，也不代交队友最终结果。
 
 ### 收口与复用
 
@@ -65,7 +65,7 @@
   → 不能：完成一次调用判断
 → 确定具体任务类型和运行时任务类型组
 → 复用保留子代理，或联合配置运行时新子代理
-→ 子代理声明自己；父代理与独立子任务并行推进
+→ 子代理在自身界面声明配置；父代理与独立子任务并行推进
 → 只在真实依赖点等待并核验各自结果
 → 复制或变体完成组内收口
 → 能去项目化：保留全局领域角色并追加经验
@@ -78,7 +78,7 @@
 - 工具可以更快完成；
 - 输入或前置条件还没准备好；
 - 任务无法独立切分，写入冲突也无法隔离；
-- 只会重复已有工作，不能增加质量、证据或速度；
+- 只会重复已有工作，不能增加必要质量、证据或降低全任务总成本；
 - 新增调用的交接、等待和核验成本高于收益；
 - 启动后只能等待，不能完成真实任务。
 
@@ -93,26 +93,26 @@ maintenance needs them, and reuse unchanged instructions already in context.
 2. **The anchor contains only remaining work.** A completed requirement leaves the active list after delivery; a correction reopens only affected work, and “continue” resumes only unfinished or not-yet-delivered items.
 3. **Tool first.** Run deterministic commands, batch queries, and long predictable processes directly instead of spawning a model to relay an exit code.
 4. **Move complex PowerShell into a script.** Keep simple commands inline; use a task-scoped temporary `.ps1` for nested quoting, JSON/regex, backticks, multiline logic, or complex interpolation. After the first confirmed parse or escaping failure, stop rewriting the one-liner and edit the same script; keep it out of the repository and free of secrets, then move it recoverably to the Windows Recycle Bin or a scoped `待删文件` when cleaning up.
-5. **The three principles decide.** Delegate a ready, bounded, independently verifiable task needing model judgment for quality or speed gains, or lower total cost when quality and completion time are comparable. Cost saving remains subordinate to these priorities, not a requirement for every delegation.
+5. **The three principles decide.** Preserve required quality and decisive evidence first, especially for high-value work. Once quality is sufficient, compare whole-task parent-and-child cost before elapsed time. Raise speed only when costs are close or the user states a current deadline or speed preference; do not pay substantially more merely to go faster without a required quality gain. Delegate ready end-to-end reading, implementation, and analysis slices that can replace parent work.
 6. **Capacity is not a quota.** Use available runtime capacity without targeting a fixed agent count or filling every slot.
 7. **Classify before selecting.** Match retained roles by responsibility, inputs, and evidence. Check `status --for-routing` once when descriptions are insufficient or before creating a role because no match was found. For an unloaded role or a configuration adaptation, use `recall --name <role-name>` to retrieve verified duties, configuration, and bounded experience without creating another domain record.
-8. **Select one complete configuration.** Every parent compares complete model, reasoning, and speed combinations under the three principles; all three may change together, with no fixed effort per model. Luna defaults to Fast. Preserve the user's parent choice, adapt only the current subtask when needed, and disclose concrete settings with a separate note only for actual conflicts.
+8. **Select one complete configuration.** Every parent compares complete model, reasoning, and speed combinations under the three principles. Luna, Terra, and Sol are the usual candidates; Sol can own complex high-value work end to end. Use Astra only for additional decisive quality or a lower whole-task cost through less rework or fewer tokens, not merely because it is faster. New selections default to Standard speed, including Luna. Use Fast only for an explicit current deadline or speed request when the complete route benefits; preserve an existing explicit Fast setting and adapt only the current call when it no longer fits.
 9. **Make handoffs actionable.** Preserve user-operation acceptance, authoritative paths, rejected routes, and one current snapshot; see [project handoffs](skills/lean-stack/references/project-handoff.md).
 10. **Inherit only useful context.** Prefer `fork_turns="none"` for independent bounded tasks and add history only when prior decisions matter. Include task-specific tool, safety, and ownership limits explicitly; inherited orchestration instructions do not grant the parent's authority.
 
 ### While agents run
 
-1. **Verified Luna messaging.** Check `agents.enabled` and the real Luna catalog's `multi_agent_version=v2`; only a received `agent_message` proves internal communication works.
-2. **Agents introduce themselves.** Every new subtask discloses name, model, reasoning effort, and speed internally, visibly in its own thread, and again at the top of its final result.
-3. **Finite progress messages.** Report each predefined key step at most once, continue immediately, and send no heartbeat or acknowledgement loop.
+1. **Internal messages serve real dependencies.** Send one only when evidence unlocks the parent or a teammate, input needs correction, or a risk or blocker appears; ordinary process arrives in the final result.
+2. **Agents disclose configuration visibly.** Every new subtask shows name, model, reasoning effort, and speed in its own commentary and again at the top of its final result. Ordinary tasks do not repeat the same four lines internally or request confirmation.
+3. **Key steps require dependencies.** Report a key step only when its intermediate result unlocks another action, then continue. Send no heartbeat, acknowledgement loop, or routine process recap.
 4. **The parent keeps moving.** Continue main-line work and wait only at a real dependency instead of waiting merely to collect every agent.
-5. **Copies accelerate repeated work.** Additional ready tasks of the same type reuse the baseline agent's configuration and experience while keeping separate inputs and acceptance conditions.
+5. **Copies must earn their cost.** Additional ready tasks of the same type reuse the baseline agent only for necessary quality, lower whole-task cost, or faster completion when costs are close and the user has a current deadline.
 6. **Variants must earn their place.** Create a variant only for a plausible improvement, run a real task, and compare the complete configuration rather than changing one knob for appearance.
 7. **Bounded coordination parents.** A scoped subproject may coordinate downstream agents, while every child keeps its own result and one top-level parent owns the final integration.
 8. **Cross-task parent collaboration.** Read, continue, or create visible Codex tasks within current authority, with one integrator and no confusion with internal parent-child messaging.
 9. **Writable work has ownership.** Parallelize non-overlapping files, integrate shared hotspots once, and allow one real writer per physical file unless genuine worktree isolation exists.
-10. **Source coverage is explicit.** Reading agents return `SOURCE_COVERAGE` with the snapshot, coverage level, and remaining gap instead of flooding the parent with raw logs.
-11. **Dependencies can reach teammates directly.** Known teammates may exchange internal messages with sources, findings, and verification status. Send responsibility, shared-write, and safety conflicts to the parent; do not wait for acknowledgements or replace final results.
+10. **Source coverage is explicit.** Batch independent reads, filter and budget output in tools, and return `SOURCE_COVERAGE` with the snapshot, coverage level, and remaining gap instead of flooding the parent with raw logs.
+11. **Only dependency evidence goes directly to teammates.** Send sourced findings internally only when they unlock a next action; route responsibility, shared-write, and safety conflicts to the parent without acknowledgement loops or duplicate final results.
 
 ### Closing and reuse
 
