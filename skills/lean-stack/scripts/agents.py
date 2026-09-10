@@ -2,7 +2,7 @@
 """Small specialist-agent registry for Codex Lean Stack.
 
 The hot dispatch path never depends on this tool.  It only persists one reusable
-specialist per role, records idempotent successful survival rounds, appends
+specialist per role, records idempotent completed task outcomes, appends
 sanitized experience or corrections, maintains a bounded prompt summary, and
 recoverably retires or explicitly restores an exactly owned unused agent.
 """
@@ -21,12 +21,13 @@ import re
 import sqlite3
 import stat
 import tempfile
+import time
 import tomllib
 from typing import Any, Callable, Iterable, Sequence
 import uuid
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 GLOBAL_CONTRACT_VERSION = 1
 GLOBAL_SCOPE = "codex-global-domain-v1"
 DB_NAME = "specialist-memory-v1.sqlite3"
@@ -73,8 +74,15 @@ EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 AUTHORITIES = {"read", "write"}
 SPEEDS = {"standard", "fast"}
 INVOCATION_KINDS = {"spawn_agent", "followup_task"}
+RUN_OUTCOMES = {"success", "failure"}
+FAILURE_RETIREMENT_THRESHOLD = 2
 INTERNAL_MESSAGE_RUNTIME_ROUTE = (
     "require_luna_model_catalog_v2_then_use_direct_collaboration_send_message"
+)
+ACTIVE_EXPERIENCE_EVENT_FILTER = (
+    "NOT EXISTS (SELECT 1 FROM experience_events AS correction "
+    "WHERE correction.agent_id = event.agent_id "
+    "AND correction.retracts_event_id = event.event_id)"
 )
 
 SCHEMA_V2_TABLE_SQL = {
@@ -128,8 +136,8 @@ SCHEMA_V3_TABLE_SQL["agent_runs"] = """
     )
 """
 
-SCHEMA_TABLE_SQL = dict(SCHEMA_V3_TABLE_SQL)
-SCHEMA_TABLE_SQL["agents"] = """
+SCHEMA_V4_TABLE_SQL = dict(SCHEMA_V3_TABLE_SQL)
+SCHEMA_V4_TABLE_SQL["agents"] = """
     CREATE TABLE agents (
         agent_id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
@@ -144,6 +152,36 @@ SCHEMA_TABLE_SQL["agents"] = """
         global_contract TEXT NOT NULL,
         global_contract_digest TEXT NOT NULL
     )
+"""
+
+SCHEMA_TABLE_SQL = dict(SCHEMA_V4_TABLE_SQL)
+# Preserve SQLite's ALTER TABLE punctuation so fresh v5 databases and explicit
+# v4 migrations have one identical, fail-closed sqlite_master representation.
+SCHEMA_TABLE_SQL["agents"] = """
+    CREATE TABLE agents (
+        agent_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        role_key TEXT NOT NULL UNIQUE,
+        path TEXT NOT NULL UNIQUE,
+        owner_token TEXT NOT NULL,
+        expected_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        global_contract_version INTEGER NOT NULL CHECK(global_contract_version = 1),
+        global_domain_key TEXT NOT NULL,
+        global_contract TEXT NOT NULL,
+        global_contract_digest TEXT NOT NULL ,
+        retired_at TEXT)
+"""
+SCHEMA_TABLE_SQL["agent_runs"] = """
+    CREATE TABLE agent_runs (
+        run_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+        invocation_kind TEXT NOT NULL
+            CHECK(invocation_kind IN ('spawn_agent', 'followup_task')),
+        completed_at TEXT NOT NULL ,
+        outcome TEXT NOT NULL DEFAULT 'success'
+            CHECK(outcome IN ('success','failure')))
 """
 
 SCHEMA_V1_TABLE_SQL = dict(SCHEMA_V2_TABLE_SQL)
@@ -586,11 +624,9 @@ def base_instructions(
     role_opening = (
         f"你是专门负责“{display_name}”的子代理，可复用专长标识为 {role_key}。"
         f"{role_instructions} {write_rule}{contract_rule}"
-        "从当前任务说明、已加载配置末尾经验和指定证据直接开始。项目完整交接、插件选路、"
-        "发布与经验管理属于父代理；普通子代理不因新线程或上下文重置自动全文读取交接或"
-        "整套技能，不另搜插件缓存、角色 TOML 或台账。分配职责或用户明确要求涉及这些来源时"
-        "才有界读取，更高层明确读取要求仍须遵守。缺少必要输入就报告具体缺口；扩读只回答"
-        "尚未解决的问题，截断只补缺段，决定性源码或产物仍须亲自核验。"
+        "从任务卡、经验、证据开始；交接、选路、发布、经验属父代理。"
+        "不通读交接、技能、缓存、TOML、台账；按职责、缺口、要求有界读。"
+        "输入不足报告；截断补缺，源码产物须亲验。"
     )
     declaration = (
         f"我是{display_name}。\n"
@@ -602,7 +638,7 @@ def base_instructions(
         "spawn_agent 或 followup_task 启动新当前子任务后，在自己的代理线程以 commentary "
         "公开以下实际配置，最终回复保留同一配置抬头；普通任务不再向父代理发送重复内部配置副本：\n"
         + declaration
-        + "用户可见显示、reasoning、文件读取、分析、其他工具调用和真实工作之间不设固定先后顺序。"
+        + "显示、reasoning、读取、分析、工具和工作不设固定先后顺序。"
         "三个字段不能省略或只留到关键步骤、最终回复；禁止用未揭露、继承父级"
         "等占位文字。声明不要求父代理确认，不计入关键步骤。父代理用 send_message 纠偏不算启动"
         "新子任务，不重复开场声明。只有真实依赖解锁、必要纠偏、风险或阻断才使用内部消息；"
@@ -612,20 +648,15 @@ def base_instructions(
         "父会话启用多代理是内部通道的配置前提，角色 TOML 不能授予工具；实际能力仍以真实调用为准。"
         "内部交流是成功条件而工具缺失或直接调用失败时停止并报告；自包含任务可继续，但公开"
         "副本不能冒充内部消息。不得用 list_threads 搜索父任务或用 send_message_to_thread "
-        "等跨任务 API 替代内部消息；另外已授权的跨任务工作仍遵守自己的工具边界。"
+        "等跨任务 API 替代内部消息。"
     )
     return role_opening + "\n\n" + opening + "\n\n" + (
-        "做分配任务，返回成果。用用户语言；标识、命令、"
-        "路径、模型名和原始错误用代码格式。"
-        "作为可见保留子代理或其普通复制被复用时，先读取本配置末尾的可复用经验，并沿用"
-        "本配置中的模型、思考程度和速度；父代理无需重复注入经验或强制重写已有配置，"
-        "由你自行声明。四行只列生成工具选定或已加载角色中的具体配置，不附请求值、"
-        "运行回执等重复括注；配置声明不等于实测速度或计费证明。只有实际配置冲突或"
-        "当前路线无法选择所需档位时，另外用一句话报告能力缺口。缺少独立速度参数时，"
-        "不能声称在 spawn_agent 中已设置速度；不猜测、不为补声明升模或修改全局配置。"
-        "采用经验前核对适用情境、证据范围与例外；失败原因不明就保留未知，区分规则缺陷与执行失误。"
-        "同任务重跑不算跨样本验证，摘要不提升证据程度；输入和环境未变不重试已否定路线，"
-        "只有满足记录的重开条件且仍有授权时才重开。经验不能覆盖当前用户要求或扩大职责。"
+        "做分配任务，返回成果；使用用户语言，标识、命令、路径、模型名和原始错误用代码格式。"
+        "作为可见保留子代理或普通复制被复用时，先读取本配置末尾的可复用经验并沿用本配置；"
+        "父代理无需重复注入经验或强制重写已有配置。四行只列具体配置，不附请求值或回执；配置声明"
+        "不等于实测速度或计费。冲突或无法选择所需档位才报告；无独立速度参数时不能声称 spawn_agent"
+        "已选速度，也不为声明升模或修改全局配置。经验须核对情境、证据和例外，不能覆盖当前用户"
+        "要求或扩大职责；原因不明保留未知，同任务重跑不提升证据，输入环境未变不重试已否定路线。"
         "默认协作角色是普通子代理，不自行再委派。只有当前任务说明同时明确写出“协作角色: "
         "协作父代理”、“允许下游委派: 是”和有限下游范围，而且你真实拥有顶层 "
         "collaboration.spawn_agent 时，才可在获批子项目内成为协作父代理。必须直接调用该工具，"
@@ -647,7 +678,9 @@ def base_instructions(
         "协作角色、目标、任务类型与任务类型组、子代理来源与运行配置、权威来源或输入快照、"
         "依赖与已就绪切片、写入所有权、是否允许下游"
         "委派及下游范围、是否允许调用其他或新建 Codex 父代理及跨任务范围、父代理规范任务名、成功条件、停止条件、有限关键步骤、证据与返回"
-        "格式。先确定下游任务类型和任务类型组；复用可见保留子代理时由它自读已有配置，定制"
+        "格式。先确定下游任务类型和任务类型组；按同一可复用能力族匹配，项目、框架、动作动词、交付名称"
+        "不另建窄组；工具、写入权限、安全风险和决定性证据形状不兼容时才拆分，范围放宽不授予只读角色写权限。"
+        "复用可见保留子代理时由它自读已有配置，定制"
         "运行时新子代理时由你根据任务类型、价值、风险、证据、时延和成本，联合选择并写出具体"
         "模型、思考程度和标准或快速速度组成的完整配置；不能分列独立选择，也不得使用继承、"
         "未揭露或未暴露。默认把下游的允许下游委派写为否；只有整合父代理当前任务卡明确给出更深范围时"
@@ -669,7 +702,7 @@ def base_instructions(
         "最近的协作授权不改变原有删除、删减或候选清理的资格与尺度；原规则判定应删的目标仍处理，"
         "原规则不允许删的目标仍不处理。普通删除不得物理销毁；普通文件精确送入 Windows 回收站，"
         "重要文件精确移入任务专属待删文件，记录原路径、不覆盖目标并报告恢复方式。插件角色仍按"
-        "原来的身份、令牌、哈希、直接普通文件、单一硬链接、零经验和零存活轮次资格判断；合格 TOML"
+        "原来的身份、令牌、哈希、直接普通文件、单一硬链接、零经验和零任务尝试资格判断；合格 TOML"
         "与收据移入插件专属待删文件，不合格目标保持原位并报告。"
         "只完成父代理分配的当前子任务，遵守它给出的有限关键步骤清单和停止条件；没有预设"
         "关键步骤时不自行追加。任务专属工具、安全与写入边界以当前任务说明为准，不假设继承"
@@ -677,10 +710,19 @@ def base_instructions(
         "或测试、检查与本次失败修补，不能写完初版就停；只读或用户指定审阅点仍按原范围结束。"
         "三原则决定调用与核验；质量达标或可靠性相当后优先总成本更低的委派，成本相近再比时间。"
         "必要质量收益可承担成本，不要求每次都省钱。"
+        "最小上下文原则沿代理树逐层适用，Astra 没有例外。能用来源定位、当前约束、权限、成功"
+        "和停止条件、未决问题自包含说明的下游研究、实现或验收切片，优先用 fork_turns=none 的"
+        "合适 GPT-5.6 组合；不因上层模型、长历史、上下文压缩、大工具输出或已完成子树而默认继承"
+        "全文。只有无法由有限摘录或来源快照保留、又直接关系正确性、权限或决定性证据的输入才"
+        "使用 fork_turns=all，并在任务卡点明该输入和最小覆盖终点；否则不为转移上层成本强行嵌套。"
         "先用工具定位，只处理分配范围；相关问题共享来源，追问只补变化。已落盘结果回传文件定位、"
         "关键差异、验证与缺口，不整份重贴，也不要求父代理完整重做；用户要求全文和必要核验仍保留。"
         "独立短读取在一次工具调用内批量完成，输出先在工具侧筛选并限制预算；截断只补缺段，"
         "不能重复倾倒全文。不要在内部消息、commentary 和最终回复中重复粘贴同一完整结果。"
+        "作为协作父代理首次采用下游结果时，在当前会话保留结果身份、来源快照或覆盖范围、已满足"
+        "成功条件和剩余决定性缺口组成的轻量收据。上下文压缩后复用收据；已交付最终结果不再等待、"
+        "重读或要求重发。同一来源快照和同一决定性缺口只发一次有界增量请求，仍不足时直接补齐、"
+        "如实报告缺口或等待新证据，不循环追问；不为此建立共享文件、后台状态机或持久字段。"
         "不得把主代理 token 减少当作父子合计费用下降。"
         "优先回报影响父代理下一动作的决定性发现；达到成功条件立即最终提交，不为补充线索"
         "延长调查。证据齐备后不重做检查；仍缺必要验收时只报告并补齐该缺口，不自行扩大阶段。"
@@ -978,6 +1020,11 @@ class SpecialistRegistry:
                     f"specialist database schema {version} requires explicit migrate-global; "
                     "ordinary registry commands do not globalize legacy roles"
                 )
+            elif version == 4:
+                raise AuxiliarySkipped(
+                    "specialist database schema 4 requires explicit migrate-attempts; "
+                    "ordinary registry commands do not infer task failures"
+                )
             elif version != SCHEMA_VERSION:
                 raise AuxiliarySkipped(
                     f"unsupported specialist database schema {version}; no migration is attempted"
@@ -1000,6 +1047,83 @@ class SpecialistRegistry:
         except BaseException:
             connection.close()
             raise
+
+    def _v4_connection(self) -> sqlite3.Connection:
+        ensure_plain_database(self.db_path)
+        if not self.db_path.exists():
+            raise AuxiliarySkipped("migrate-attempts requires an existing v4 database")
+        connection = sqlite3.connect(
+            self.db_path,
+            timeout=BUSY_TIMEOUT_MS / 1000,
+            isolation_level=None,
+        )
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if version != 4 or exact_schema(connection) != expected_schema(
+                SCHEMA_V4_TABLE_SQL
+            ):
+                raise AuxiliarySkipped(
+                    "migrate-attempts accepts only the exact published v4 schema"
+                )
+            return connection
+        except BaseException:
+            connection.close()
+            raise
+
+    def migrate_attempts(self) -> dict[str, Any]:
+        """Explicitly add auditable outcomes without inventing v4 failure history."""
+        connection = self._v4_connection()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            if int(connection.execute("PRAGMA user_version").fetchone()[0]) != 4:
+                raise AuxiliarySkipped("v4 attempt migration raced with another schema change")
+            if exact_schema(connection) != expected_schema(SCHEMA_V4_TABLE_SQL):
+                raise AuxiliarySkipped("v4 attempt migration source schema changed")
+            existing_successes = int(
+                connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0]
+            )
+            connection.execute("ALTER TABLE agents ADD COLUMN retired_at TEXT")
+            connection.execute(
+                "ALTER TABLE agent_runs ADD COLUMN outcome TEXT NOT NULL "
+                "DEFAULT 'success' CHECK(outcome IN ('success','failure'))"
+            )
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise SpecialistError("attempt migration SQLite integrity_check failed")
+            if list(connection.execute("PRAGMA foreign_key_check")):
+                raise SpecialistError("attempt migration SQLite foreign_key_check failed")
+            if exact_schema(connection) != expected_schema(SCHEMA_TABLE_SQL):
+                raise SpecialistError("attempt migration did not produce the exact current schema")
+            connection.execute("COMMIT")
+        except BaseException:
+            with contextlib.suppress(sqlite3.Error):
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+        verified = self.connect(read_only=True)
+        try:
+            outcomes = {
+                row["outcome"]: int(row["count"])
+                for row in verified.execute(
+                    "SELECT outcome, COUNT(*) AS count FROM agent_runs GROUP BY outcome"
+                )
+            }
+        finally:
+            verified.close()
+        return {
+            "ok": True,
+            "action": "attempt_schema_migrated",
+            "schema_version": SCHEMA_VERSION,
+            "migrated_successful_attempt_count": outcomes.get("success", 0),
+            "migrated_failure_attempt_count": outcomes.get("failure", 0),
+            "historical_failure_backfill": False,
+            "v4_success_semantics_preserved": outcomes.get("success", 0)
+            == existing_successes,
+        }
 
     def _legacy_connection(self) -> tuple[sqlite3.Connection, int]:
         ensure_plain_database(self.db_path)
@@ -1157,7 +1281,10 @@ class SpecialistRegistry:
                 "a different global migration journal exists; recover it with its original plan"
             )
         if journal.get("receipt_kind") == GLOBAL_MIGRATION_COMPLETION_KIND:
-            if journal.get("status") != "committed" or journal.get("schema_version") != SCHEMA_VERSION:
+            if journal.get("status") != "committed" or journal.get("schema_version") not in (
+                4,
+                SCHEMA_VERSION,
+            ):
                 raise AuxiliarySkipped("completed migration receipt is inconsistent")
             connection = self.connect()
             try:
@@ -1521,9 +1648,14 @@ class SpecialistRegistry:
                     "SELECT sequence,agent_id,event_id,event_digest,lesson,NULL,created_at FROM experience_events_v1"
                 )
                 connection.execute("DROP TABLE experience_events_v1")
-                connection.execute(SCHEMA_V3_TABLE_SQL["agent_runs"])
+                connection.execute(SCHEMA_TABLE_SQL["agent_runs"])
             elif legacy_version == 2:
-                connection.execute(SCHEMA_V3_TABLE_SQL["agent_runs"])
+                connection.execute(SCHEMA_TABLE_SQL["agent_runs"])
+            elif legacy_version == 3:
+                connection.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN outcome TEXT NOT NULL "
+                    "DEFAULT 'success' CHECK(outcome IN ('success','failure'))"
+                )
             connection.execute("DROP TABLE agents")
             connection.execute(SCHEMA_TABLE_SQL["agents"])
             for item in prepared:
@@ -1649,6 +1781,8 @@ class SpecialistRegistry:
         row = connection.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
         if row is None:
             raise SpecialistError(f"unknown owned specialist: {name}")
+        if row["retired_at"] is not None:
+            raise SpecialistError("owned specialist is retired and requires protected restore")
         path = Path(row["path"]).absolute()
         validate_direct_agent_file(path, self.agents_dir)
         data = path.read_bytes()
@@ -1701,18 +1835,14 @@ class SpecialistRegistry:
     ) -> list[sqlite3.Row]:
         if limit < 1:
             raise SpecialistError("pending event limit must be positive")
-        active_filter = (
-            "NOT EXISTS (SELECT 1 FROM experience_events AS correction "
-            "WHERE correction.agent_id = event.agent_id "
-            "AND correction.retracts_event_id = event.event_id)"
-        )
         if through is None:
             return list(
                 connection.execute(
                     "SELECT event.sequence, event.event_id, event.lesson, "
                     "event.event_digest, event.retracts_event_id "
                     "FROM experience_events AS event "
-                    f"WHERE event.agent_id = ? AND event.sequence > ? AND {active_filter} "
+                    f"WHERE event.agent_id = ? AND event.sequence > ? "
+                    f"AND {ACTIVE_EXPERIENCE_EVENT_FILTER} "
                     "ORDER BY event.sequence LIMIT ?",
                     (agent_id, covered, limit),
                 )
@@ -1721,9 +1851,9 @@ class SpecialistRegistry:
             connection.execute(
                 "SELECT event.sequence, event.event_id, event.lesson, "
                 "event.event_digest, event.retracts_event_id "
-                "FROM experience_events AS event "
-                f"WHERE event.agent_id = ? AND event.sequence > ? "
-                f"AND event.sequence <= ? AND {active_filter} "
+                    "FROM experience_events AS event "
+                    f"WHERE event.agent_id = ? AND event.sequence > ? "
+                    f"AND event.sequence <= ? AND {ACTIVE_EXPERIENCE_EVENT_FILTER} "
                 "ORDER BY event.sequence LIMIT ?",
                 (agent_id, covered, through, limit),
             )
@@ -1869,10 +1999,46 @@ class SpecialistRegistry:
         try:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT name, expected_sha256, owner_token FROM agents WHERE role_key = ?",
+                "SELECT agent_id, name, expected_sha256, owner_token, retired_at "
+                "FROM agents WHERE role_key = ?",
                 (role_key,),
             ).fetchone()
             if existing is not None:
+                if existing["retired_at"] is not None:
+                    if (
+                        expected_sha256 is not None
+                        and expected_sha256 != existing["expected_sha256"]
+                    ):
+                        raise SpecialistError(
+                            "expected SHA-256 does not match the retired owned agent"
+                        )
+                    receipt_data, _, _, _, _, _, receipt_header = (
+                        self._load_retirement_receipt(
+                            name=existing["name"],
+                            receipt_path=None,
+                            expected_sha256=existing["expected_sha256"],
+                        )
+                    )
+                    if (
+                        receipt_data["agent_id"] != existing["agent_id"]
+                        or receipt_data["retired_at"] != existing["retired_at"]
+                        or receipt_header["owner_token"] != existing["owner_token"]
+                    ):
+                        raise SpecialistError(
+                            "retired specialist receipt does not match the ownership ledger"
+                        )
+                    connection.execute("COMMIT")
+                    return {
+                        "ok": True,
+                        "action": "protected_restore_required",
+                        "compatible": False,
+                        "recoverable": True,
+                        "agent_id": existing["agent_id"],
+                        "name": existing["name"],
+                        "sha256": existing["expected_sha256"],
+                        "active": False,
+                        "host_visibility": "retired_not_loadable",
+                    }
                 row, path, original, _, header = self._owned_agent(
                     connection,
                     name=existing["name"],
@@ -2420,6 +2586,7 @@ class SpecialistRegistry:
         expected_sha256: str,
         run_id: str,
         invocation_kind: str,
+        outcome: str = "success",
     ) -> dict[str, Any]:
         expected_sha256 = validate_sha256(expected_sha256)
         if not UUID_RE.fullmatch(run_id):
@@ -2428,57 +2595,172 @@ class SpecialistRegistry:
             raise SpecialistError(
                 f"invocation_kind must be one of {sorted(INVOCATION_KINDS)}"
             )
+        if outcome not in RUN_OUTCOMES:
+            raise SpecialistError(f"outcome must be one of {sorted(RUN_OUTCOMES)}")
         connection = self.connect()
+        path: Path | None = None
+        data: bytes | None = None
+        pending_path: Path | None = None
+        receipt_path: Path | None = None
+        receipt_bytes: bytes | None = None
+        moved_to_pending = False
+        committed = False
+        transaction_started = False
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row, _, _, _, _ = self._owned_agent(
-                connection,
-                name=name,
-                expected_sha256=expected_sha256,
-            )
+            transaction_started = True
             existing = connection.execute(
-                "SELECT agent_id, invocation_kind, completed_at "
-                "FROM agent_runs WHERE run_id = ?",
+                "SELECT agent_runs.agent_id, agent_runs.invocation_kind, "
+                "agent_runs.completed_at, agent_runs.outcome, agents.name, "
+                "agents.expected_sha256, agents.retired_at "
+                "FROM agent_runs JOIN agents ON agents.agent_id = agent_runs.agent_id "
+                "WHERE agent_runs.run_id = ?",
                 (run_id,),
             ).fetchone()
             if existing is not None and (
-                existing["agent_id"] != row["agent_id"]
+                existing["name"] != name
+                or existing["expected_sha256"] != expected_sha256
                 or existing["invocation_kind"] != invocation_kind
+                or existing["outcome"] != outcome
             ):
                 raise SpecialistError(
-                    "run_id was replayed for a different specialist or invocation kind"
+                    "run_id was replayed for a different specialist, invocation kind, or outcome"
                 )
-            if existing is None:
-                completed_at = utc_now()
-                connection.execute(
-                    "INSERT INTO agent_runs(run_id,agent_id,invocation_kind,completed_at) "
-                    "VALUES(?,?,?,?)",
-                    (run_id, row["agent_id"], invocation_kind, completed_at),
-                )
-                action = "survival_round_recorded"
-            else:
+            if existing is not None:
+                if existing["retired_at"] is None:
+                    self._owned_agent(
+                        connection,
+                        name=name,
+                        expected_sha256=expected_sha256,
+                    )
                 completed_at = existing["completed_at"]
-                action = "survival_round_already_recorded"
-            survival_rounds = int(
+                action = (
+                    "survival_round_already_recorded"
+                    if outcome == "success"
+                    else "task_failure_already_recorded"
+                )
+                agent_id = existing["agent_id"]
+                active = existing["retired_at"] is None
+            else:
+                row, path, data, _, _ = self._owned_agent(
+                    connection,
+                    name=name,
+                    expected_sha256=expected_sha256,
+                )
+                completed_at = utc_now()
+                agent_id = row["agent_id"]
                 connection.execute(
-                    "SELECT COUNT(*) FROM agent_runs WHERE agent_id = ?",
-                    (row["agent_id"],),
-                ).fetchone()[0]
-            )
+                    "INSERT INTO agent_runs(run_id,agent_id,invocation_kind,completed_at,outcome) "
+                    "VALUES(?,?,?,?,?)",
+                    (run_id, agent_id, invocation_kind, completed_at, outcome),
+                )
+                action = (
+                    "survival_round_recorded"
+                    if outcome == "success"
+                    else "task_failure_recorded"
+                )
+                active = True
+            counts = connection.execute(
+                "SELECT COUNT(*) AS attempt_count, "
+                "SUM(CASE WHEN outcome='success' THEN 1 ELSE 0 END) AS success_count, "
+                "SUM(CASE WHEN outcome='failure' THEN 1 ELSE 0 END) AS failure_count "
+                "FROM agent_runs WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+            attempt_count = int(counts["attempt_count"])
+            survival_rounds = int(counts["success_count"] or 0)
+            failure_count = int(counts["failure_count"] or 0)
+            retirement: dict[str, Any] | None = None
+            if (
+                existing is None
+                and outcome == "failure"
+                and failure_count >= FAILURE_RETIREMENT_THRESHOLD
+            ):
+                assert path is not None and data is not None
+                retirement = self._stage_retirement(
+                    row=row,
+                    path=path,
+                    data=data,
+                    expected_sha256=expected_sha256,
+                    reason="recorded_task_failure_threshold",
+                )
+                pending_path = retirement["pending_path"]
+                receipt_path = retirement["receipt_path"]
+                receipt_bytes = retirement["receipt_bytes"]
+                moved_to_pending = True
+                updated = connection.execute(
+                    "UPDATE agents SET retired_at = ? "
+                    "WHERE agent_id = ? AND retired_at IS NULL AND expected_sha256 = ?",
+                    (
+                        retirement["retired_at"],
+                        agent_id,
+                        expected_sha256,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise SpecialistError("agent changed before failure-threshold retirement")
+                active = False
+                action = "task_failure_recorded_and_retired"
             connection.execute("COMMIT")
-            return {
+            committed = True
+            transaction_started = False
+            result = {
                 "ok": True,
                 "action": action,
                 "name": name,
                 "run_id": run_id,
                 "invocation_kind": invocation_kind,
+                "outcome": outcome,
                 "completed_at": completed_at,
+                "attempt_count": attempt_count,
+                "successful_attempt_count": survival_rounds,
+                "failed_attempt_count": failure_count,
                 "survival_rounds": survival_rounds,
+                "failure_retirement_threshold": FAILURE_RETIREMENT_THRESHOLD,
+                "active": active,
+                "retirement_triggered": retirement is not None,
                 "historical_backfill": False,
             }
-        except BaseException:
-            with contextlib.suppress(sqlite3.Error):
-                connection.execute("ROLLBACK")
+            if retirement is not None:
+                result.update(
+                    {
+                        "recoverable": True,
+                        "disposition": "plugin_pending_deletion",
+                        "pending_path": str(retirement["pending_path"]),
+                        "receipt_path": str(retirement["receipt_path"]),
+                    }
+                )
+            return result
+        except BaseException as exc:
+            if committed:
+                raise
+            rollback_error: str | None = None
+            if transaction_started:
+                try:
+                    connection.execute("ROLLBACK")
+                except sqlite3.Error as rollback_exc:
+                    rollback_error = f"database rollback failed: {rollback_exc}"
+            if (
+                moved_to_pending
+                and path is not None
+                and pending_path is not None
+                and receipt_path is not None
+                and receipt_bytes is not None
+                and data is not None
+            ):
+                recovery_error = self._rollback_staged_retirement(
+                    source=pending_path,
+                    destination=path,
+                    expected=data,
+                    receipt_path=receipt_path,
+                    receipt_bytes=receipt_bytes,
+                )
+                rollback_error = rollback_error or recovery_error
+            if rollback_error is not None:
+                raise SpecialistError(
+                    "attempt recording failed and exact recovery was not completed: "
+                    f"{rollback_error}"
+                ) from exc
             raise
         finally:
             connection.close()
@@ -2515,17 +2797,25 @@ class SpecialistRegistry:
         finally:
             connection.close()
 
-    def status(self, *, for_routing: bool = False) -> dict[str, Any]:
-        connection = self.connect()
+    def status(
+        self, *, for_routing: bool = False, for_dashboard: bool = False
+    ) -> dict[str, Any]:
+        if for_routing and for_dashboard:
+            raise SpecialistError("status modes are mutually exclusive")
+        connection = self.connect(read_only=for_dashboard)
         try:
             rows = list(
                 connection.execute(
                     "SELECT agents.*, "
-                    "(SELECT COUNT(*) FROM agent_runs "
-                    " WHERE agent_runs.agent_id = agents.agent_id) AS survival_rounds, "
+                    "(SELECT COUNT(*) FROM agent_runs WHERE agent_runs.agent_id = agents.agent_id) "
+                    "AS attempt_count, "
+                    "(SELECT COUNT(*) FROM agent_runs WHERE agent_runs.agent_id = agents.agent_id "
+                    " AND agent_runs.outcome = 'success') AS survival_rounds, "
+                    "(SELECT COUNT(*) FROM agent_runs WHERE agent_runs.agent_id = agents.agent_id "
+                    " AND agent_runs.outcome = 'failure') AS failed_attempt_count, "
                     "(SELECT COUNT(*) FROM experience_events "
                     " WHERE experience_events.agent_id = agents.agent_id) AS experience_count "
-                    "FROM agents ORDER BY role_key"
+                    "FROM agents WHERE agents.retired_at IS NULL ORDER BY role_key"
                 )
             )
             registered: list[dict[str, Any]] = []
@@ -2550,7 +2840,10 @@ class SpecialistRegistry:
                     "speed": speed,
                     "authority": authority,
                     "sha256": row["expected_sha256"],
+                    "attempt_count": int(row["attempt_count"]),
                     "survival_rounds": int(row["survival_rounds"]),
+                    "successful_attempt_count": int(row["survival_rounds"]),
+                    "failed_attempt_count": int(row["failed_attempt_count"]),
                     "experience_count": int(row["experience_count"]),
                     "scope": GLOBAL_SCOPE,
                     "global_contract_version": int(row["global_contract_version"]),
@@ -2572,6 +2865,61 @@ class SpecialistRegistry:
                         "speed": speed,
                         "authority": authority,
                     })
+            if for_dashboard:
+                agent_counts = connection.execute(
+                    "SELECT COUNT(*) AS retained_agent_count, "
+                    "COUNT(*) FILTER (WHERE retired_at IS NULL) "
+                    "AS active_retained_agent_count, "
+                    "COUNT(*) FILTER (WHERE retired_at IS NOT NULL) "
+                    "AS retired_retained_agent_count FROM agents"
+                ).fetchone()
+                attempt_counts = connection.execute(
+                    "SELECT COUNT(*) AS recorded_attempt_count, "
+                    "COUNT(*) FILTER (WHERE outcome='success') "
+                    "AS successful_attempt_count, "
+                    "COUNT(*) FILTER (WHERE outcome='failure') "
+                    "AS failed_attempt_count FROM agent_runs"
+                ).fetchone()
+                event_counts = connection.execute(
+                    "SELECT COUNT(*) AS experience_event_count, "
+                    "COUNT(*) FILTER (WHERE event.retracts_event_id IS NULL) "
+                    "AS raw_experience_count, "
+                    "COUNT(*) FILTER (WHERE event.retracts_event_id IS NOT NULL) "
+                    "AS correction_event_count, "
+                    f"COUNT(*) FILTER (WHERE {ACTIVE_EXPERIENCE_EVENT_FILTER}) "
+                    "AS active_experience_count "
+                    "FROM experience_events AS event"
+                ).fetchone()
+                return {
+                    "ok": True,
+                    "action": "status",
+                    "for_dashboard": True,
+                    "schema_version": SCHEMA_VERSION,
+                    "retained_agent_count": int(agent_counts["retained_agent_count"]),
+                    "active_retained_agent_count": int(
+                        agent_counts["active_retained_agent_count"]
+                    ),
+                    "retired_retained_agent_count": int(
+                        agent_counts["retired_retained_agent_count"]
+                    ),
+                    "recorded_attempt_count": int(
+                        attempt_counts["recorded_attempt_count"]
+                    ),
+                    "successful_attempt_count": int(
+                        attempt_counts["successful_attempt_count"]
+                    ),
+                    "failed_attempt_count": int(
+                        attempt_counts["failed_attempt_count"]
+                    ),
+                    "verified_survival_round_count": int(
+                        attempt_counts["successful_attempt_count"]
+                    ),
+                    "experience_event_count": int(event_counts["experience_event_count"]),
+                    "raw_experience_count": int(event_counts["raw_experience_count"]),
+                    "correction_event_count": int(event_counts["correction_event_count"]),
+                    "active_experience_count": int(event_counts["active_experience_count"]),
+                    "refreshed_at": utc_now(),
+                }
             if for_routing:
                 return {
                     "ok": True,
@@ -2604,12 +2952,28 @@ class SpecialistRegistry:
                         GLOBAL_SCOPE_PREFIX + GLOBAL_SCOPE
                     ) not in disk_text.splitlines()[:12]:
                         legacy_count += 1
+            lifecycle_counts = connection.execute(
+                "SELECT COUNT(*) FILTER (WHERE retired_at IS NULL) AS active_count, "
+                "COUNT(*) FILTER (WHERE retired_at IS NOT NULL) AS retired_count "
+                "FROM agents"
+            ).fetchone()
+            attempt_counts = connection.execute(
+                "SELECT COUNT(*) AS attempt_count, "
+                "COUNT(*) FILTER (WHERE outcome='success') AS success_count, "
+                "COUNT(*) FILTER (WHERE outcome='failure') AS failure_count "
+                "FROM agent_runs"
+            ).fetchone()
             return {
                 "ok": True,
                 "action": "status",
                 "schema_version": SCHEMA_VERSION,
                 "registered_agents": registered,
                 "registered_count": len(registered),
+                "active_retained_agent_count": int(lifecycle_counts["active_count"]),
+                "retired_retained_agent_count": int(lifecycle_counts["retired_count"]),
+                "recorded_attempt_count": int(attempt_counts["attempt_count"]),
+                "successful_attempt_count": int(attempt_counts["success_count"]),
+                "failed_attempt_count": int(attempt_counts["failure_count"]),
                 "global_count": len(registered),
                 "legacy_count": legacy_count,
                 "lean_agent_files_total": len(disk_names),
@@ -2617,7 +2981,11 @@ class SpecialistRegistry:
                     name for name in disk_names if name not in registered_files
                 ],
                 "survival_round_definition": (
-                    "one verified retained specialist current subtask completed and accepted"
+                    "one explicitly recorded successful retained-specialist task"
+                ),
+                "task_failure_definition": (
+                    "one explicitly recorded completed task failure; unfinished, interrupted, "
+                    "unadopted, user-stopped, or undetermined calls are not recorded"
                 ),
                 "historical_backfill": False,
                 "internal_message_runtime_route": INTERNAL_MESSAGE_RUNTIME_ROUTE,
@@ -2786,6 +3154,140 @@ class SpecialistRegistry:
             return f"{kind} rollback failed: {exc}"
         return None
 
+    def _stage_retirement(
+        self,
+        *,
+        row: sqlite3.Row,
+        path: Path,
+        data: bytes,
+        expected_sha256: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        pending_dir = ensure_plain_directory(self.pending_deletion_dir, create=True)
+        pending_path, receipt_path = self._receipt_paths(
+            row["agent_id"], expected_sha256
+        )
+        if path_exists_without_following_links(pending_path):
+            raise SpecialistError(f"pending specialist target already exists: {pending_path}")
+        if path_exists_without_following_links(receipt_path):
+            raise SpecialistError(f"retirement receipt target already exists: {receipt_path}")
+        validate_direct_agent_file(path, self.agents_dir)
+        if path.read_bytes() != data or sha256_bytes(data) != expected_sha256:
+            raise SpecialistError("agent changed immediately before retirement")
+        retired_at = utc_now()
+        receipt = {
+            "format_version": RETIREMENT_RECEIPT_FORMAT_VERSION,
+            "agent_id": row["agent_id"],
+            "name": row["name"],
+            "role_key": row["role_key"],
+            "original_path": str(path),
+            "pending_path": str(pending_path),
+            "sha256": expected_sha256,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "retired_at": retired_at,
+            "retirement_reason": reason,
+            "global_contract_version": int(row["global_contract_version"]),
+            "global_domain_key": row["global_domain_key"],
+            "global_contract": row["global_contract"],
+            "global_contract_digest": row["global_contract_digest"],
+        }
+        receipt_bytes = receipt_json_bytes(receipt)
+        receipt_created = False
+        try:
+            write_new_file(receipt_path, receipt_bytes)
+            receipt_created = True
+            validate_direct_plain_file(
+                receipt_path,
+                pending_dir,
+                kind="retirement receipt",
+                max_bytes=MAX_RECEIPT_BYTES,
+            )
+            if receipt_path.read_bytes() != receipt_bytes:
+                raise SpecialistError("retirement receipt changed immediately after creation")
+            rename_no_replace(path, pending_path)
+            validate_direct_plain_file(
+                pending_path,
+                pending_dir,
+                kind="pending specialist",
+                max_bytes=MAX_AGENT_BYTES,
+            )
+            if pending_path.read_bytes() != data:
+                raise SpecialistError("pending specialist changed immediately after retirement")
+        except BaseException as exc:
+            rollback_error: str | None = None
+            if path_exists_without_following_links(pending_path):
+                rollback_error = self._rollback_exact_move(
+                    source=pending_path,
+                    destination=path,
+                    expected=data,
+                    source_parent=self.pending_deletion_dir,
+                    kind="pending specialist",
+                    max_bytes=MAX_AGENT_BYTES,
+                )
+            if receipt_created and path_exists_without_following_links(receipt_path):
+                try:
+                    validate_direct_plain_file(
+                        receipt_path,
+                        pending_dir,
+                        kind="retirement receipt",
+                        max_bytes=MAX_RECEIPT_BYTES,
+                    )
+                    if receipt_path.read_bytes() != receipt_bytes:
+                        raise SpecialistError(
+                            "retirement receipt rollback bytes changed"
+                        )
+                    receipt_path.unlink()
+                except (OSError, SpecialistError) as cleanup_exc:
+                    rollback_error = rollback_error or (
+                        f"retirement receipt rollback failed: {cleanup_exc}"
+                    )
+            if rollback_error is not None:
+                raise SpecialistError(
+                    "retirement staging failed and exact recovery was not completed: "
+                    f"{rollback_error}"
+                ) from exc
+            raise
+        return {
+            "pending_path": pending_path,
+            "receipt_path": receipt_path,
+            "receipt_bytes": receipt_bytes,
+            "retired_at": retired_at,
+        }
+
+    def _rollback_staged_retirement(
+        self,
+        *,
+        source: Path,
+        destination: Path,
+        expected: bytes,
+        receipt_path: Path,
+        receipt_bytes: bytes,
+    ) -> str | None:
+        rollback_error = self._rollback_exact_move(
+            source=source,
+            destination=destination,
+            expected=expected,
+            source_parent=self.pending_deletion_dir,
+            kind="pending specialist",
+            max_bytes=MAX_AGENT_BYTES,
+        )
+        if rollback_error is not None:
+            return rollback_error
+        try:
+            validate_direct_plain_file(
+                receipt_path,
+                self.pending_deletion_dir,
+                kind="retirement receipt",
+                max_bytes=MAX_RECEIPT_BYTES,
+            )
+            if receipt_path.read_bytes() != receipt_bytes:
+                raise SpecialistError("retirement receipt rollback bytes changed")
+            receipt_path.unlink()
+        except (OSError, SpecialistError) as exc:
+            return f"retirement receipt rollback failed: {exc}"
+        return None
+
     def delete(
         self,
         *,
@@ -2800,6 +3302,7 @@ class SpecialistRegistry:
         path: Path | None = None
         pending_path: Path | None = None
         receipt_path: Path | None = None
+        receipt_bytes: bytes | None = None
         moved_to_pending = False
         committed = False
         try:
@@ -2809,6 +3312,24 @@ class SpecialistRegistry:
                 connection.execute("COMMIT")
                 committed = True
                 return {"ok": True, "action": "already_absent", "deleted": False}
+            if row["retired_at"] is not None:
+                if expected_sha256 != row["expected_sha256"]:
+                    raise SpecialistError(
+                        "expected SHA-256 does not match the retired agent's ownership row"
+                    )
+                if owner_token != row["owner_token"]:
+                    raise SpecialistError(
+                        "provided owner token does not match the retired agent's ownership row"
+                    )
+                connection.execute("COMMIT")
+                committed = True
+                return {
+                    "ok": True,
+                    "action": "already_retired",
+                    "deleted": False,
+                    "recoverable": True,
+                    "active": False,
+                }
             path = Path(row["path"]).absolute()
             if not path_exists_without_following_links(path):
                 if expected_sha256 != row["expected_sha256"]:
@@ -2836,15 +3357,15 @@ class SpecialistRegistry:
                 raise SpecialistError(
                     "owned specialist with recorded experience cannot be retired"
                 )
-            survival_rounds = int(
+            recorded_attempts = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM agent_runs WHERE agent_id = ?",
                     (row["agent_id"],),
                 ).fetchone()[0]
             )
-            if survival_rounds:
+            if recorded_attempts:
                 raise SpecialistError(
-                    "owned specialist with recorded survival rounds cannot be retired"
+                    "owned specialist with recorded attempts cannot be manually retired"
                 )
             if data is None:
                 connection.execute("DELETE FROM agents WHERE agent_id = ?", (row["agent_id"],))
@@ -2855,55 +3376,28 @@ class SpecialistRegistry:
                     "action": "stale_registry_row_removed",
                     "deleted": False,
                 }
-            pending_dir = ensure_plain_directory(self.pending_deletion_dir, create=True)
-            pending_path, receipt_path = self._receipt_paths(
-                row["agent_id"], expected_sha256
+            staged = self._stage_retirement(
+                row=row,
+                path=path,
+                data=data,
+                expected_sha256=expected_sha256,
+                reason="manual_unused_specialist_retirement",
             )
-            if path_exists_without_following_links(pending_path):
-                raise SpecialistError(f"pending specialist target already exists: {pending_path}")
-            if path_exists_without_following_links(receipt_path):
-                raise SpecialistError(f"retirement receipt target already exists: {receipt_path}")
-            validate_direct_agent_file(path, self.agents_dir)
-            if path.read_bytes() != data or sha256_bytes(data) != expected_sha256:
-                raise SpecialistError("agent changed immediately before retirement")
-            retired_at = utc_now()
-            receipt = {
-                "format_version": RETIREMENT_RECEIPT_FORMAT_VERSION,
-                "agent_id": row["agent_id"],
-                "name": row["name"],
-                "role_key": row["role_key"],
-                "original_path": str(path),
-                "pending_path": str(pending_path),
-                "sha256": expected_sha256,
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-                "retired_at": retired_at,
-                "global_contract_version": int(row["global_contract_version"]),
-                "global_domain_key": row["global_domain_key"],
-                "global_contract": row["global_contract"],
-                "global_contract_digest": row["global_contract_digest"],
-            }
-            receipt_bytes = receipt_json_bytes(receipt)
-            write_new_file(receipt_path, receipt_bytes)
-            validate_direct_plain_file(
-                receipt_path,
-                pending_dir,
-                kind="retirement receipt",
-                max_bytes=MAX_RECEIPT_BYTES,
-            )
-            if receipt_path.read_bytes() != receipt_bytes:
-                raise SpecialistError("retirement receipt changed immediately after creation")
-            rename_no_replace(path, pending_path)
+            pending_path = staged["pending_path"]
+            receipt_path = staged["receipt_path"]
+            receipt_bytes = staged["receipt_bytes"]
             moved_to_pending = True
-            validate_direct_plain_file(
-                pending_path,
-                pending_dir,
-                kind="pending specialist",
-                max_bytes=MAX_AGENT_BYTES,
+            updated = connection.execute(
+                "UPDATE agents SET retired_at = ? "
+                "WHERE agent_id = ? AND retired_at IS NULL AND expected_sha256 = ?",
+                (
+                    staged["retired_at"],
+                    row["agent_id"],
+                    expected_sha256,
+                ),
             )
-            if pending_path.read_bytes() != data:
-                raise SpecialistError("pending specialist changed immediately after retirement")
-            connection.execute("DELETE FROM agents WHERE agent_id = ?", (row["agent_id"],))
+            if updated.rowcount != 1:
+                raise SpecialistError("agent changed before manual retirement")
             connection.execute("COMMIT")
             committed = True
             return {
@@ -2919,6 +3413,7 @@ class SpecialistRegistry:
                 "receipt_path": str(receipt_path),
                 "sha256": expected_sha256,
                 "agent_id": row["agent_id"],
+                "active": False,
             }
         except BaseException as exc:
             if committed:
@@ -2932,15 +3427,16 @@ class SpecialistRegistry:
                 moved_to_pending
                 and path is not None
                 and pending_path is not None
+                and receipt_path is not None
+                and receipt_bytes is not None
                 and data is not None
             ):
-                move_error = self._rollback_exact_move(
+                move_error = self._rollback_staged_retirement(
                     source=pending_path,
                     destination=path,
                     expected=data,
-                    source_parent=self.pending_deletion_dir,
-                    kind="pending specialist",
-                    max_bytes=MAX_AGENT_BYTES,
+                    receipt_path=receipt_path,
+                    receipt_bytes=receipt_bytes,
                 )
                 rollback_error = rollback_error or move_error
             if rollback_error is not None:
@@ -2986,9 +3482,41 @@ class SpecialistRegistry:
             if header["owner_token"] != owner_token:
                 raise SpecialistError("provided owner token is incorrect")
             original_path = Path(receipt_data["original_path"]).absolute()
+            retired_row = connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?",
+                (receipt_data["agent_id"],),
+            ).fetchone()
+            if retired_row is not None:
+                identity_fields = (
+                    ("name", "name"),
+                    ("role_key", "role_key"),
+                    ("path", "original_path"),
+                    ("expected_sha256", "sha256"),
+                    ("global_domain_key", "global_domain_key"),
+                    ("global_contract", "global_contract"),
+                    ("global_contract_digest", "global_contract_digest"),
+                )
+                if any(
+                    retired_row[column] != receipt_data[receipt_field]
+                    for column, receipt_field in identity_fields
+                ) or int(retired_row["global_contract_version"]) != int(
+                    receipt_data["global_contract_version"]
+                ):
+                    raise SpecialistError(
+                        "retired ownership row does not match the retirement receipt identity"
+                    )
+                if retired_row["owner_token"] != owner_token:
+                    raise SpecialistError(
+                        "provided owner token does not match the retired ownership row"
+                    )
+                if retired_row["retired_at"] != receipt_data["retired_at"]:
+                    raise SpecialistError(
+                        "retired ownership row does not match the receipt lifecycle state"
+                    )
             conflict = connection.execute(
                 "SELECT agent_id, name, role_key, path FROM agents "
-                "WHERE agent_id = ? OR name = ? OR role_key = ? OR path = ? LIMIT 1",
+                "WHERE agent_id <> ? AND "
+                "(name = ? OR role_key = ? OR path = ?) LIMIT 1",
                 (
                     receipt_data["agent_id"],
                     receipt_data["name"],
@@ -3016,25 +3544,38 @@ class SpecialistRegistry:
             validate_direct_agent_file(original_path, self.agents_dir)
             if original_path.read_bytes() != data:
                 raise SpecialistError("restored specialist changed immediately after restore")
-            connection.execute(
-                "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at,"
-                "global_contract_version,global_domain_key,global_contract,global_contract_digest) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    receipt_data["agent_id"],
-                    receipt_data["name"],
-                    receipt_data["role_key"],
-                    str(original_path),
-                    owner_token,
-                    expected_sha256,
-                    receipt_data["created_at"],
-                    receipt_data["updated_at"],
-                    receipt_data["global_contract_version"],
-                    receipt_data["global_domain_key"],
-                    receipt_data["global_contract"],
-                    receipt_data["global_contract_digest"],
-                ),
-            )
+            if retired_row is None:
+                connection.execute(
+                    "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at,"
+                    "global_contract_version,global_domain_key,global_contract,global_contract_digest,retired_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)",
+                    (
+                        receipt_data["agent_id"],
+                        receipt_data["name"],
+                        receipt_data["role_key"],
+                        str(original_path),
+                        owner_token,
+                        expected_sha256,
+                        receipt_data["created_at"],
+                        receipt_data["updated_at"],
+                        receipt_data["global_contract_version"],
+                        receipt_data["global_domain_key"],
+                        receipt_data["global_contract"],
+                        receipt_data["global_contract_digest"],
+                    ),
+                )
+            else:
+                updated = connection.execute(
+                    "UPDATE agents SET retired_at = NULL "
+                    "WHERE agent_id = ? AND retired_at = ? AND expected_sha256 = ?",
+                    (
+                        receipt_data["agent_id"],
+                        receipt_data["retired_at"],
+                        expected_sha256,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise SpecialistError("retired ownership row changed before restore")
             connection.execute("COMMIT")
             committed = True
 
@@ -3162,9 +3703,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     migrate.add_argument("--plan", required=True, type=Path)
 
+    subparsers.add_parser(
+        "migrate-attempts",
+        help=(
+            "explicitly migrate the exact v4 ledger; all existing runs remain successes "
+            "and no historical failures are inferred"
+        ),
+    )
+
     record_run = subparsers.add_parser(
         "record-run",
-        help="idempotently record one verified successful retained-agent survival round",
+        help="idempotently record one explicitly judged successful or failed retained-agent task",
     )
     record_run.add_argument("--name", required=True)
     record_run.add_argument("--expected-sha256", required=True)
@@ -3174,15 +3723,32 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         choices=sorted(INVOCATION_KINDS),
     )
+    record_run.add_argument(
+        "--outcome",
+        choices=sorted(RUN_OUTCOMES),
+        default="success",
+        help="completed task outcome; omitted calls remain backward-compatible successes",
+    )
 
     status = subparsers.add_parser(
         "status",
         help="report registered specialists, survival rounds, and unregistered lean files",
     )
-    status.add_argument(
+    status_mode = status.add_mutually_exclusive_group()
+    status_mode.add_argument(
         "--for-routing",
         action="store_true",
         help="return a bounded reusable-domain catalog without lifecycle internals",
+    )
+    status_mode.add_argument(
+        "--for-dashboard",
+        action="store_true",
+        help="return read-only aggregate lifecycle counts without role details",
+    )
+    status.add_argument(
+        "--watch-seconds",
+        type=int,
+        help="repeat --for-dashboard as foreground newline-delimited JSON every 1-3600 seconds",
     )
 
     recall = subparsers.add_parser("recall", help="read one verified role contract, configuration, and bounded experience")
@@ -3210,7 +3776,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
-    registry = SpecialistRegistry(arguments.codex_home, create=arguments.command != "recall")
+    if arguments.command == "status" and arguments.watch_seconds is not None:
+        if not arguments.for_dashboard:
+            raise SpecialistError("--watch-seconds requires --for-dashboard")
+        if not 1 <= arguments.watch_seconds <= 3600:
+            raise SpecialistError("--watch-seconds must be between 1 and 3600")
+    read_only_command = arguments.command == "recall" or (
+        arguments.command == "status" and arguments.for_dashboard
+    )
+    registry = SpecialistRegistry(arguments.codex_home, create=not read_only_command)
     if arguments.command == "ensure":
         return registry.ensure(
             role_key=arguments.role_key,
@@ -3254,15 +3828,21 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
         )
     if arguments.command == "migrate-global":
         return registry.migrate_global(plan_path=arguments.plan)
+    if arguments.command == "migrate-attempts":
+        return registry.migrate_attempts()
     if arguments.command == "record-run":
         return registry.record_run(
             name=arguments.name,
             expected_sha256=arguments.expected_sha256,
             run_id=arguments.run_id,
             invocation_kind=arguments.invocation_kind,
+            outcome=arguments.outcome,
         )
     if arguments.command == "status":
-        return registry.status(for_routing=arguments.for_routing)
+        return registry.status(
+            for_routing=arguments.for_routing,
+            for_dashboard=arguments.for_dashboard,
+        )
     if arguments.command == "recall":
         return registry.recall(name=arguments.name, expected_sha256=arguments.expected_sha256)
     if arguments.command == "delete":
@@ -3285,7 +3865,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
     try:
+        if arguments.command == "status" and arguments.watch_seconds is not None:
+            while True:
+                result = dispatch(arguments)
+                print(
+                    json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+                    flush=True,
+                )
+                time.sleep(arguments.watch_seconds)
         result = dispatch(arguments)
+    except KeyboardInterrupt:
+        return 130
     except (SpecialistError, sqlite3.Error, OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
         print(
             json.dumps(

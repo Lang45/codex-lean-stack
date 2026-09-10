@@ -15,7 +15,7 @@
 4. **复杂 PowerShell 及时落到脚本。** 简单命令仍内联；多层引号、嵌套 JSON/正则、反引号、多行逻辑或复杂变量插值直接写入任务专属临时 `.ps1`。首次失败确认是解析或转义后就停止改写 one-liner，后续只编辑同一脚本；脚本不入库、不含秘密，清理时进入 Windows 回收站或任务专属 `待删文件`。
 5. **三原则决定调用。** 高价值工作先守必要质量和决定性证据；质量达标后先比较父子输入输出、交流、核验和返工组成的全任务总成本，成本相近才比较总完成时间。当前用户明确速度或期限要求时再提高速度权重；没有必要质量收益时，不为单纯提速大幅增费。正向寻找能替代父代理阅读、实现或分析的切片，端到端任务也可委派。
 6. **不追求代理数量。** 插件使用运行环境的真实并发容量，但容量只是上限，不设置“必须调用几个”或“必须占满”的目标。
-7. **先分任务类型再选代理。** 按职责、输入与证据匹配保留角色；描述不足或准备因无匹配而新建角色前，通过 `status --for-routing` 核对一次目录。角色未加载或配置需要适配时，用 `recall --name <角色名>` 取得经过身份核验的职责、配置与有界经验，复用已有专长，不另造同领域记录。
+7. **按能力族匹配，不按动作拆窄。** 同一可复用能力族内的调查、诊断、实现、修复、测试或验收，只要工具、权限、风险与证据形状兼容，就优先匹配已有保留角色；项目、框架、动作动词、交付名称和一次性成功条件不另建窄角色。只读边界不因范围放宽而改变。描述不足或准备因无匹配而新建角色前，通过 `status --for-routing` 核对一次目录；角色未加载或配置需要适配时，用 `recall --name <角色名>` 取得经过身份核验的职责、配置与有界经验。
 8. **联合选择完整配置。** 所有父代理按三原则比较完整的“模型 + 思考程度 + 速度”组合，三个字段可以一起调整，同一模型不固定一档；Luna、Terra、Sol 是通常候选，Sol 可端到端承担复杂高价值工作。Astra 只在额外决定性质量或更少返工、token 等使全任务总成本更低时考虑，不能只凭更快。新选配全部默认标准速度；只有当前用户明确速度或期限要求且完整路线有收益时才用快速。已有显式快速配置保留真实值，不适配时只调整本次调用。
 9. **交接能直接接着做。** 跨项目交接保留用户操作验收、权威路径、已否定路线和末尾唯一当前快照；具体规则见[可执行项目交接](skills/lean-stack/references/project-handoff.md)。
 10. **上下文按任务需要继承。** 独立窄任务优先 `fork_turns="none"`；依赖前面决策时才加历史。新上下文任务说明显式携带职责、工具与安全边界，继承父级历史也不自动获得父级编排权限。
@@ -40,10 +40,11 @@
 2. **竞争不会丢掉合格成果。** 复制和变体先分别交付并被采用，再比较哪种配置更适合以后复用；竞争只选未来保留者，不抹掉本轮有效结果。
 3. **只保留全局领域角色。** 角色持久化前删除项目名、路径、版本和一次任务事实，每个领域保留一个可跨任务、跨项目、跨会话复用的休眠角色，没有项目保留层。
 4. **子代理会积累经过采用的经验。** 区分规则缺陷、执行失误和原因未明；记录情境、做法、证据与例外，扩大适用范围须有独立样本。未采用路线只留核验后的短避坑结论及重开条件；用户否定的子代理结果不得回流。仍用现有追加与纠正机制，不引入优化器或训练任务。
-5. **存活轮次只记录真实成功。** 只有子任务完成、结果被采用且线程进入 Done 后才用 UUID `run_id` 幂等记录，失败、停止、否定或仍在运行都不计数。
+5. **任务结果只记录明确完成。** 启动前分配 UUID `run_id`；成功只有在达到条件、结果被采用且线程进入 Done 后才记录，失败只有整个任务已有明确失败结论时才记录。运行中、中断、未采用、用户停止或否定、工具缺失后停止及结果未定都不计失败。累计两次明确任务失败后，该身份从活跃台账可恢复退役；身份、成功/失败尝试、经验和纠正审计仍保留。0 成功轮次可由总尝试与失败数区分为“从未调用”或“尚未成功”。
 6. **经验写入不阻塞主任务。** `ensure` 和 `improve` 只各做一次短提交，遇到忙锁、结构漂移、权限或文件身份问题立即跳过，不排队、不轮询、不重试。
 7. **保留角色不会常驻耗费模型。** 跨会话保留的是休眠 TOML 配置和去敏经验，当前子代理线程完成后正常结束，未来任务需要时才重新生成。
 8. **初版不等于完成。** 实现任务持续到已授权的运行或测试、检查结果、修复本次失败并交付实际入口；用户明确只读、只要方案或先审阅时，按该范围停止。
+9. **生命周期统计可以只读查看。** `status --for-dashboard` 输出一次活跃/退役角色、总尝试、成功、失败、经验与纠正事件聚合；追加 `--watch-seconds 2` 会在前台每两秒输出一条 NDJSON 快照，按 `Ctrl+C` 结束。它不会创建后台任务，也不代表 Codex 插件卡已经自动刷新。
 
 ### 精简与安全
 
@@ -95,7 +96,7 @@ maintenance needs them, and reuse unchanged instructions already in context.
 4. **Move complex PowerShell into a script.** Keep simple commands inline; use a task-scoped temporary `.ps1` for nested quoting, JSON/regex, backticks, multiline logic, or complex interpolation. After the first confirmed parse or escaping failure, stop rewriting the one-liner and edit the same script; keep it out of the repository and free of secrets, then move it recoverably to the Windows Recycle Bin or a scoped `待删文件` when cleaning up.
 5. **The three principles decide.** Preserve required quality and decisive evidence first, especially for high-value work. Once quality is sufficient, compare whole-task parent-and-child cost before elapsed time. Raise speed only when costs are close or the user states a current deadline or speed preference; do not pay substantially more merely to go faster without a required quality gain. Delegate ready end-to-end reading, implementation, and analysis slices that can replace parent work.
 6. **Capacity is not a quota.** Use available runtime capacity without targeting a fixed agent count or filling every slot.
-7. **Classify before selecting.** Match retained roles by responsibility, inputs, and evidence. Check `status --for-routing` once when descriptions are insufficient or before creating a role because no match was found. For an unloaded role or a configuration adaptation, use `recall --name <role-name>` to retrieve verified duties, configuration, and bounded experience without creating another domain record.
+7. **Match capability families, not narrow action names.** Reuse a retained role for compatible investigation, diagnosis, implementation, repair, testing, or acceptance within the same capability family. A project, framework, action verb, deliverable label, one-off success condition, or configuration tier does not create a new narrow role. Split only for incompatible tools, write authority, safety risk, or decisive evidence; broader matching never grants a read-only role write access. Check `status --for-routing` once when descriptions are insufficient, and use `recall --name <role-name>` for a verified unloaded role or configuration adaptation.
 8. **Select one complete configuration.** Every parent compares complete model, reasoning, and speed combinations under the three principles. Luna, Terra, and Sol are the usual candidates; Sol can own complex high-value work end to end. Use Astra only for additional decisive quality or a lower whole-task cost through less rework or fewer tokens, not merely because it is faster. New selections default to Standard speed, including Luna. Use Fast only for an explicit current deadline or speed request when the complete route benefits; preserve an existing explicit Fast setting and adapt only the current call when it no longer fits.
 9. **Make handoffs actionable.** Preserve user-operation acceptance, authoritative paths, rejected routes, and one current snapshot; see [project handoffs](skills/lean-stack/references/project-handoff.md).
 10. **Inherit only useful context.** Prefer `fork_turns="none"` for independent bounded tasks and add history only when prior decisions matter. Include task-specific tool, safety, and ownership limits explicitly; inherited orchestration instructions do not grant the parent's authority.
@@ -120,10 +121,11 @@ maintenance needs them, and reuse unchanged instructions already in context.
 2. **Competition preserves useful output.** Copies and variants deliver first; competition selects the future retained configuration without discarding accepted current results.
 3. **Retention is global-domain only.** Remove project names, paths, versions, and one-off facts before keeping one dormant specialist per reusable domain; there is no project-retention layer.
 4. **Accepted work becomes experience.** Generalize, redact, deduplicate, and append adopted methods and failure-avoidance lessons to SQLite; corrections remain append-only and auditable.
-5. **Only real successes survive.** Record a run idempotently with UUID `run_id` only after completion, adoption, and Done state.
+5. **Record only explicit completed outcomes.** Allocate UUID `run_id` before a retained-role task. Record success only after completion, adoption, and Done; record failure only when the whole task has a decisive failed outcome. Running, interrupted, unadopted, user-stopped or rejected, tool-blocked, and undetermined calls are not failures. After two cumulative explicit task failures, retire the identity recoverably from active routing while preserving identity, successes, failures, experience, and corrections. Attempt and failure totals distinguish zero successes caused by no invocation from zero successes after failed work.
 6. **Persistence never blocks delivery.** Try `ensure` and `improve` once each, then skip immediately on locks, schema drift, permission, or file-identity problems.
 7. **Retained agents do not stay alive.** Only dormant TOML configuration and redacted experience persist; runtime threads end normally and consume no continuing model calls.
 8. **The first implementation is intermediate.** Continue through authorized execution or tests, inspection, repair of failures caused by the change, and delivery of the real entry point. Respect an explicit read-only, proposal-only, or review-first request.
+9. **Lifecycle aggregates are read-only and observable.** `status --for-dashboard` returns one active/retired, attempt, success, failure, experience, and correction snapshot. Add `--watch-seconds 2` for foreground NDJSON every two seconds and stop it with `Ctrl+C`; this creates no background task and does not claim automatic Codex plugin-card refresh.
 
 ### Process removal and safety
 

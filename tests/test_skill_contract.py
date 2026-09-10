@@ -48,6 +48,9 @@ class SkillContractTests(unittest.TestCase):
         cls.investigation = (REFERENCES / "investigation.md").read_text(encoding="utf-8")
         cls.review = (REFERENCES / "review.md").read_text(encoding="utf-8")
         cls.long_running = (REFERENCES / "long-running.md").read_text(encoding="utf-8")
+        cls.project_handoff = (REFERENCES / "project-handoff.md").read_text(
+            encoding="utf-8"
+        )
         cls.versioning = (REFERENCES / "versioning.md").read_text(encoding="utf-8")
         cls.openai_yaml = (SKILL_DIR / "agents" / "openai.yaml").read_text(
             encoding="utf-8"
@@ -69,7 +72,7 @@ class SkillContractTests(unittest.TestCase):
         main = self.flowcharts.split("```mermaid", 1)[1].split("```", 1)[0]
         labels = (
             r"(\w+)\{新会话开始",
-            r"(\w+)\[父代理亲自完整读取",
+            r"(\w+)\[父代理只读 Jiao-Jie\.md 当前要求和重要片段",
             r"(\w+)\[修复真实发现并运行必要验证",
             r"(\w+)\{必要验证通过吗",
         )
@@ -216,7 +219,7 @@ class SkillContractTests(unittest.TestCase):
     def test_task_type_group_reuse_and_runtime_customization_follow_the_required_order(
         self,
     ) -> None:
-        for required in ("同一种活就是同一任务类型", "任务类型组确定前禁止复用或定制子代理", "定制运行时新子代理"):
+        for required in ("按“同一种活”确定任务类型组", "任务类型组确定前禁止复用或定制子代理", "定制运行时新子代理"):
             self.assertIn(required, self.delegation)
         self.assertIn("有则复用", self.skill)
         self.assertIn("运行时定制不等于持久创建", self.skill)
@@ -354,6 +357,101 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertNotIn(rejected_quota, detailed_authority)
 
+    def test_long_context_is_not_replicated_across_parent_child_or_nested_agents(self) -> None:
+        detailed = self.skill + self.routing + self.delegation + self.cost
+        compact_detailed = re.sub(r"\s+", "", detailed)
+        compact_generated = re.sub(r"\s+", "", self.agents_source)
+        for boundary in (
+            "最小上下文原则沿代理树逐层适用",
+            "Astra 对这些上下文读取、传播、结果复用和增量补缺规则没有例外",
+            "`fork_turns=\"none\"` 的合适 GPT-5.6",
+            "无法由有限摘录或来源快照保留",
+            "长来源只筛选一次并沿代理树复用",
+            "完整线程、完整工具输出、完整父历史或完整子树结果不得作为默认输入",
+            "轻量结果收据",
+            "已交付最终结果视为已经收取",
+            "同一来源快照和同一决定性缺口只发送一次有界增量请求",
+            "不能以“再确认”“更全面”循环追问或完整重做",
+            "必要的接口、安全、权限与数据完整性核验仍保留",
+            "Astra 子任务同样只接收最小充分输入",
+        ):
+            self.assertIn(re.sub(r"\s+", "", boundary), compact_detailed)
+
+        for generated_boundary in (
+            "最小上下文原则沿代理树逐层适用",
+            "Astra 没有例外",
+            "fork_turns=none",
+            "fork_turns=all",
+            "轻量收据",
+            "已交付最终结果不再等待",
+            "重读或要求重发",
+            "不循环追问",
+        ):
+            self.assertIn(re.sub(r"\s+", "", generated_boundary), compact_generated)
+
+        for rejected_shortcut in (
+            "减少子代理数量",
+            "所有 Astra 父任务必须",
+            "按 token 阈值自动路由",
+            "上下文压缩后禁止核验",
+        ):
+            self.assertNotIn(rejected_shortcut, detailed + self.agents_source)
+
+    def test_retained_roles_match_reusable_capability_families_not_narrow_action_names(self) -> None:
+        combined = (
+            self.skill
+            + self.routing
+            + self.delegation
+            + self.memory
+            + self.flowcharts
+            + self.readme
+            + self.agents_source
+        )
+        compact = re.sub(r"\s+", "", combined)
+        for boundary in (
+            "按可复用能力族",
+            "调查、诊断、实现、修复、测试或验收",
+            "项目、框架、动作动词、交付名称",
+            "工具、写入权限、安全风险和决定性证据形状",
+            "只读角色",
+            "范围放宽",
+        ):
+            self.assertIn(re.sub(r"\s+", "", boundary), compact)
+        for rejected_narrowing in (
+            "不同项目必须新建角色",
+            "每个动作动词建立一个任务类型组",
+            "成功条件不同就建立不同组",
+        ):
+            self.assertNotIn(rejected_narrowing, combined)
+        compact_generated = re.sub(r"\s+", "", self.agents_source)
+        for generated_boundary in (
+            "同一可复用能力族",
+            "项目、框架、动作动词、交付名称",
+            "工具、写入权限、安全风险和决定性证据形状",
+            "范围放宽不授予只读角色写权限",
+        ):
+            self.assertIn(re.sub(r"\s+", "", generated_boundary), compact_generated)
+
+    def test_context_reset_reads_only_handoff_requirements_and_one_skill_entry(self) -> None:
+        combined = self.skill + self.routing + self.handoff + self.project_handoff
+        compact_combined = re.sub(r"\s+", "", combined)
+        for boundary in (
+            "只读当前用户要求",
+            "会改变当前下一动作的重要片段",
+            "最新快照",
+            "最早活动项",
+            "最后可信状态",
+            "相关稳定决定",
+            "来源定位",
+            "授权边界",
+            "只读取一次本 `SKILL.md` 入口",
+            "实际调用子代理时不得再为“调用插件”重读一次",
+            "不重读已交付历史",
+            "只有重要片段标明缺口、冲突或来源变化时",
+        ):
+            self.assertIn(re.sub(r"\s+", "", boundary), compact_combined)
+        self.assertNotIn("工作上下文重置后（包括压缩或切换上下文窗口）实际完整重读", combined)
+
     def test_runtime_capacity_replaces_plugin_numeric_caps(self) -> None:
         combined = self.skill + self.routing + self.delegation + self.readme
         self.assertIn("不另外设置插件调用次数限制", self.skill)
@@ -445,7 +543,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("父代理为每个子任务分别", combined)
         self.assertIn("一个子代理", combined)
         self.assertIn("合并一条", combined)
-        self.assertIn("任一决定性边界不同", combined)
+        self.assertIn("不兼容时才拆分", combined)
         self.assertNotIn("复制用于同一种活", combined)
         self.assertNotIn("只采用最佳结果", combined)
         self.assertNotIn("同一种活并使用同一成功条件", combined)
@@ -518,9 +616,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不例行遍历台账", self.skill)
         self.assertIn("临时调用不记作原保留身份的成功运行", self.memory)
         self.assertIn("不以“已调用”或过程记录代替结果", self.skill)
-        self.assertIn("实际完整重读", self.skill)
-        self.assertIn("实际完整重读", self.skill)
+        self.assertIn("只读当前用户要求", self.skill)
+        self.assertIn("插件规则只读取一次本 `SKILL.md` 入口", self.skill)
+        self.assertIn("实际调用子代理时不得再为“调用插件”重读一次", self.skill)
         self.assertIn("不为补通知重复读取", self.skill)
+        self.assertNotIn("实际完整重读", self.skill)
 
     def test_retention_and_experience_are_default_nonblocking_side_chain(self) -> None:
         combined = (
@@ -773,7 +873,7 @@ class SkillContractTests(unittest.TestCase):
             "直接普通文件",
             "单一硬链接",
             "所有权令牌",
-            "经验与存活轮次都必须为零",
+            "经验与任务尝试都必须为零",
             "`delete` 和 `restore`",
             "--receipt",
             "--expected-sha256",
@@ -794,10 +894,10 @@ class SkillContractTests(unittest.TestCase):
             "_owned_agent",
             "experience_events",
             "agent_runs",
-            "validate_direct_agent_file",
+            "_stage_retirement",
             "expected_sha256",
             "owner_token",
-            "rename_no_replace",
+            "UPDATE agents SET retired_at",
             "retired_to_pending_deletion",
         ):
             self.assertIn(retained_guard, delete_text)
@@ -948,7 +1048,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("retracts_event_id", script)
         self.assertIn("experience_corrected", script)
         self.assertIn("recorded experience cannot be retired", script)
-        self.assertIn("recorded survival rounds cannot be retired", script)
+        self.assertIn("recorded attempts cannot be manually retired", script)
         self.assertIn('SPEEDS = {"standard", "fast"}', script)
         self.assertIn('service_tier = {json_text(\'fast\')}', script)
         self.assertIn('skills_config = "[skills]\\ninclude_instructions = false\\n"', script)
@@ -997,11 +1097,13 @@ class SkillContractTests(unittest.TestCase):
                 "delete",
                 "restore",
                 "migrate-global",
+                "migrate-attempts",
             },
         )
         improve_parser = action.choices["improve"]
         ensure_parser = action.choices["ensure"]
         record_parser = action.choices["record-run"]
+        status_parser = action.choices["status"]
         restore_parser = action.choices["restore"]
         migrate_parser = action.choices["migrate-global"]
         ensure_options = {
@@ -1019,6 +1121,11 @@ class SkillContractTests(unittest.TestCase):
             for parser_action in record_parser._actions
             for option in parser_action.option_strings
         }
+        status_options = {
+            option
+            for parser_action in status_parser._actions
+            for option in parser_action.option_strings
+        }
         restore_options = {
             option
             for parser_action in restore_parser._actions
@@ -1033,6 +1140,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("--retracts-event-id", improve_options)
         self.assertIn("--run-id", record_options)
         self.assertIn("--invocation-kind", record_options)
+        self.assertIn("--outcome", record_options)
+        self.assertIn("--watch-seconds", status_options)
         self.assertEqual(
             restore_options,
             {"-h", "--help", "--name", "--receipt", "--expected-sha256", "--owner-token"},
@@ -1153,6 +1262,20 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("只重装一次", self.versioning)
         for boundary in ("提交", "推送", "公开发布", "外部消息"):
             self.assertIn(boundary, self.versioning)
+
+    def test_visible_plugin_name_is_consistent_without_renaming_stable_identifiers(self) -> None:
+        visible_name = "Codex子代理调用与精简流程"
+        self.assertEqual(self.manifest["interface"]["displayName"], visible_name)
+        self.assertTrue(self.readme.startswith(f"# {visible_name}\n"))
+        self.assertIn(f"# {visible_name}", self.skill)
+        self.assertIn(visible_name, self.flowcharts)
+        for content in (self.readme, self.skill, self.flowcharts, self.manifest["interface"]["displayName"]):
+            self.assertNotIn("精益任务栈", content)
+
+        self.assertEqual(self.manifest["name"], "codex-lean-stack")
+        self.assertIn("name: lean-stack", self.skill)
+        self.assertIn("$lean-stack", self.readme)
+        self.assertIn("skills/lean-stack/", self.readme)
 
     def test_manifest_and_ui_are_synchronized_without_old_caps(self) -> None:
         self.assertRegex(
@@ -1322,7 +1445,7 @@ class SkillContractTests(unittest.TestCase):
             "现实消费者",
             "已经决定不实现的假想功能",
             "第二事实源",
-            "schema v4",
+            "schema v5",
             "agents.py status",
             "只追加原始经验和纠正事件",
             "经验数量不封顶",
@@ -1352,7 +1475,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不能复制插件的子代理加速规则", self.handoff)
         self.assertIn("正式安装成功后才幂等确保", self.handoff)
         self.assertIn("新会话开始或工作上下文重置后", self.handoff)
-        self.assertIn("子代理摘要或子代理读取不能替代", self.handoff)
+        self.assertIn("子代理摘要或读取不能替代父代理这次有界恢复", self.handoff)
+        self.assertIn("会改变下一动作的重要片段", self.handoff)
+        self.assertIn("实际调用子代理不重复读取入口或未变细则", self.handoff)
         self.assertIn("普通后续轮次复用", self.handoff)
         self.assertIn("每轮项目迭代", self.handoff)
         self.assertIn("收口前更新本文件", self.handoff)
@@ -1408,7 +1533,7 @@ class SkillContractTests(unittest.TestCase):
     def test_readme_is_a_concrete_bilingual_agent_calling_guide(self) -> None:
         self.assertLessEqual(len(self.readme.splitlines()), 190)
         for term in (
-            "# codex代理调用和精简流程",
+            "# Codex子代理调用与精简流程",
             "插件标识：`codex-lean-stack`",
             "## 中文",
             "### 调用前",

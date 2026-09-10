@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib.util
 import contextlib
 import io
@@ -126,9 +127,74 @@ class SpecialistRegistryTests(unittest.TestCase):
                 connection.execute("DROP TABLE agent_runs")
             elif version == 2:
                 connection.execute("DROP TABLE agent_runs")
+            else:
+                connection.execute("ALTER TABLE agent_runs DROP COLUMN outcome")
             connection.execute(f"PRAGMA user_version = {version}")
             connection.execute("COMMIT")
         return rows
+
+    def downgrade_attempt_schema(self) -> None:
+        with contextlib.closing(self.db()) as connection:
+            agent_rows = [dict(row) for row in connection.execute("SELECT * FROM agents")]
+            event_rows = [
+                tuple(row) for row in connection.execute(
+                    "SELECT sequence,agent_id,event_id,event_digest,lesson,retracts_event_id,created_at "
+                    "FROM experience_events ORDER BY sequence"
+                )
+            ]
+            summary_rows = [
+                tuple(row) for row in connection.execute(
+                    "SELECT agent_id,summary,covered_through_sequence,source_digest,updated_at "
+                    "FROM experience_summaries"
+                )
+            ]
+            run_rows = [
+                tuple(row) for row in connection.execute(
+                    "SELECT run_id,agent_id,invocation_kind,completed_at FROM agent_runs"
+                )
+            ]
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("BEGIN IMMEDIATE")
+            for table in (
+                "experience_summaries", "experience_events", "agent_runs", "agents"
+            ):
+                connection.execute(f"DROP TABLE {table}")
+            for statement in agents.SCHEMA_V4_TABLE_SQL.values():
+                connection.execute(statement)
+            for row in agent_rows:
+                connection.execute(
+                    "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,"
+                    "created_at,updated_at,global_contract_version,global_domain_key,global_contract,"
+                    "global_contract_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    tuple(row[key] for key in (
+                        "agent_id", "name", "role_key", "path", "owner_token",
+                        "expected_sha256", "created_at", "updated_at",
+                        "global_contract_version", "global_domain_key", "global_contract",
+                        "global_contract_digest",
+                    )),
+                )
+            connection.executemany(
+                "INSERT INTO experience_events(sequence,agent_id,event_id,event_digest,lesson,"
+                "retracts_event_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                event_rows,
+            )
+            connection.executemany(
+                "INSERT INTO experience_summaries(agent_id,summary,covered_through_sequence,"
+                "source_digest,updated_at) VALUES(?,?,?,?,?)",
+                summary_rows,
+            )
+            connection.executemany(
+                "INSERT INTO agent_runs(run_id,agent_id,invocation_kind,completed_at) "
+                "VALUES(?,?,?,?)",
+                run_rows,
+            )
+            connection.execute("PRAGMA user_version = 4")
+            connection.execute("COMMIT")
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                agents.exact_schema(connection),
+                agents.expected_schema(agents.SCHEMA_V4_TABLE_SQL),
+            )
 
     def write_migration_plan(
         self,
@@ -313,7 +379,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "普通删除不得物理销毁",
             "普通文件精确送入 Windows 回收站",
             "重要文件精确移入任务专属待删文件",
-            "直接普通文件、单一硬链接、零经验和零存活轮次资格判断",
+            "直接普通文件、单一硬链接、零经验和零任务尝试资格判断",
             "合格 TOML与收据移入插件专属待删文件",
             "不合格目标保持原位并报告",
         ):
@@ -601,7 +667,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             tables,
             {"agents", "experience_events", "experience_summaries", "agent_runs"},
         )
-        self.assertEqual(version, 4)
+        self.assertEqual(version, agents.SCHEMA_VERSION)
         for removed in (
             "leases",
             "evaluations",
@@ -832,7 +898,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(instructions.index("你是专门负责"), instructions.index("我是QML 根因核对员。"))
         self.assertIn("实际依赖图", instructions)
         self.assertIn(lesson, instructions)
-        self.assertIn("由你自行声明", instructions)
+        self.assertIn("公开以下实际配置", instructions)
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
@@ -1127,7 +1193,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         migrated = self.registry.migrate_global(plan_path=self.write_migration_plan(rows))
         self.assertEqual(migrated["action"], "global_migration_committed")
         with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                agents.SCHEMA_VERSION,
+            )
             row = connection.execute(
                 "SELECT lesson, retracts_event_id FROM experience_events"
             ).fetchone()
@@ -1150,7 +1219,10 @@ class SpecialistRegistryTests(unittest.TestCase):
             self.ensure()
         self.registry.migrate_global(plan_path=self.write_migration_plan(rows))
         with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                agents.SCHEMA_VERSION,
+            )
             self.assertEqual(
                 connection.execute("SELECT lesson FROM experience_events").fetchone()[0],
                 lesson,
@@ -1366,7 +1438,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                 run_id=run_id,
                 invocation_kind="spawn_agent",
             )
-        with self.assertRaisesRegex(agents.SpecialistError, "recorded survival rounds"):
+        with self.assertRaisesRegex(agents.SpecialistError, "recorded attempts"):
             self.registry.delete(
                 name=created["name"],
                 expected_sha256=created["sha256"],
@@ -1375,6 +1447,206 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(recorded["survival_rounds"], 1)
         self.assertTrue(Path(created["path"]).exists())
         self.assertFalse(self.registry.pending_deletion_dir.exists())
+
+    def test_attempts_distinguish_never_invoked_from_success_and_failure(self) -> None:
+        created = self.ensure()
+        item = self.registry.status()["registered_agents"][0]
+        self.assertEqual(item["attempt_count"], 0)
+        self.assertEqual(item["successful_attempt_count"], 0)
+        self.assertEqual(item["failed_attempt_count"], 0)
+
+        successful = self.registry.record_run(
+            name=created["name"],
+            expected_sha256=created["sha256"],
+            run_id=str(uuid.uuid4()),
+            invocation_kind="spawn_agent",
+        )
+        failed = self.registry.record_run(
+            name=created["name"],
+            expected_sha256=created["sha256"],
+            run_id=str(uuid.uuid4()),
+            invocation_kind="followup_task",
+            outcome="failure",
+        )
+
+        self.assertEqual(successful["outcome"], "success")
+        self.assertEqual(failed["attempt_count"], 2)
+        self.assertEqual(failed["successful_attempt_count"], 1)
+        self.assertEqual(failed["failed_attempt_count"], 1)
+        self.assertTrue(failed["active"])
+        self.assertFalse(failed["retirement_triggered"])
+
+    def test_second_task_failure_retires_and_protected_restore_preserves_audit(self) -> None:
+        created = self.ensure()
+        success_id = str(uuid.uuid4())
+        first_failure_id = str(uuid.uuid4())
+        second_failure_id = str(uuid.uuid4())
+        success = self.registry.record_run(
+            name=created["name"], expected_sha256=created["sha256"],
+            run_id=success_id, invocation_kind="spawn_agent",
+        )
+        first_event_id = str(uuid.uuid4())
+        first_event = self.improve_with_lesson(
+            name=created["name"], expected_sha256=created["sha256"],
+            event_id=first_event_id,
+            lesson="适用情境：初始结论；做法：保留证据；证据：已验证；例外：待纠正。",
+        )
+        correction = self.improve_with_lesson(
+            name=created["name"], expected_sha256=first_event["sha256"],
+            event_id=str(uuid.uuid4()), retracts_event_id=first_event_id,
+            lesson="适用情境：初始结论；做法：采用纠正；证据：已验证；例外：无。",
+        )
+        first_failure = self.registry.record_run(
+            name=created["name"], expected_sha256=correction["sha256"],
+            run_id=first_failure_id, invocation_kind="followup_task", outcome="failure",
+        )
+        replay = self.registry.record_run(
+            name=created["name"], expected_sha256=correction["sha256"],
+            run_id=first_failure_id, invocation_kind="followup_task", outcome="failure",
+        )
+        self.assertEqual(replay["action"], "task_failure_already_recorded")
+        self.assertEqual(replay["attempt_count"], 2)
+        with self.assertRaisesRegex(agents.SpecialistError, "outcome"):
+            self.registry.record_run(
+                name=created["name"], expected_sha256=correction["sha256"],
+                run_id=first_failure_id, invocation_kind="followup_task", outcome="success",
+            )
+
+        retired = self.registry.record_run(
+            name=created["name"], expected_sha256=correction["sha256"],
+            run_id=second_failure_id, invocation_kind="spawn_agent", outcome="failure",
+        )
+        self.assertEqual(retired["action"], "task_failure_recorded_and_retired")
+        self.assertFalse(retired["active"])
+        self.assertTrue(retired["retirement_triggered"])
+        self.assertFalse(Path(created["path"]).exists())
+        self.assertTrue(Path(retired["pending_path"]).exists())
+        receipt = json.loads(Path(retired["receipt_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(receipt["retirement_reason"], "recorded_task_failure_threshold")
+        self.assertNotIn("owner_token", receipt)
+        self.assertEqual(self.registry.status()["registered_count"], 0)
+        self.assertEqual(self.registry.status(for_routing=True)["registered_count"], 0)
+        retired_dashboard = self.registry.status(for_dashboard=True)
+        self.assertEqual(retired_dashboard["recorded_attempt_count"], 3)
+        self.assertEqual(retired_dashboard["successful_attempt_count"], 1)
+        self.assertEqual(retired_dashboard["failed_attempt_count"], 2)
+        self.assertEqual(retired_dashboard["active_retained_agent_count"], 0)
+        self.assertEqual(retired_dashboard["retired_retained_agent_count"], 1)
+        reuse = self.ensure(role_key="qml-binding-diagnostics")
+        self.assertEqual(reuse["action"], "protected_restore_required")
+        self.assertNotIn("owner_token", reuse)
+        replay_after_retirement = self.registry.record_run(
+            name=created["name"], expected_sha256=correction["sha256"],
+            run_id=second_failure_id, invocation_kind="spawn_agent", outcome="failure",
+        )
+        self.assertEqual(replay_after_retirement["failed_attempt_count"], 2)
+        self.assertFalse(replay_after_retirement["active"])
+
+        restored = self.registry.restore(
+            receipt=Path(retired["receipt_path"]),
+            expected_sha256=correction["sha256"],
+            owner_token=created["owner_token"],
+        )
+        self.assertEqual(restored["agent_id"], created["agent_id"])
+        active = self.registry.status()
+        self.assertEqual(active["registered_count"], 1)
+        active_item = active["registered_agents"][0]
+        self.assertEqual(active_item["attempt_count"], 3)
+        self.assertEqual(active_item["successful_attempt_count"], 1)
+        self.assertEqual(active_item["failed_attempt_count"], 2)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0], 2
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 3
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT outcome FROM agent_runs WHERE run_id=?", (success_id,)
+                ).fetchone()[0],
+                "success",
+            )
+        dashboard = self.registry.status(for_dashboard=True)
+        self.assertEqual(dashboard["recorded_attempt_count"], 3)
+        self.assertEqual(dashboard["failed_attempt_count"], 2)
+        self.assertEqual(dashboard["active_retained_agent_count"], 1)
+        self.assertEqual(dashboard["retired_retained_agent_count"], 0)
+
+    def test_second_failure_path_conflict_and_busy_or_cas_failure_are_zero_mutation(self) -> None:
+        created = self.ensure()
+        first = self.registry.record_run(
+            name=created["name"], expected_sha256=created["sha256"],
+            run_id=str(uuid.uuid4()), invocation_kind="spawn_agent", outcome="failure",
+        )
+        path = Path(created["path"])
+        original = path.read_bytes()
+        pending_path, receipt_path = self.registry._receipt_paths(
+            created["agent_id"], created["sha256"]
+        )
+        agents.ensure_plain_directory(self.registry.pending_deletion_dir, create=True)
+        pending_path.write_bytes(b"concurrent pending evidence")
+        second_id = str(uuid.uuid4())
+        with self.assertRaisesRegex(agents.SpecialistError, "target already exists"):
+            self.registry.record_run(
+                name=created["name"], expected_sha256=created["sha256"],
+                run_id=second_id, invocation_kind="followup_task", outcome="failure",
+            )
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(pending_path.read_bytes(), b"concurrent pending evidence")
+        self.assertFalse(receipt_path.exists())
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
+
+        with self.assertRaises(agents.SpecialistError):
+            self.registry.record_run(
+                name=created["name"], expected_sha256="0" * 64,
+                run_id=second_id, invocation_kind="followup_task", outcome="failure",
+            )
+        blocker = sqlite3.connect(self.registry.db_path, isolation_level=None)
+        try:
+            blocker.execute("BEGIN IMMEDIATE")
+            with self.assertRaises(sqlite3.OperationalError):
+                self.registry.record_run(
+                    name=created["name"], expected_sha256=created["sha256"],
+                    run_id=second_id, invocation_kind="followup_task", outcome="failure",
+                )
+        finally:
+            blocker.close()
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(first["failed_attempt_count"], 1)
+
+    def test_explicit_v4_attempt_migration_preserves_successes_and_infers_no_failures(self) -> None:
+        never_invoked = self.ensure()
+        successful = self.ensure(role_key="successful-migration-review")
+        run_id = str(uuid.uuid4())
+        self.registry.record_run(
+            name=successful["name"], expected_sha256=successful["sha256"],
+            run_id=run_id, invocation_kind="spawn_agent",
+        )
+        self.downgrade_attempt_schema()
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "migrate-attempts"):
+            self.registry.status()
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = agents.main(
+                ["--codex-home", str(self.codex_home), "migrate-attempts"]
+            )
+        migrated = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(migrated["action"], "attempt_schema_migrated")
+        self.assertEqual(migrated["migrated_successful_attempt_count"], 1)
+        self.assertEqual(migrated["migrated_failure_attempt_count"], 0)
+        self.assertFalse(migrated["historical_failure_backfill"])
+        status = {item["name"]: item for item in self.registry.status()["registered_agents"]}
+        self.assertEqual(status[never_invoked["name"]]["attempt_count"], 0)
+        self.assertEqual(status[successful["name"]]["successful_attempt_count"], 1)
+        with contextlib.closing(self.db()) as connection:
+            row = connection.execute(
+                "SELECT run_id,outcome FROM agent_runs"
+            ).fetchone()
+            self.assertEqual((row["run_id"], row["outcome"]), (run_id, "success"))
 
     def test_delete_rejects_recorded_experience_without_pending_artifacts(self) -> None:
         created = self.ensure()
@@ -1441,7 +1713,11 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
         self.assertNotIn("owner_token", receipt)
         with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 0)
+            row = connection.execute(
+                "SELECT agent_id, retired_at FROM agents"
+            ).fetchone()
+            self.assertEqual(row["agent_id"], created["agent_id"])
+            self.assertIsNotNone(row["retired_at"])
 
     def test_delete_rejects_wrong_token_hash_drift_and_external_files(self) -> None:
         created = self.ensure()
@@ -1541,7 +1817,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             created["agent_id"], created["sha256"]
         )
         self.assertFalse(pending_path.exists())
-        self.assertTrue(receipt_path.exists())
+        self.assertFalse(receipt_path.exists())
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 1)
 
@@ -1721,6 +1997,11 @@ class SpecialistRegistryTests(unittest.TestCase):
             expected_sha256=created["sha256"],
             owner_token=created["owner_token"],
         )
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "DELETE FROM agents WHERE agent_id = ?", (created["agent_id"],)
+            )
+            connection.commit()
         conflict = self.ensure(role_key="qml-binding-diagnostics")
         with self.assertRaisesRegex(agents.SpecialistError, "conflict"):
             self.registry.restore(
@@ -1784,7 +2065,11 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(pending_path.read_bytes(), before)
         self.assertTrue(Path(retired["receipt_path"]).exists())
         with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 0)
+            row = connection.execute(
+                "SELECT agent_id, retired_at FROM agents"
+            ).fetchone()
+            self.assertEqual(row["agent_id"], created["agent_id"])
+            self.assertIsNotNone(row["retired_at"])
 
     def test_locked_database_fails_within_the_bounded_auxiliary_timeout(self) -> None:
         self.ensure()
@@ -1923,6 +2208,176 @@ class SpecialistRegistryTests(unittest.TestCase):
                 "model", "reasoning_effort", "speed", "authority",
             },
         )
+
+    def test_status_for_dashboard_reports_corrected_aggregates_without_writing(self) -> None:
+        retained = self.ensure()
+        first_event_id = str(uuid.uuid4())
+        first = self.improve_with_lesson(
+            name=retained["name"],
+            expected_sha256=retained["sha256"],
+            event_id=first_event_id,
+            lesson="适用情境：首个输入；做法：保留原始证据；证据：已复核；例外：无。",
+        )
+        retracted_event_id = str(uuid.uuid4())
+        second = self.improve_with_lesson(
+            name=retained["name"],
+            expected_sha256=first["sha256"],
+            event_id=retracted_event_id,
+            lesson="适用情境：旧输入；做法：采用旧结论；证据：待纠正；例外：无。",
+        )
+        corrected = self.improve_with_lesson(
+            name=retained["name"],
+            expected_sha256=second["sha256"],
+            event_id=str(uuid.uuid4()),
+            retracts_event_id=retracted_event_id,
+            lesson="适用情境：旧输入；做法：改用纠正结论；证据：已复核；例外：无。",
+        )
+        other = self.ensure(
+            role_key="dashboard-aggregate-review",
+            global_domain_key="dashboard-aggregate-review",
+        )
+        for invocation_kind in ("spawn_agent", "followup_task"):
+            self.registry.record_run(
+                name=retained["name"],
+                expected_sha256=corrected["sha256"],
+                run_id=str(uuid.uuid4()),
+                invocation_kind=invocation_kind,
+            )
+        self.registry.record_run(
+            name=other["name"],
+            expected_sha256=other["sha256"],
+            run_id=str(uuid.uuid4()),
+            invocation_kind="spawn_agent",
+        )
+
+        database_before = self.registry.db_path.read_bytes()
+        modified_before = self.registry.db_path.stat().st_mtime_ns
+        state_files_before = sorted(path.name for path in self.registry.state_dir.iterdir())
+        with mock.patch.object(
+            self.registry, "connect", wraps=self.registry.connect
+        ) as connect:
+            dashboard = self.registry.status(for_dashboard=True)
+
+        connect.assert_called_once_with(read_only=True)
+        self.assertEqual(
+            set(dashboard),
+            {
+                "ok", "action", "for_dashboard", "schema_version",
+                "retained_agent_count", "active_retained_agent_count",
+                "retired_retained_agent_count", "recorded_attempt_count",
+                "successful_attempt_count", "failed_attempt_count",
+                "verified_survival_round_count",
+                "experience_event_count", "raw_experience_count",
+                "correction_event_count", "active_experience_count",
+                "refreshed_at",
+            },
+        )
+        self.assertTrue(dashboard["for_dashboard"])
+        self.assertEqual(dashboard["retained_agent_count"], 2)
+        self.assertEqual(dashboard["active_retained_agent_count"], 2)
+        self.assertEqual(dashboard["retired_retained_agent_count"], 0)
+        self.assertEqual(dashboard["recorded_attempt_count"], 3)
+        self.assertEqual(dashboard["successful_attempt_count"], 3)
+        self.assertEqual(dashboard["failed_attempt_count"], 0)
+        self.assertEqual(dashboard["verified_survival_round_count"], 3)
+        self.assertEqual(dashboard["experience_event_count"], 3)
+        self.assertEqual(dashboard["raw_experience_count"], 2)
+        self.assertEqual(dashboard["correction_event_count"], 1)
+        self.assertEqual(dashboard["active_experience_count"], 2)
+        refreshed_at = dt.datetime.fromisoformat(dashboard["refreshed_at"])
+        self.assertIsNotNone(refreshed_at.tzinfo)
+        serialized = json.dumps(dashboard, ensure_ascii=False)
+        self.assertNotIn(retained["path"], serialized)
+        self.assertNotIn(retained["owner_token"], serialized)
+        self.assertNotIn("保留原始证据", serialized)
+        self.assertEqual(self.registry.db_path.read_bytes(), database_before)
+        self.assertEqual(self.registry.db_path.stat().st_mtime_ns, modified_before)
+        self.assertEqual(
+            sorted(path.name for path in self.registry.state_dir.iterdir()),
+            state_files_before,
+        )
+
+    def test_status_for_dashboard_cli_is_bounded_and_preserves_owned_validation(self) -> None:
+        created = self.ensure()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = agents.main(
+                ["--codex-home", str(self.codex_home), "status", "--for-dashboard"]
+            )
+        dashboard = json.loads(output.getvalue())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(dashboard["retained_agent_count"], 1)
+        self.assertNotIn("registered_agents", dashboard)
+        self.assertNotIn("path", dashboard)
+        self.assertNotIn("owner_token", dashboard)
+        self.assertNotIn("experience", dashboard)
+
+        path = Path(created["path"])
+        path.write_bytes(path.read_bytes() + b"\n")
+        with self.assertRaisesRegex(agents.SpecialistError, "content drifted"):
+            self.registry.status(for_dashboard=True)
+
+    def test_status_for_dashboard_does_not_initialize_missing_state(self) -> None:
+        missing_home = Path(self.temporary.name) / "missing-dashboard-home"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = agents.main(
+                ["--codex-home", str(missing_home), "status", "--for-dashboard"]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertFalse(missing_home.exists())
+        self.assertFalse(json.loads(output.getvalue())["ok"])
+
+    def test_status_for_dashboard_watch_repeats_read_only_ndjson_until_interrupt(self) -> None:
+        self.ensure()
+        database_before = self.registry.db_path.read_bytes()
+        modified_before = self.registry.db_path.stat().st_mtime_ns
+        output = io.StringIO()
+        with (
+            contextlib.redirect_stdout(output),
+            mock.patch.object(
+                agents.time,
+                "sleep",
+                side_effect=[None, KeyboardInterrupt()],
+            ) as sleep,
+        ):
+            exit_code = agents.main([
+                "--codex-home", str(self.codex_home),
+                "status", "--for-dashboard", "--watch-seconds", "2",
+            ])
+
+        self.assertEqual(exit_code, 130)
+        sleep.assert_has_calls([mock.call(2), mock.call(2)])
+        snapshots = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(snapshots), 2)
+        self.assertTrue(all(item["for_dashboard"] for item in snapshots))
+        self.assertTrue(all(item["retained_agent_count"] == 1 for item in snapshots))
+        self.assertTrue(all("registered_agents" not in item for item in snapshots))
+        self.assertEqual(self.registry.db_path.read_bytes(), database_before)
+        self.assertEqual(self.registry.db_path.stat().st_mtime_ns, modified_before)
+
+    def test_status_watch_rejects_non_dashboard_and_out_of_range_intervals(self) -> None:
+        for arguments, expected_error in (
+            (["status", "--watch-seconds", "2"], "requires --for-dashboard"),
+            (
+                ["status", "--for-dashboard", "--watch-seconds", "0"],
+                "must be between 1 and 3600",
+            ),
+            (
+                ["status", "--for-dashboard", "--watch-seconds", "3601"],
+                "must be between 1 and 3600",
+            ),
+        ):
+            with self.subTest(arguments=arguments):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    exit_code = agents.main(
+                        ["--codex-home", str(self.codex_home), *arguments]
+                    )
+                self.assertEqual(exit_code, 2)
+                self.assertIn(expected_error, json.loads(output.getvalue())["error"])
 
     def test_recall_reads_only_the_selected_role_without_writes_or_private_metadata(self) -> None:
         selected = self.ensure()
@@ -2139,7 +2594,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertNotIn("old_path", completion)
         self.assertNotIn("new_path", completion)
         with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                agents.SCHEMA_VERSION,
+            )
             identities = list(connection.execute(
                 "SELECT agent_id,owner_token,created_at,global_contract_version FROM agents"
             ))
@@ -2264,7 +2722,10 @@ class SpecialistRegistryTests(unittest.TestCase):
                 self.registry.migrate_global(plan_path=plan)
         self.assertTrue(failed)
         with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                agents.SCHEMA_VERSION,
+            )
         detailed = json.loads(
             self.registry._migration_journal_path().read_text(encoding="utf-8")
         )
