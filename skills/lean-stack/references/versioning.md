@@ -9,6 +9,19 @@
 
 `+codex.<标识>` 只标识一次安装构建，不能替代数字语义版本决定。
 
+每次提交并推送新版本前，先用一至三条简短说明记录该版本新增或改变的用户可见行为，不用
+测试数量、提交过程或泛化宣传代替行为结果：
+
+- `CHANGELOG.md` 顶部新增数字版本和日期，保留本版摘要；不为补齐历史重建长日志。
+- `README.md` 的“当前版本”只保留最新摘要，并与插件清单
+  `description`、`interface.shortDescription` 和 `interface.longDescription` 同步。
+- `interface.shortDescription` 改变时同步技能 `agents/openai.yaml` 的
+  `short_description`；稳定入口提示和无关元数据不随版本说明改写。
+
+完成版本写入后，核对 `CHANGELOG.md` 首个版本、README 当前版本和插件清单可见说明中的
+数字版本均与 manifest 的数字版本一致；任何一处仍为旧版本时，不提交或推送。没有新的用户
+可见行为时如实写明文档或内部变化，不编造功能。
+
 公共行为确定、当前风险所需的语义复核和相关检查完成后，使用完整旧版本作为比较并
 交换前置条件，只运行一次版本写入器：
 

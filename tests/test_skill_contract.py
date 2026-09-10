@@ -42,6 +42,7 @@ class SkillContractTests(unittest.TestCase):
         )
         cls.flowcharts = (REFERENCES / "flowcharts-zh.md").read_text(encoding="utf-8")
         cls.readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        cls.changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         cls.handoff = (ROOT / "Jiao-Jie.md").read_text(encoding="utf-8")
         cls.build = (REFERENCES / "build.md").read_text(encoding="utf-8")
         cls.bug_fix = (REFERENCES / "bug-fix.md").read_text(encoding="utf-8")
@@ -62,6 +63,7 @@ class SkillContractTests(unittest.TestCase):
             path.read_text(encoding="utf-8")
             for path in (
                 ROOT / "README.md",
+                ROOT / "CHANGELOG.md",
                 ROOT / "Jiao-Jie.md",
                 SKILL_DIR / "SKILL.md",
                 *REFERENCES.glob("*.md"),
@@ -1437,6 +1439,62 @@ class SkillContractTests(unittest.TestCase):
         for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
             self.assertIn(model, full_contract)
         self.assertNotIn("实" + "例", full_contract)
+
+    def test_current_release_notes_match_manifest_and_visible_descriptions(self) -> None:
+        base_version = self.manifest["version"].split("+", 1)[0]
+        first_release = re.search(
+            r"^## (?P<version>\d+\.\d+\.\d+) - \d{4}-\d{2}-\d{2}$",
+            self.changelog,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(first_release)
+        assert first_release is not None
+        self.assertEqual(first_release.group("version"), base_version)
+        self.assertIn(f"当前版本 {base_version}", self.readme)
+
+        descriptions = " ".join(
+            (
+                self.manifest["description"],
+                self.manifest["interface"]["shortDescription"],
+                self.manifest["interface"]["longDescription"],
+            )
+        )
+        self.assertIn(f"当前版本 {base_version}", descriptions)
+
+        next_release = self.changelog.find("\n## ", first_release.end())
+        current_notes = self.changelog[
+            first_release.end() : next_release if next_release >= 0 else None
+        ]
+        visible_summary = self.readme + descriptions + current_notes
+        for behavior_term in ("直接处理", "token", "时间", "返工", "专家"):
+            self.assertIn(behavior_term, visible_summary)
+
+        short_match = re.search(
+            r'^\s*short_description:\s*"([^"]+)"',
+            self.openai_yaml,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(short_match)
+        assert short_match is not None
+        self.assertEqual(
+            short_match.group(1),
+            self.manifest["interface"]["shortDescription"],
+        )
+
+        for required_surface in (
+            "CHANGELOG.md",
+            "README.md",
+            "description",
+            "interface.shortDescription",
+            "interface.longDescription",
+            "新增或改变的用户可见行为",
+        ):
+            self.assertIn(required_surface, self.versioning)
+        for flow_step in (
+            "同步 README、CHANGELOG 和插件说明",
+            "核对说明中的当前版本与 manifest 一致",
+        ):
+            self.assertIn(flow_step, self.flowcharts)
 
     def test_flowcharts_are_auxiliary_and_not_frozen_to_a_count(self) -> None:
         self.assertGreaterEqual(self.flowcharts.count("```mermaid"), 4)
