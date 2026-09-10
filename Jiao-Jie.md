@@ -25,6 +25,14 @@
 `Astra / ultra` 探针已立即中断，不计通过、不采用其结果、不写入经验。该子代理上限不改写
 用户在其他场景显式选择的 Astra 父任务配置。
 
+用户随后提供 “Play triangle optical probe” 截图，显示
+`direct app-server input is not allowed for multi-agent v2 sub-agents`。结合实际控制记录，这不是
+视觉子任务给出的业务结论，而是外部测试控制者误向 multi-agent v2 子任务直接发送
+`send_message_to_thread` 停止输入造成的运行环境拒绝。后续控制者只向独立父任务发停止要求，
+由父代理用 `collaboration.interrupt_agent` 停止自己的子代理；不再直接向子任务发 app-server
+输入。该截图同时再次确认错误探针公开声明的是 `gpt-6-astra / ultra`，所以只能作为修复前失败
+证据，不能计入 4.0 通过结果。
+
 最新要求（2026-09-11，当前用户原话）：引用 UIWorkbench 任务
 `01a08c11-94d7-7a90-b974-a342f9c56f44` 指出“还是调用子代理不积极，自己埋头苦干”，并强调
 “各子代理差价如此悬殊，我不信没有收益”“你的改动要在新开会话里生效，而不是只在本项目里

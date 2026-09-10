@@ -572,6 +572,23 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_versioning)
 
+        # A start-only routing probe stops through the parent. Direct app-server
+        # input to a multi-agent v2 child is an invalid control path, not a child
+        # result or a routing failure.
+        for required in (
+            "窄路由探针",
+            "真实子代理启动事件",
+            "实际配置",
+            "collaboration.interrupt_agent",
+            "不得对multi-agentv2子代理直接调用send_message_to_thread",
+            "不能替代上面累计验收已有的可采用结果证据",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact_fresh_session)
+        self.assertIn(
+            "由父代理用collaboration.interrupt_agent停止自己的子代理",
+            compact_versioning,
+        )
+
     def test_long_context_is_not_replicated_across_parent_child_or_nested_agents(self) -> None:
         detailed = self.skill + self.routing + self.delegation + self.cost
         compact_detailed = re.sub(r"\s+", "", detailed)
