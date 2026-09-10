@@ -106,12 +106,13 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("总成本", content)
         self.assertIn("质量达标后：先比较", self.routing)
         self.assertIn("成本相近时：再比较总完成时间", self.routing)
-        self.assertIn("父代理仍核对关键差异、接口和安全边界", self.routing)
+        self.assertIn("父代理仍核对关键差异、接口和安全限制", self.routing)
         self.assertIn("用户要求全文或必要核验不受精简限制", self.delegation)
         main = self.flowcharts.split("```mermaid", 1)[1].split("```", 1)[0]
         decision = re.search(r"H\{([^}]+)\}", main)
         self.assertIsNotNone(decision)
-        self.assertIn("必要质量收益或质量达标时总成本更低", decision.group(1))
+        self.assertIn("预计达到必要质量且能替代父代理实际工作的", decision.group(1))
+        self.assertIn("低成本 GPT-5.6 模型任务", decision.group(1))
         combined = self.skill + self.routing + self.readme + self.flowcharts
         for stale_priority in (
             "普通工作速度优先",
@@ -167,7 +168,7 @@ class SkillContractTests(unittest.TestCase):
             "首条快速说明",
             "当前理解",
             "立即动作",
-            "必要边界",
+            "必要限制",
             "不等待用户确认",
             "能够一次直接答完",
             "最终答案本身就是首条快速说明",
@@ -334,15 +335,15 @@ class SkillContractTests(unittest.TestCase):
             "当前有收益且互不冲突的 GPT-5.6 切片分别编写任务卡并尽早派发",
             "调用数量随真实工作流、边际收益与运行容量变化",
             "不设最低数量",
-            "不要求逐片量化节省",
-            "精确量化本身不能否决调用",
+            "各切片直接沿用维护后的模型价格",
+            "直接取得正向总成本收益判定",
             "只在后期增加一次复核不能替代前面的实际工作",
             "新要求改变工作流时立即重新判断",
         ):
             self.assertIn(required, detailed_authority)
 
         for exception in (
-            "确定性工具可以更快完成",
+            "属于确定性短工具工作",
             "多个互不依赖、已就绪",
             "严格依赖",
             "写入冲突无法隔离",
@@ -397,7 +398,7 @@ class SkillContractTests(unittest.TestCase):
         # A bounded expert question can be sent directly; neither a cheap-model
         # failure nor a batch-wide escalation is a prerequisite.
         compact_expert_route = re.sub(r"\s+", "", expert_route)
-        for expert_boundary in ("具体困难", "需要专家协助", "有界子任务", "gpt-6-astra"):
+        for expert_boundary in ("具体困难", "需要专家协助", "范围明确的子任务", "gpt-6-astra"):
             self.assertIn(expert_boundary, compact_expert_route)
         for forced_ladder in (
             "先让 Sol 或较低价模型实际失败",
@@ -415,7 +416,7 @@ class SkillContractTests(unittest.TestCase):
             "不能登记为已采用",
             "最终回复",
             "轻量结果收据",
-            "同一来源快照和同一决定性缺口只发送一次有界增量请求",
+            "同一来源快照和同一决定性缺口只发送一次范围明确的增量请求",
             "仍不足时直接补齐、如实报告缺口或等待新证据",
         ):
             self.assertIn(re.sub(r"\s+", "", closeout_boundary), compact_closeout)
@@ -430,6 +431,147 @@ class SkillContractTests(unittest.TestCase):
         for mechanical_rule in ("固定委派数量", "固定时间阈值", "强制全部派发"):
             self.assertNotIn(mechanical_rule, self.skill + self.routing + self.delegation)
 
+    def test_expensive_parent_defaults_to_low_cost_ready_slice_dispatch(self) -> None:
+        """Use maintained price evidence to dispatch a qualified low-cost slice."""
+        routing_decision = self.routing.split("## 四、", 1)[0]
+        early_dispatch = self.delegation.split("### 持续多工作流任务的早期派发", 1)[1].split(
+            "###", 1
+        )[0]
+        compact_decision = re.sub(r"\s+", "", routing_decision)
+
+        # A low-cost GPT-5.6 slice that replaces expensive parent reasoning has a
+        # positive benefit determination from the maintained price baseline and
+        # both counterfactual routes.
+        for required in (
+            "昂贵父代理",
+            "低成本GPT-5.6",
+            "已就绪",
+            "范围明确",
+            "可安全独立",
+            "持续模型判断",
+            "替代父代理实际阅读、实现、诊断或验收",
+            "维护后的模型价格/收益基线",
+            "明显价差",
+            "完整反事实路线",
+            "正向收益判定",
+            "总成本收益",
+            "真实派发",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact_decision)
+        self.assertNotIn("收益不确定", routing_decision)
+
+        # A new independent slice must be considered before the parent resumes
+        # large work, while deterministic short tools and quotas remain excluded.
+        for changed_shape in ("新要求", "具体困难", "上下文切换", "新的已就绪切片"):
+            self.assertIn(changed_shape, routing_decision)
+        self.assertIn("继续大规模读取、实现或长链诊断前", routing_decision)
+        self.assertIn("多个合格", early_dispatch)
+        self.assertIn("尽早派发", early_dispatch)
+        self.assertIn("不设最低数量", early_dispatch)
+        self.assertIn("确定性短工具", early_dispatch)
+
+    def test_direct_parent_route_needs_concrete_blockers_and_two_full_cost_routes(self) -> None:
+        """Keep direct handling evidence-based and compare both counterfactual routes."""
+        routing_decision = self.routing.split("## 四、", 1)[0]
+        compact_decision = re.sub(r"\s+", "", routing_decision)
+
+        # Direct work is justified by a real blocker, never the circular claim
+        # that a child first has to prove an already-explicit benefit.
+        for blocker in (
+            "确定性短工具",
+            "严格依赖",
+            "重复",
+            "写入冲突无法隔离",
+            "能力或权限缺失",
+            "交接加增量核验明显超过切片",
+        ):
+            self.assertIn(re.sub(r"\s+", "", blocker), compact_decision)
+        self.assertNotIn("只在明确质量、速度或总成本有收益时", compact_decision)
+        self.assertNotIn("首次用户可见", routing_decision)
+
+        # Compare the parent's complete independent route with the child route;
+        # lower model price is evidence, not merely an uncounted child add-on.
+        for parent_cost in ("父代理独立", "阅读", "生成", "上下文膨胀", "调试", "等待", "返工"):
+            self.assertIn(re.sub(r"\s+", "", parent_cost), compact_decision)
+        for child_cost in ("子代理输入输出", "整合", "增量核验"):
+            self.assertIn(re.sub(r"\s+", "", child_cost), compact_decision)
+        self.assertIn("模型价差", compact_decision)
+        self.assertIn("合理推定依据", compact_decision)
+        self.assertIn("不能只计子代理新增成本", compact_decision)
+
+    def test_fresh_session_claim_requires_installed_isolated_behavioral_acceptance(self) -> None:
+        """A hand-loaded candidate in this task is not evidence of a fresh session."""
+        section = re.search(
+            r"(?ms)^### 安装后新会话(?:行为|生效)验收\r?\n(.*?)(?=^### |\Z)",
+            self.routing,
+        )
+        self.assertIsNotNone(section, "fresh-session acceptance needs its own authority")
+        fresh_session = section.group(1)
+        compact_fresh_session = re.sub(r"\s+", "", fresh_session).replace("`", "")
+        entry = re.search(
+            r"(?s)若要证明插件在安装后的新会话实际生效，.*?(?=\n本插件不承载)",
+            self.skill,
+        )
+        self.assertIsNotNone(entry, "SKILL entry must retain fresh-session evidence boundary")
+        compact_entry = re.sub(r"\s+", "", entry.group(0)).replace("`", "")
+
+        # The claimed behavior must come from a new parent task in a separate
+        # project after formal installation, using only its auto-loaded entry and
+        # installed cache. Both the entry and the detailed authority must say so.
+        for required in (
+            "正式安装后",
+            "新建独立父代理任务",
+            "全新项目目录",
+            "自动加载的全局入口",
+            "正式安装缓存",
+        ):
+            compact_required = re.sub(r"\s+", "", required)
+            self.assertIn(compact_required, compact_fresh_session)
+            self.assertIn(compact_required, compact_entry)
+        for forbidden in (
+            "本项目Jiao-Jie",
+            "当前会话摘要",
+            "源码候选文本",
+            "人工摘录策略",
+            "当前会话手工加载候选文本",
+        ):
+            compact_forbidden = re.sub(r"\s+", "", forbidden)
+            self.assertIn(compact_forbidden, compact_fresh_session)
+            self.assertIn(compact_forbidden, compact_entry)
+        for content in (compact_fresh_session, compact_entry):
+            self.assertIn("不得读取", content)
+            self.assertIn("不能宣称", content)
+            self.assertIn("新会话生效", content)
+
+        # The clean task must demonstrate the routing transition itself: direct
+        # short deterministic work first, then real child activity and an
+        # adoptable result when later requirements create independent model work.
+        for required in (
+            "短确定性工具",
+            "父代理直接用工具且不委派",
+            "新要求改变任务形状",
+            "多个互不依赖",
+            "需要持续模型判断",
+            "真实subAgentActivity",
+            "可采用结果",
+            "硬阻断使测试未完成",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact_fresh_session)
+        self.assertNotIn("可核验具体阻断", compact_fresh_session)
+
+        compact_versioning = re.sub(r"\s+", "", self.versioning).replace("`", "")
+        for required in (
+            "正式安装",
+            "全新项目目录创建独立父代理任务",
+            "自动加载的全局入口和正式安装缓存",
+            "真实subAgentActivity",
+            "至少一个可采用结果",
+            "行为验收记为未完成",
+            "不能用阻断说明",
+            "不能为满足这条规则自行扩权",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact_versioning)
+
     def test_long_context_is_not_replicated_across_parent_child_or_nested_agents(self) -> None:
         detailed = self.skill + self.routing + self.delegation + self.cost
         compact_detailed = re.sub(r"\s+", "", detailed)
@@ -443,7 +585,7 @@ class SkillContractTests(unittest.TestCase):
             "完整线程、完整工具输出、完整父历史或完整子树结果不得作为默认输入",
             "轻量结果收据",
             "已交付最终结果视为已经收取",
-            "同一来源快照和同一决定性缺口只发送一次有界增量请求",
+            "同一来源快照和同一决定性缺口只发送一次范围明确的增量请求",
             "不能以“再确认”“更全面”循环追问或完整重做",
             "必要的接口、安全、权限与数据完整性核验仍保留",
             "Astra 子任务同样只接收最小充分输入",
@@ -516,7 +658,7 @@ class SkillContractTests(unittest.TestCase):
             "最后可信状态",
             "相关稳定决定",
             "来源定位",
-            "授权边界",
+            "授权范围",
             "只读取一次本 `SKILL.md` 入口",
             "实际调用子代理时不得再为“调用插件”重读一次",
             "不重读已交付历史",
@@ -571,7 +713,7 @@ class SkillContractTests(unittest.TestCase):
         for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
             self.assertIn(model, combined)
         for boundary in (
-            "边界清楚",
+            "范围清楚",
             "多个独立普通子任务",
             "更倾向",
             "第二个及后续调用",
@@ -600,7 +742,7 @@ class SkillContractTests(unittest.TestCase):
             "三维建模",
             "渲染",
             "视觉效果",
-            "有界子任务",
+            "范围明确的子任务",
             "主要判断",
             "最终评审或验收核对只是辅助",
             "不是前置门槛",
@@ -626,7 +768,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("任务类型组", content)
             self.assertIn("保留子代理", content)
         # “父任务”仍在内部消息与跨任务 API 的负向保护中出现；只有废弃的
-        # 分类术语应从中文合同中消失。
+        # 分类术语应从中文规则中消失。
         self.assertNotIn("工作块", self.chinese_docs)
         self.assertNotIn("实" + "例", self.chinese_docs)
         self.assertIn("`instance` 译为“子任务”", self.skill)
@@ -752,7 +894,7 @@ class SkillContractTests(unittest.TestCase):
         compact = re.sub(r"\s+", "", combined)
         for boundary in (
             "结果通过必要核验并被父代理采用",
-            "默认各有界尝试一次 `ensure` 和 `improve`",
+            "默认各尝试一次 `ensure` 和 `improve`",
             "不要求主任务接近结束",
             "稳定 `event_id`",
             "只有明确排除项",
@@ -867,7 +1009,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("只验证当前改动、公共约定和风险可能影响的对象", self.skill)
         self.assertIn("只重跑受影响检查", self.routing)
         self.assertIn("Run only affected checks", self.readme)
-        self.assertIn("测试只覆盖受影响边界", self.readme)
+        self.assertIn("测试只覆盖受影响范围", self.readme)
 
     def test_parent_parallelism_permissions_and_source_coverage_remain(self) -> None:
         combined = self.skill + self.delegation + self.write_parallelism + self.readme
@@ -958,7 +1100,7 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertIn("工具缺失、", self.agents_source)
         self.assertIn(
-            "直接调用失败、容量不足、边界不清或写入无法隔离时",
+            "直接调用失败、容量不足、范围不清或写入无法隔离时",
             self.agents_source,
         )
         self.assertNotIn("无人否决即同意", combined)
@@ -1267,7 +1409,7 @@ class SkillContractTests(unittest.TestCase):
             "证据不足时停在差异清单",
             "尚未部署的新内部功能直接替换",
             "不维护已经决定不实现的假想功能",
-            "只有四类负向边界值得最小测试",
+            "只有四类负向限制值得最小测试",
             "哈希按风险计算一次",
             "一个权威源，四类变更表面",
             "可再生展示面",
@@ -1276,7 +1418,7 @@ class SkillContractTests(unittest.TestCase):
             "第二事实源",
         ):
             self.assertIn(required, self.anti_overengineering)
-        self.assertIn("只有四类负向边界值得最小测试", self.anti_overengineering)
+        self.assertIn("只有四类负向限制值得最小测试", self.anti_overengineering)
         self.assertIn("只更新会作出错误承诺的表面", self.flowcharts)
         self.assertIn("不留桩、注释或假想测试", self.flowcharts)
 
@@ -1325,7 +1467,7 @@ class SkillContractTests(unittest.TestCase):
             "没有频率证据时写 `unknown`",
             "不把模型担忧、任务形状或比喻换算成概率和档位",
             "明确失败",
-            "有界巡检",
+            "有限巡检",
             "人工修复",
             "自动补偿或自愈",
             "安全、权限、数据完整性",
@@ -1349,7 +1491,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.agents_source)
         self.assertIn("global_domain_key", self.agents_source)
         self.assertIn("migrate-global", self.agents_source)
-        self.assertIn("只有四类负向边界值得最小测试", self.anti_overengineering)
+        self.assertIn("只有四类负向限制值得最小测试", self.anti_overengineering)
 
     def test_versioning_preserves_one_version_update_and_external_authority(self) -> None:
         self.assertIn("只运行一次版本写入器", self.versioning)
@@ -1431,7 +1573,7 @@ class SkillContractTests(unittest.TestCase):
             "自定义角色 TOML",
             "ALL_TOOLS",
             "跨任务 API",
-            "全局领域合同",
+            "全局领域规则",
             "在自己的线程用最终回复",
             "存活轮次",
         ):
@@ -1466,7 +1608,15 @@ class SkillContractTests(unittest.TestCase):
             first_release.end() : next_release if next_release >= 0 else None
         ]
         visible_summary = self.readme + descriptions + current_notes
-        for behavior_term in ("直接处理", "token", "时间", "返工", "专家"):
+        for behavior_term in (
+            "低成本 GPT-5.6",
+            "模型价差",
+            "正向总成本",
+            "内部硬条件",
+            "独立父任务",
+            "真实",
+            "可采用结果",
+        ):
             self.assertIn(behavior_term, visible_summary)
 
         short_match = re.search(
@@ -1591,7 +1741,7 @@ class SkillContractTests(unittest.TestCase):
             "模型+思考程度+速度",
             "migrate-global",
             "来源词只用于",
-            "不写入SQLite、TOML、合同或完成收据",
+            "不写入SQLite、TOML、规则或完成收据",
             "anti-overengineering.md",
             "现实消费者",
             "已经决定不实现的假想功能",
@@ -1626,7 +1776,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不能复制插件的子代理加速规则", self.handoff)
         self.assertIn("正式安装成功后才幂等确保", self.handoff)
         self.assertIn("新会话开始或工作上下文重置后", self.handoff)
-        self.assertIn("子代理摘要或读取不能替代父代理这次有界恢复", self.handoff)
+        self.assertIn("子代理摘要或读取不能替代父代理这次按限定范围恢复", self.handoff)
         self.assertIn("会改变下一动作的重要片段", self.handoff)
         self.assertIn("实际调用子代理不重复读取入口或未变细则", self.handoff)
         self.assertIn("普通后续轮次复用", self.handoff)
@@ -1642,30 +1792,30 @@ class SkillContractTests(unittest.TestCase):
         ordered = (
             "根本准则",
             "项目级父代理跨会话记忆",
-            "用户全局文件边界",
+            "用户全局文件的修改范围",
             "未完成要求锚点与当前交付",
             "任务类型与任务类型组",
             "主任务链与辅助链入口",
             "工具、子代理与调用规则",
-            "子代理开场声明与有界交流",
+            "子代理开场声明与范围明确的交流",
             "任务类型组、复制、变体与收口",
             "写入安全与用户不满意",
             "反 AI 过度工程",
             "条件性验证",
             "经验、SQLite、成本与生命周期侧链",
             "统一术语",
-            "权威路径与代码边界",
+            "权威路径与代码修改范围",
             "运行环境状态快照",
             "本轮实际变化",
             "本轮验证证据",
-            "工作树与剩余边界",
+            "工作树与剩余事项",
             "后续代理开始方式",
         )
         indexes = [headings.index(heading) for heading in ordered]
         self.assertEqual(indexes, sorted(indexes))
         dynamic = headings.index("运行环境状态快照")
-        self.assertGreater(dynamic, headings.index("权威路径与代码边界"))
-        for heading in ("本轮实际变化", "本轮验证证据", "工作树与剩余边界"):
+        self.assertGreater(dynamic, headings.index("权威路径与代码修改范围"))
+        for heading in ("本轮实际变化", "本轮验证证据", "工作树与剩余事项"):
             self.assertGreater(headings.index(heading), dynamic)
             self.assertEqual(headings.count(heading), 1)
         self.assertIn("以下部分是每轮都会变化的状态", self.handoff)
@@ -1778,7 +1928,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("交付父代理", self.chinese_docs)
 
     def test_chinese_docs_use_plain_agreement_terms(self) -> None:
-        self.assertNotIn("契约", self.chinese_docs)
+        self.assertNotIn("契" + "约", self.chinese_docs)
         self.assertIn("对外约定", self.chinese_docs)
         self.assertIn("约定一致性测试", self.readme + self.handoff)
 

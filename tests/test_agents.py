@@ -35,7 +35,7 @@ class SpecialistRegistryTests(unittest.TestCase):
     def contract(domain: str = "界面绑定诊断") -> dict[str, object]:
         return {
             "domain": domain,
-            "input_shapes": ["源代码、运行证据和边界说明"],
+            "input_shapes": ["源代码、运行证据和范围说明"],
             "responsibilities": ["重复核对根因并给出可验证结论"],
             "deliverables": ["精炼结论、证据和剩余缺口"],
             "hard_boundaries": ["不扩大权限，不修改未分配文件"],
@@ -47,7 +47,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         role_key: str = "qml-binding-diagnostics",
         authority: str = "read",
         display_name: str | None = None,
-        description: str = "重复完成一个边界清晰、可复核的专门工作。",
+        description: str = "重复完成一个范围清晰、可复核的专门工作。",
         role_instructions: str = "交付直接可消费的结果和必要证据。",
         model: str = "gpt-5.6-terra",
         effort: str = "high",
@@ -332,8 +332,8 @@ class SpecialistRegistryTests(unittest.TestCase):
             "默认尽早派发所有仍有边际收益且互不冲突的 GPT-5.6 切片",
             "在自己深入读取这些来源或开始对应实现前完成派发",
             "不设固定最低值或占槽目标",
-            "不能因为收益无法精确量化",
-            "稍后还能补一个复核",
+            "合格切片按维护基线取得正向收益",
+            "稍后补复核",
             "中途新要求使任务形状出现新的独立已就绪工作流时",
             "给每个下游子代理单独写完整任务卡",
             "task_id",
@@ -363,7 +363,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "只有任务卡明确写允许调用其他或新建 Codex 父代理为是并给出跨任务范围",
             "create_thread、read_thread、wait_threads 或 send_message_to_thread",
             "不需要再向用户询问",
-            "所有跨任务动作还必须同时满足当前工具合同",
+            "所有跨任务动作还必须同时满足当前工具规则",
             "create_thread 要求用户明确提出新建任务",
             "任务卡或插件默认授权不能替代",
             "不能为内部委派创建用户可见新任务",
@@ -442,7 +442,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         base = agents.base_instructions(
             display_name="长说明核对员",
             role_key="long-instruction-review",
-            role_instructions="逐项核对输入边界和决定性证据。" * 55,
+            role_instructions="逐项核对输入范围和决定性证据。" * 55,
             model="gpt-5.6-luna",
             effort="medium",
             authority="read",
@@ -1332,7 +1332,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             result = self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=created["sha256"],
-                lesson="新经验只读取一个有界窗口。",
+                lesson="新经验只读取一个有限窗口。",
                 event_id=str(uuid.uuid4()),
             )
 
@@ -1995,14 +1995,14 @@ class SpecialistRegistryTests(unittest.TestCase):
             role_key="zeta-lifecycle-review",
             global_domain_key="zeta-lifecycle-review",
             display_name="生命周期复核员",
-            description="复核生命周期身份、事务和恢复边界。",
+            description="复核生命周期身份、事务和恢复范围。",
             authority="write",
         )
         self.ensure(
             role_key="alpha-source-review",
             global_domain_key="alpha-source-review",
             display_name="来源复核员",
-            description="复核来源覆盖和证据边界。",
+            description="复核来源覆盖和证据范围。",
             model="gpt-5.6-luna",
             effort="medium",
         )
@@ -2027,7 +2027,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                 "model", "reasoning_effort", "speed", "authority",
             },
         )
-        self.assertEqual(items[0]["description"], "来源复核员：复核来源覆盖和证据边界。")
+        self.assertEqual(items[0]["description"], "来源复核员：复核来源覆盖和证据范围。")
         self.assertEqual(items[0]["speed"], "standard")
         self.assertEqual(items[1]["authority"], "write")
 
@@ -2691,7 +2691,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                     "--display-name",
                     "来源约定核对员",
                     "--description",
-                    "重复核对来源边界和对外约定。",
+                    "重复核对来源范围和对外约定。",
                     "--instructions",
                     "返回精确来源覆盖和证据缺口。",
                     "--model",

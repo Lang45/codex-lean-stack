@@ -2,13 +2,13 @@
 
 插件标识：`codex-lean-stack`
 
-## 当前版本 3.3.0
+## 当前版本 3.4.0
 
 新版本推送前同步本节、插件可见说明和 [`CHANGELOG.md`](CHANGELOG.md)，并核对版本一致。
 
-1. 防止昂贵父代理把一次“直接处理”决定沿用到整个长任务。
-2. 把父代理继续独立工作的 token、时间和返工也计入路线总成本。
-3. 已暴露且适合独立处理的困难及时交给有针对性的专家，不让父代理继续长时间试探。
+1. 对能替代昂贵父代理实际工作的合格低成本 GPT-5.6 切片，依据维护后的价差与完整父子路线直接作出正向总成本判断并尽早派发；直接处理的内部硬条件不增加面向用户的解释负担。
+2. 安装后新会话生效必须在全新项目的独立父任务中取得真实子代理活动和可采用结果；当前会话手工加载规则或静态说明不能替代。
+3. 中文说明、生成提示、测试与全局 `AGENTS.md` 统一使用“规则”“范围”“程度”或具体限制，代码标识和原始错误保持不变。
 
 ## 中文
 
@@ -18,8 +18,8 @@
 2. **锚点只留剩余要求。** 已交付事项退出；纠正只重开受影响项，“继续”不复活历史待办。
 3. **工具先行。** 短命令、批量查询和确定性工作直接用工具，不启动只会代跑命令的模型子代理。
 4. **复杂 PowerShell 及时落到脚本。** 多层引号、JSON/正则或多行逻辑使用任务专属 `.ps1`；确认转义失败后只修同一脚本，不反复改 one-liner。
-5. **三原则决定调用。** 高价值工作先守必要质量和决定性证据；质量达标后比较父代理继续工作的 token、时间、返工与子代理启动、交流、整合、核验组成的总成本，成本相近再比速度。
-6. **联合选配和能力复用。** 不设调用数量；按任务类型和任务类型组识别能力族，复用保留子代理并联合选择模型、思考程度和速度。新选配全部默认标准速度；Sol 遇到确需专家的具体困难时可派有界 Astra 子任务，不升级整批。
+5. **三原则决定调用。** 高价值工作先守必要质量和决定性证据；质量达标后比较父代理继续工作的 token、时间、返工与子代理启动、交流、整合、核验组成的总成本，成本相近再比速度。维护后的明显模型价差直接支持范围清楚、短输出、易增量核验的低成本 GPT-5.6 切片取得正向收益判断。
+6. **联合选配和能力复用。** 不设调用数量；按任务类型和任务类型组识别能力族，复用保留子代理并联合选择模型、思考程度和速度。新选配全部默认标准速度；Sol 遇到确需专家的具体困难时可派范围明确的 Astra 子任务，不升级整批。
 7. **上下文与交接按需。** 独立任务优先 `fork_turns="none"`；只传当前约束和证据。项目交接见[可执行项目交接](skills/lean-stack/references/project-handoff.md)。
 
 ### 运行中
@@ -36,13 +36,13 @@
 1. **每个子代理独立交付。** commentary 不是最终结果；具体缺口最多补问一次，否则关闭或只改派缺口。
 2. **子代理会积累经过采用的经验。** 用 UUID `run_id` 记录明确成功或失败，`ensure` 和 `improve` 各尝试一次；每个能力族只保留一个全局领域角色，没有项目保留层。
 3. **累计两次明确失败后永久移除角色资料。** 运行中、中断、未采用、用户停止或结果未定不算失败。
-4. **初版不是完成。** 实现继续到获准的运行、检查、修补和真实入口；只读或方案任务按用户边界停止。
+4. **初版不是完成。** 实现继续到获准的运行、检查、修补和真实入口；只读或方案任务按用户指定范围停止。
 5. **统计只读。** `status --for-dashboard` 输出当前聚合；`--watch-seconds 2` 仅在前台刷新。
 
 ### 精简与安全
 
 1. **兼容只服务现实消费者。** 被拒绝的功能不留分支、桩、TODO 或假想测试。
-2. **测试只覆盖受影响边界。** 复用未变化证据，必要时做真实运行验收。
+2. **测试只覆盖受影响范围。** 复用未变化证据，必要时做真实运行验收。
 3. **同一规则一个权威源。** README 只解释用户可见行为，详细规则在技能和 references；没有后台编排系统。
 4. **清理与权限守界。** 普通文件进入 Windows 回收站；安全、权限、数据完整性和不可逆损失保留相称保护，委派不增加外部权限。
 
@@ -60,9 +60,9 @@
 
 - 工具更快且足够可靠；
 - 输入未就绪或任务严格依赖前一步；
-- 写入冲突无法隔离；
+- 写入冲突无法隔离，或缺少所需能力、工具、权限与运行容量；
 - 只会重复已有工作；
-- 新增交流、等待和核验成本高于收益。
+- 交接、整合与增量核验明显超过切片本身，或新增成本显著且没有必要质量收益。
 
 ## English
 
@@ -72,6 +72,7 @@
 - **Tool first.** Use deterministic tools for short commands and batch queries.
 - **Move complex PowerShell into a script.** After an escaping failure, repair one scoped script instead of retrying one-liners.
 - Preserve decisive quality first; then compare whole-task cost, including continued parent tokens, time, and rework. Compare speed when costs are close.
+- Use the maintained model-price gap and both counterfactual routes to dispatch qualified low-cost GPT-5.6 slices early; internal blockers do not create a user-facing explanation requirement.
 - Reuse compatible capability families and select model, reasoning, and speed together. **New selections default to Standard speed.**
 
 ### While agents run
@@ -84,6 +85,7 @@
 ### Closing and reuse
 
 - Each agent submits an explicit final result; commentary alone is not delivery.
+- Claim fresh-session behavior only after a formally installed plugin produces real child activity and an adoptable result in a separate parent task and clean project.
 - **Accepted work becomes experience.** Record only decisive outcomes and keep one dormant global-domain role per compatible capability family.
 - Persistence is nonblocking; two explicit task failures permanently remove the retained role and its data.
 
