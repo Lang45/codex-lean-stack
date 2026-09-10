@@ -4,11 +4,12 @@
 
 ## 当前版本 4.1.0
 
-新版本推送前同步本节、插件可见说明和 [`CHANGELOG.md`](CHANGELOG.md)，并核对版本一致。
+由于`gpt-6-astra` 过于昂贵以及研究发现：额度消耗的真正占大头是父代理每次工具往返都要重新带入的上下文。
+所以我以后主要改为父代理用 Sol，gpt-6-astra作为可以调用的子代理专家。
 
-1. 派出的 `gpt-6-astra` 子代理思考程度最高为 `xhigh`；`max` 和 `ultra` 仍不是 Astra 子代理的可用组合，角色生成器会在落盘前拒绝。
-2. Sol 父代理仍可在遇到自身难以可靠解决的具体专家问题时只派发该 Astra 切片；用户显式选择的 Astra 父任务配置，以及 Luna、Terra、Sol 子任务选配均保持原规则。
-3. 新会话行为验收以父代理真实发出的子代理启动事件和实际配置为准；达到探针成功条件后立即停止，不等待子代理完成业务来消耗测试预算。
+1. 派出的 `gpt-6-astra` 子代理思考程度最高为 `xhigh`；`max` 和 `ultra` 不是 Astra 子代理的可用组合，角色生成器会在落盘前拒绝。
+2. Sol 父代理仍可在遇到自身难以可靠解决的具体专家问题时派发该 Astra 切片。
+
 
 ## 中文
 
@@ -64,36 +65,7 @@
 - 只会重复已有工作；
 - 交接、整合与增量核验明显超过切片本身，或新增成本显著且没有必要质量收益。
 
-## English
 
-### Before delegation
-
-- **A fast first explanation.** State the immediate action, report useful progress, and deliver the real entry point, checks, and remaining gap.
-- **Tool first.** Use deterministic tools for short commands and batch queries.
-- **Move complex PowerShell into a script.** After an escaping failure, repair one scoped script instead of retrying one-liners.
-- Preserve decisive quality first; then compare whole-task cost, including continued parent tokens, time, and rework. Compare speed when costs are close.
-- Use the maintained model-price gap and both counterfactual routes to dispatch qualified low-cost GPT-5.6 slices early; internal blockers do not create a user-facing explanation requirement.
-- Reuse compatible capability families and select model, reasoning, and speed together. **New selections default to Standard speed.**
-
-### While agents run
-
-- **Internal messages serve real dependencies.** Send evidence only when it unlocks work, corrects input, or reports risk.
-- **Agents disclose configuration visibly.** Do not repeat routine acknowledgements internally.
-- Dispatch ready workflows early, rejudge when task shape changes, and keep the parent moving.
-- Use explicit write ownership and return `SOURCE_COVERAGE` for bounded evidence.
-
-### Closing and reuse
-
-- Each agent submits an explicit final result; commentary alone is not delivery.
-- Claim fresh-session behavior only after a formally installed plugin produces real child activity and an adoptable result in a separate parent task and clean project.
-- **Accepted work becomes experience.** Record only decisive outcomes and keep one dormant global-domain role per compatible capability family.
-- Persistence is nonblocking; two explicit task failures permanently remove the retained role and its data.
-
-### Process removal and safety
-
-- Compatibility requires a real consumer; rejected features leave no scaffolding.
-- **Run only affected checks** and move to real runtime evidence when static review cannot answer the question.
-- Keep one authority, preserve permissions and data integrity, and create **No background orchestrator**.
 
 ## 安装与使用 / Install and use
 
