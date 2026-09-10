@@ -509,6 +509,44 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(boundary, combined)
 
+    def test_sol_parent_can_call_astra_for_expert_and_visual_judgment(self) -> None:
+        combined = (
+            self.skill
+            + self.routing
+            + self.delegation
+            + self.cost
+            + self.readme
+            + self.flowcharts
+        )
+        compact = re.sub(r"\s+", "", combined)
+        for required in (
+            "Sol为父代理",
+            "需要专家协助",
+            "UI设计",
+            "图片",
+            "三维建模",
+            "渲染",
+            "视觉效果",
+            "有界子任务",
+            "主要判断",
+            "最终评审或验收核对只是辅助",
+            "不是前置门槛",
+            "视觉任务本身",
+            "不要求先",
+            "不升级整批",
+        ):
+            self.assertIn(required, compact)
+        self.assertIn("gpt-5.6-sol", combined)
+        self.assertIn("gpt-6-astra", combined)
+        for forced_route in (
+            "Sol父代理必须调用Astra",
+            "所有视觉任务都调用Astra",
+            "视觉任务一开始就调用Astra",
+            "只有最后评审才能调用Astra",
+            "先让Sol失败再调用Astra",
+        ):
+            self.assertNotIn(forced_route, compact)
+
     def test_task_type_groups_replace_work_block_language(self) -> None:
         for content in (self.skill, self.delegation, self.readme, self.flowcharts):
             self.assertIn("任务类型", content)
