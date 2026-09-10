@@ -1474,9 +1474,9 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(failed["successful_attempt_count"], 1)
         self.assertEqual(failed["failed_attempt_count"], 1)
         self.assertTrue(failed["active"])
-        self.assertFalse(failed["retirement_triggered"])
+        self.assertFalse(failed["permanent_removal_triggered"])
 
-    def test_second_task_failure_retires_and_protected_restore_preserves_audit(self) -> None:
+    def test_second_task_failure_permanently_removes_all_agent_data(self) -> None:
         created = self.ensure()
         success_id = str(uuid.uuid4())
         first_failure_id = str(uuid.uuid4())
@@ -1496,6 +1496,14 @@ class SpecialistRegistryTests(unittest.TestCase):
             event_id=str(uuid.uuid4()), retracts_event_id=first_event_id,
             lesson="适用情境：初始结论；做法：采用纠正；证据：已验证；例外：无。",
         )
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "INSERT INTO experience_summaries"
+                "(agent_id,summary,covered_through_sequence,source_digest,updated_at) "
+                "VALUES(?,?,?,?,?)",
+                (created["agent_id"], "旧摘要", 1, "a" * 64, agents.utc_now()),
+            )
+            connection.commit()
         first_failure = self.registry.record_run(
             name=created["name"], expected_sha256=correction["sha256"],
             run_id=first_failure_id, invocation_kind="followup_task", outcome="failure",
@@ -1512,68 +1520,47 @@ class SpecialistRegistryTests(unittest.TestCase):
                 run_id=first_failure_id, invocation_kind="followup_task", outcome="success",
             )
 
-        retired = self.registry.record_run(
+        removed = self.registry.record_run(
             name=created["name"], expected_sha256=correction["sha256"],
             run_id=second_failure_id, invocation_kind="spawn_agent", outcome="failure",
         )
-        self.assertEqual(retired["action"], "task_failure_recorded_and_retired")
-        self.assertFalse(retired["active"])
-        self.assertTrue(retired["retirement_triggered"])
+        self.assertEqual(
+            removed["action"], "task_failure_recorded_and_permanently_removed"
+        )
+        self.assertFalse(removed["active"])
+        self.assertTrue(removed["permanent_removal_triggered"])
+        self.assertFalse(removed["recoverable"])
+        self.assertEqual(removed["disposition"], "permanently_removed")
+        self.assertFalse(removed["retired_identity_recorded"])
+        self.assertTrue(removed["all_persisted_agent_data_removed"])
         self.assertFalse(Path(created["path"]).exists())
-        self.assertTrue(Path(retired["pending_path"]).exists())
-        receipt = json.loads(Path(retired["receipt_path"]).read_text(encoding="utf-8"))
-        self.assertEqual(receipt["retirement_reason"], "recorded_task_failure_threshold")
-        self.assertNotIn("owner_token", receipt)
+        self.assertFalse(self.registry.pending_deletion_dir.exists())
         self.assertEqual(self.registry.status()["registered_count"], 0)
         self.assertEqual(self.registry.status(for_routing=True)["registered_count"], 0)
-        retired_dashboard = self.registry.status(for_dashboard=True)
-        self.assertEqual(retired_dashboard["recorded_attempt_count"], 3)
-        self.assertEqual(retired_dashboard["successful_attempt_count"], 1)
-        self.assertEqual(retired_dashboard["failed_attempt_count"], 2)
-        self.assertEqual(retired_dashboard["active_retained_agent_count"], 0)
-        self.assertEqual(retired_dashboard["retired_retained_agent_count"], 1)
-        reuse = self.ensure(role_key="qml-binding-diagnostics")
-        self.assertEqual(reuse["action"], "protected_restore_required")
-        self.assertNotIn("owner_token", reuse)
-        replay_after_retirement = self.registry.record_run(
-            name=created["name"], expected_sha256=correction["sha256"],
-            run_id=second_failure_id, invocation_kind="spawn_agent", outcome="failure",
-        )
-        self.assertEqual(replay_after_retirement["failed_attempt_count"], 2)
-        self.assertFalse(replay_after_retirement["active"])
-
-        restored = self.registry.restore(
-            receipt=Path(retired["receipt_path"]),
-            expected_sha256=correction["sha256"],
-            owner_token=created["owner_token"],
-        )
-        self.assertEqual(restored["agent_id"], created["agent_id"])
-        active = self.registry.status()
-        self.assertEqual(active["registered_count"], 1)
-        active_item = active["registered_agents"][0]
-        self.assertEqual(active_item["attempt_count"], 3)
-        self.assertEqual(active_item["successful_attempt_count"], 1)
-        self.assertEqual(active_item["failed_attempt_count"], 2)
-        with contextlib.closing(self.db()) as connection:
-            self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0], 2
-            )
-            self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 3
-            )
-            self.assertEqual(
-                connection.execute(
-                    "SELECT outcome FROM agent_runs WHERE run_id=?", (success_id,)
-                ).fetchone()[0],
-                "success",
-            )
         dashboard = self.registry.status(for_dashboard=True)
-        self.assertEqual(dashboard["recorded_attempt_count"], 3)
-        self.assertEqual(dashboard["failed_attempt_count"], 2)
-        self.assertEqual(dashboard["active_retained_agent_count"], 1)
+        self.assertEqual(dashboard["recorded_attempt_count"], 0)
+        self.assertEqual(dashboard["successful_attempt_count"], 0)
+        self.assertEqual(dashboard["failed_attempt_count"], 0)
+        self.assertEqual(dashboard["active_retained_agent_count"], 0)
         self.assertEqual(dashboard["retired_retained_agent_count"], 0)
+        with contextlib.closing(self.db()) as connection:
+            for table in (
+                "agents", "agent_runs", "experience_events", "experience_summaries"
+            ):
+                self.assertEqual(
+                    connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
+                    0,
+                )
+        with self.assertRaisesRegex(agents.SpecialistError, "unknown owned specialist"):
+            self.registry.record_run(
+                name=created["name"], expected_sha256=correction["sha256"],
+                run_id=second_failure_id, invocation_kind="spawn_agent", outcome="failure",
+            )
+        replacement = self.ensure(role_key="qml-binding-diagnostics")
+        self.assertEqual(replacement["action"], "created")
+        self.assertNotEqual(replacement["agent_id"], created["agent_id"])
 
-    def test_second_failure_path_conflict_and_busy_or_cas_failure_are_zero_mutation(self) -> None:
+    def test_second_failure_busy_or_cas_failure_is_zero_mutation(self) -> None:
         created = self.ensure()
         first = self.registry.record_run(
             name=created["name"], expected_sha256=created["sha256"],
@@ -1581,23 +1568,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
         path = Path(created["path"])
         original = path.read_bytes()
-        pending_path, receipt_path = self.registry._receipt_paths(
-            created["agent_id"], created["sha256"]
-        )
-        agents.ensure_plain_directory(self.registry.pending_deletion_dir, create=True)
-        pending_path.write_bytes(b"concurrent pending evidence")
         second_id = str(uuid.uuid4())
-        with self.assertRaisesRegex(agents.SpecialistError, "target already exists"):
-            self.registry.record_run(
-                name=created["name"], expected_sha256=created["sha256"],
-                run_id=second_id, invocation_kind="followup_task", outcome="failure",
-            )
-        self.assertEqual(path.read_bytes(), original)
-        self.assertEqual(pending_path.read_bytes(), b"concurrent pending evidence")
-        self.assertFalse(receipt_path.exists())
-        with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
-
         with self.assertRaises(agents.SpecialistError):
             self.registry.record_run(
                 name=created["name"], expected_sha256="0" * 64,
@@ -1615,6 +1586,85 @@ class SpecialistRegistryTests(unittest.TestCase):
             blocker.close()
         self.assertEqual(path.read_bytes(), original)
         self.assertEqual(first["failed_attempt_count"], 1)
+
+    def test_second_failure_commit_failure_restores_all_data_and_exact_file(self) -> None:
+        created = self.ensure()
+        event = self.improve_with_lesson(
+            name=created["name"],
+            expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()),
+            lesson="适用情境：事务回滚；做法：保留精确数据；证据：测试；例外：无。",
+        )
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "INSERT INTO experience_summaries"
+                "(agent_id,summary,covered_through_sequence,source_digest,updated_at) "
+                "VALUES(?,?,?,?,?)",
+                (created["agent_id"], "回滚摘要", 1, "b" * 64, agents.utc_now()),
+            )
+            connection.commit()
+        self.registry.record_run(
+            name=created["name"],
+            expected_sha256=event["sha256"],
+            run_id=str(uuid.uuid4()),
+            invocation_kind="spawn_agent",
+            outcome="success",
+        )
+        self.registry.record_run(
+            name=created["name"],
+            expected_sha256=event["sha256"],
+            run_id=str(uuid.uuid4()),
+            invocation_kind="followup_task",
+            outcome="failure",
+        )
+        path = Path(created["path"])
+        before = path.read_bytes()
+        real_connection = self.registry.connect()
+
+        class FailingCommitConnection:
+            def execute(self, sql, parameters=()):
+                if sql == "COMMIT":
+                    raise sqlite3.OperationalError("forced removal commit failure")
+                return real_connection.execute(sql, parameters)
+
+            def close(self):
+                real_connection.close()
+
+        with mock.patch.object(
+            self.registry,
+            "connect",
+            return_value=FailingCommitConnection(),
+        ):
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, "forced removal commit failure"
+            ):
+                self.registry.record_run(
+                    name=created["name"],
+                    expected_sha256=event["sha256"],
+                    run_id=str(uuid.uuid4()),
+                    invocation_kind="spawn_agent",
+                    outcome="failure",
+                )
+
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(self.registry.pending_deletion_dir.exists())
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 1)
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 2)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM experience_summaries").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM agent_runs WHERE outcome='failure'"
+                ).fetchone()[0],
+                1,
+            )
 
     def test_explicit_v4_attempt_migration_preserves_successes_and_infers_no_failures(self) -> None:
         never_invoked = self.ensure()
@@ -1673,51 +1723,54 @@ class SpecialistRegistryTests(unittest.TestCase):
                 1,
             )
 
-    def test_delete_retires_exact_bytes_with_a_token_free_receipt(self) -> None:
+    def test_delete_rejects_recorded_summary_without_events(self) -> None:
+        created = self.ensure()
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "INSERT INTO experience_summaries"
+                "(agent_id,summary,covered_through_sequence,source_digest,updated_at) "
+                "VALUES(?,?,?,?,?)",
+                (created["agent_id"], "现有摘要", 0, "a" * 64, agents.utc_now()),
+            )
+            connection.commit()
+
+        with self.assertRaisesRegex(agents.SpecialistError, "recorded summary"):
+            self.registry.delete(
+                name=created["name"],
+                expected_sha256=created["sha256"],
+                owner_token=created["owner_token"],
+            )
+
+        self.assertTrue(Path(created["path"]).exists())
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 1)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM experience_summaries").fetchone()[0],
+                1,
+            )
+
+    def test_delete_permanently_removes_exact_owned_unused_agent(self) -> None:
         created = self.ensure()
         original_path = Path(created["path"])
-        original = original_path.read_bytes()
         result = self.registry.delete(
             name=created["name"],
             expected_sha256=created["sha256"],
             owner_token=created["owner_token"],
         )
         self.assertTrue(result["deleted"])
-        self.assertTrue(result["recoverable"])
-        self.assertEqual(result["action"], "retired_to_pending_deletion")
-        self.assertEqual(result["disposition"], "plugin_pending_deletion")
-        self.assertEqual(result["deleted_from"], "active_specialist_registry")
+        self.assertFalse(result["recoverable"])
+        self.assertEqual(result["action"], "permanently_removed")
+        self.assertEqual(result["disposition"], "permanently_removed")
+        self.assertEqual(result["deleted_from"], "specialist_registry_and_filesystem")
         self.assertEqual(result["agent_id"], created["agent_id"])
         self.assertEqual(result["sha256"], created["sha256"])
-        self.assertEqual(result["original_path"], str(original_path))
-        pending_path = Path(result["pending_path"])
-        receipt_path = Path(result["receipt_path"])
+        self.assertEqual(result["path"], str(original_path))
+        self.assertFalse(result["retired_identity_recorded"])
+        self.assertTrue(result["all_persisted_agent_data_removed"])
         self.assertFalse(original_path.exists())
-        self.assertEqual(pending_path.read_bytes(), original)
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        self.assertEqual(receipt["format_version"], 2)
-        self.assertEqual(receipt["agent_id"], created["agent_id"])
-        self.assertEqual(receipt["name"], created["name"])
-        self.assertEqual(receipt["role_key"], "qml-binding-diagnostics")
-        self.assertEqual(receipt["original_path"], str(original_path))
-        self.assertEqual(receipt["pending_path"], str(pending_path))
-        self.assertEqual(receipt["sha256"], created["sha256"])
-        self.assertTrue(receipt["created_at"])
-        self.assertTrue(receipt["updated_at"])
-        self.assertTrue(receipt["retired_at"])
-        self.assertEqual(receipt["global_contract_version"], 1)
-        self.assertEqual(receipt["global_domain_key"], "interface-binding-diagnostics")
-        self.assertEqual(
-            agents.sha256_bytes(receipt["global_contract"].encode("utf-8")),
-            receipt["global_contract_digest"],
-        )
-        self.assertNotIn("owner_token", receipt)
+        self.assertFalse(self.registry.pending_deletion_dir.exists())
         with contextlib.closing(self.db()) as connection:
-            row = connection.execute(
-                "SELECT agent_id, retired_at FROM agents"
-            ).fetchone()
-            self.assertEqual(row["agent_id"], created["agent_id"])
-            self.assertIsNotNone(row["retired_at"])
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 0)
 
     def test_delete_rejects_wrong_token_hash_drift_and_external_files(self) -> None:
         created = self.ensure()
@@ -1744,46 +1797,6 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertTrue(path.exists())
         self.assertEqual(external.read_bytes(), external_before)
         self.assertFalse(self.registry.pending_deletion_dir.exists())
-
-    def test_delete_rejects_existing_pending_target_without_overwrite(self) -> None:
-        created = self.ensure()
-        path = Path(created["path"])
-        before = path.read_bytes()
-        pending_dir = agents.ensure_plain_directory(
-            self.registry.pending_deletion_dir, create=True
-        )
-        pending_path = pending_dir / f"{created['agent_id']}.{created['sha256']}.toml"
-        pending_path.write_bytes(b"concurrent evidence")
-
-        with self.assertRaisesRegex(agents.SpecialistError, "target already exists"):
-            self.registry.delete(
-                name=created["name"],
-                expected_sha256=created["sha256"],
-                owner_token=created["owner_token"],
-            )
-
-        self.assertEqual(path.read_bytes(), before)
-        self.assertEqual(pending_path.read_bytes(), b"concurrent evidence")
-        self.assertFalse(
-            (pending_dir / f"{created['agent_id']}.{created['sha256']}.receipt.json").exists()
-        )
-        with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 1)
-
-        second = self.ensure(role_key="receipt-target-conflict")
-        second_pending, second_receipt = self.registry._receipt_paths(
-            second["agent_id"], second["sha256"]
-        )
-        second_receipt.write_bytes(b"concurrent receipt evidence")
-        with self.assertRaisesRegex(agents.SpecialistError, "receipt target already exists"):
-            self.registry.delete(
-                name=second["name"],
-                expected_sha256=second["sha256"],
-                owner_token=second["owner_token"],
-            )
-        self.assertFalse(second_pending.exists())
-        self.assertEqual(second_receipt.read_bytes(), b"concurrent receipt evidence")
-        self.assertTrue(Path(second["path"]).exists())
 
     def test_delete_commit_failure_rolls_back_ledger_and_restores_exact_file(self) -> None:
         created = self.ensure()
@@ -1813,13 +1826,17 @@ class SpecialistRegistryTests(unittest.TestCase):
                 )
 
         self.assertEqual(path.read_bytes(), before)
-        pending_path, receipt_path = self.registry._receipt_paths(
-            created["agent_id"], created["sha256"]
-        )
-        self.assertFalse(pending_path.exists())
-        self.assertFalse(receipt_path.exists())
+        self.assertFalse(self.registry.pending_deletion_dir.exists())
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 1)
+
+    def test_restore_is_not_a_supported_command(self) -> None:
+        parser = agents.build_parser()
+        action = next(
+            item for item in parser._actions
+            if getattr(item, "dest", None) == "command"
+        )
+        self.assertNotIn("restore", action.choices)
 
     def test_delete_rejects_hard_linked_agent(self) -> None:
         created = self.ensure()
@@ -1905,171 +1922,6 @@ class SpecialistRegistryTests(unittest.TestCase):
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
                 1,
             )
-
-    def test_restore_succeeds_and_archives_receipt_without_replay(self) -> None:
-        created = self.ensure()
-        original_path = Path(created["path"])
-        original = original_path.read_bytes()
-        retired = self.registry.delete(
-            name=created["name"],
-            expected_sha256=created["sha256"],
-            owner_token=created["owner_token"],
-        )
-
-        restored = self.registry.restore(
-            name=created["name"],
-            expected_sha256=created["sha256"],
-            owner_token=created["owner_token"],
-        )
-
-        self.assertEqual(restored["action"], "restored_from_pending_deletion")
-        self.assertTrue(restored["restored"])
-        self.assertFalse(restored["receipt_replayable"])
-        self.assertEqual(restored["receipt_disposition"], "archived_after_restore")
-        self.assertEqual(original_path.read_bytes(), original)
-        self.assertFalse(Path(retired["pending_path"]).exists())
-        self.assertFalse(Path(retired["receipt_path"]).exists())
-        archived_receipt = Path(restored["receipt_path"])
-        self.assertEqual(archived_receipt.read_bytes(), json.dumps(
-            json.loads(archived_receipt.read_text(encoding="utf-8")),
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ).encode("utf-8") + b"\n")
-        with contextlib.closing(self.db()) as connection:
-            row = connection.execute("SELECT * FROM agents").fetchone()
-        self.assertEqual(row["agent_id"], created["agent_id"])
-        self.assertEqual(row["owner_token"], created["owner_token"])
-        with self.assertRaisesRegex(agents.SpecialistError, "exactly one"):
-            self.registry.restore(
-                name=created["name"],
-                expected_sha256=created["sha256"],
-                owner_token=created["owner_token"],
-            )
-
-    def test_restore_rejects_wrong_token_hash_and_receipt_path(self) -> None:
-        created = self.ensure()
-        retired = self.registry.delete(
-            name=created["name"],
-            expected_sha256=created["sha256"],
-            owner_token=created["owner_token"],
-        )
-        pending_path = Path(retired["pending_path"])
-
-        with self.assertRaisesRegex(agents.SpecialistError, "owner token"):
-            self.registry.restore(
-                receipt=Path(retired["receipt_path"]),
-                expected_sha256=created["sha256"],
-                owner_token="0" * 32,
-            )
-        with self.assertRaisesRegex(agents.SpecialistError, "does not match"):
-            self.registry.restore(
-                receipt=Path(retired["receipt_path"]),
-                expected_sha256="0" * 64,
-                owner_token=created["owner_token"],
-            )
-        with self.assertRaisesRegex(agents.SpecialistError, "receipt"):
-            self.registry.restore(
-                receipt=pending_path,
-                expected_sha256=created["sha256"],
-                owner_token=created["owner_token"],
-            )
-        receipt_path = Path(retired["receipt_path"])
-        corrupted_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        corrupted_receipt["role_key"] = "different-role"
-        receipt_path.write_text(
-            json.dumps(corrupted_receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        with self.assertRaisesRegex(agents.SpecialistError, "identity"):
-            self.registry.restore(
-                receipt=receipt_path,
-                expected_sha256=created["sha256"],
-                owner_token=created["owner_token"],
-            )
-        self.assertTrue(pending_path.exists())
-        self.assertFalse(Path(created["path"]).exists())
-
-    def test_restore_rejects_role_conflict_and_hard_linked_pending_file(self) -> None:
-        created = self.ensure()
-        retired = self.registry.delete(
-            name=created["name"],
-            expected_sha256=created["sha256"],
-            owner_token=created["owner_token"],
-        )
-        with contextlib.closing(self.db()) as connection:
-            connection.execute(
-                "DELETE FROM agents WHERE agent_id = ?", (created["agent_id"],)
-            )
-            connection.commit()
-        conflict = self.ensure(role_key="qml-binding-diagnostics")
-        with self.assertRaisesRegex(agents.SpecialistError, "conflict"):
-            self.registry.restore(
-                receipt=Path(retired["receipt_path"]),
-                expected_sha256=created["sha256"],
-                owner_token=created["owner_token"],
-            )
-        self.assertTrue(Path(retired["pending_path"]).exists())
-        self.assertTrue(Path(conflict["path"]).exists())
-
-        Path(conflict["path"]).unlink()
-        with contextlib.closing(self.db()) as connection:
-            connection.execute("DELETE FROM agents WHERE agent_id = ?", (conflict["agent_id"],))
-            connection.commit()
-        hard_link = Path(retired["pending_path"]).with_suffix(".hardlink.toml")
-        try:
-            os.link(Path(retired["pending_path"]), hard_link)
-        except OSError as exc:
-            self.skipTest(f"hard links unavailable: {exc}")
-        self.addCleanup(lambda: hard_link.exists() and hard_link.unlink())
-        with self.assertRaisesRegex(agents.SpecialistError, "multiple hard links"):
-            self.registry.restore(
-                receipt=Path(retired["receipt_path"]),
-                expected_sha256=created["sha256"],
-                owner_token=created["owner_token"],
-            )
-
-    def test_restore_commit_failure_rolls_back_to_pending_exactly(self) -> None:
-        created = self.ensure()
-        retired = self.registry.delete(
-            name=created["name"],
-            expected_sha256=created["sha256"],
-            owner_token=created["owner_token"],
-        )
-        pending_path = Path(retired["pending_path"])
-        before = pending_path.read_bytes()
-        real_connection = self.registry.connect()
-
-        class FailingCommitConnection:
-            def execute(self, sql, parameters=()):
-                if sql == "COMMIT":
-                    raise sqlite3.OperationalError("forced restore commit failure")
-                return real_connection.execute(sql, parameters)
-
-            def close(self):
-                real_connection.close()
-
-        with mock.patch.object(
-            self.registry,
-            "connect",
-            return_value=FailingCommitConnection(),
-        ):
-            with self.assertRaisesRegex(sqlite3.OperationalError, "forced restore commit failure"):
-                self.registry.restore(
-                    receipt=Path(retired["receipt_path"]),
-                    expected_sha256=created["sha256"],
-                    owner_token=created["owner_token"],
-                )
-
-        self.assertFalse(Path(created["path"]).exists())
-        self.assertEqual(pending_path.read_bytes(), before)
-        self.assertTrue(Path(retired["receipt_path"]).exists())
-        with contextlib.closing(self.db()) as connection:
-            row = connection.execute(
-                "SELECT agent_id, retired_at FROM agents"
-            ).fetchone()
-            self.assertEqual(row["agent_id"], created["agent_id"])
-            self.assertIsNotNone(row["retired_at"])
 
     def test_locked_database_fails_within_the_bounded_auxiliary_timeout(self) -> None:
         self.ensure()
@@ -2826,7 +2678,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("omitted roles default to standard", help_output.getvalue())
         self.assertNotIn("omitted Luna roles default to fast", help_output.getvalue())
 
-    def test_cli_ensure_record_status_improve_delete_restore_round_trip(self) -> None:
+    def test_cli_ensure_record_status_improve_and_permanent_delete_round_trip(self) -> None:
         ensure_output = io.StringIO()
         with contextlib.redirect_stdout(ensure_output):
             ensure_exit = agents.main(
@@ -2937,26 +2789,9 @@ class SpecialistRegistryTests(unittest.TestCase):
         deleted = json.loads(delete_output.getvalue())
         self.assertEqual(delete_exit, 0)
         self.assertTrue(deleted["deleted"])
-
-        restore_output = io.StringIO()
-        with contextlib.redirect_stdout(restore_output):
-            restore_exit = agents.main(
-                [
-                    "--codex-home",
-                    str(self.codex_home),
-                    "restore",
-                    "--receipt",
-                    deleted["receipt_path"],
-                    "--expected-sha256",
-                    disposable["sha256"],
-                    "--owner-token",
-                    disposable["owner_token"],
-                ]
-            )
-        restored = json.loads(restore_output.getvalue())
-        self.assertEqual(restore_exit, 0)
-        self.assertEqual(restored["action"], "restored_from_pending_deletion")
-        self.assertTrue(Path(disposable["path"]).exists())
+        self.assertFalse(deleted["recoverable"])
+        self.assertEqual(deleted["disposition"], "permanently_removed")
+        self.assertFalse(Path(disposable["path"]).exists())
 
 
 if __name__ == "__main__":

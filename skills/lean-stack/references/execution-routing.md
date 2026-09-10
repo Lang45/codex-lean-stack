@@ -360,7 +360,7 @@ spawn_agent 或 followup_task 启动新子任务 → 子代理在自己的任务
 → 合同可跨任务、跨项目、跨会话复用 → 第一次成功默认只尝试一次 ensure 全局领域保留
 → 仍绑定当前项目、插件、个人技能或一次任务 → 使用本轮结果，但跳过全部持久写入
 → 启动前给出 UUID run_id；成功条件达到、结果核验采用且线程 Done → 一次 record-run --outcome success
-→ 整个任务有决定性失败结论 → 独立 UUID record-run --outcome failure；累计第二次失败可恢复退役
+→ 整个任务有决定性失败结论 → 独立 UUID record-run --outcome failure；累计第二次失败永久移除该角色全部资料
 → 运行中、中断、停止、否定、未采用、工具阻断或结果未定 → 不记录任务结果
 → 泛化、去敏、去重并用稳定 event_id 默认一次 improve 追加一条全局领域经验
 → 只有没有新增经验或明确排除项才跳过并写明原因

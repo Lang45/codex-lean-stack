@@ -4,7 +4,7 @@
 The hot dispatch path never depends on this tool.  It only persists one reusable
 specialist per role, records idempotent completed task outcomes, appends
 sanitized experience or corrections, maintains a bounded prompt summary, and
-recoverably retires or explicitly restores an exactly owned unused agent.
+permanently removes an exactly owned unused or twice-failed agent.
 """
 
 from __future__ import annotations
@@ -57,9 +57,6 @@ MAX_MANAGED_SCAN_FILES = 256
 BUSY_TIMEOUT_MS = 100
 REPARSE_POINT_FLAG = 0x400
 PENDING_DELETION_DIR_NAME = "待删文件"
-RESTORED_RECEIPT_DIR_NAME = "已恢复收据"
-RETIREMENT_RECEIPT_FORMAT_VERSION = 2
-MAX_RECEIPT_BYTES = 16 * 1024
 
 ROLE_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -75,7 +72,7 @@ AUTHORITIES = {"read", "write"}
 SPEEDS = {"standard", "fast"}
 INVOCATION_KINDS = {"spawn_agent", "followup_task"}
 RUN_OUTCOMES = {"success", "failure"}
-FAILURE_RETIREMENT_THRESHOLD = 2
+FAILURE_REMOVAL_THRESHOLD = 2
 INTERNAL_MESSAGE_RUNTIME_ROUTE = (
     "require_luna_model_catalog_v2_then_use_direct_collaboration_send_message"
 )
@@ -312,7 +309,7 @@ def rename_no_replace(source: Path, destination: Path) -> None:
     source_parent = ensure_plain_directory(source.parent, create=False)
     destination_parent = ensure_plain_directory(destination.parent, create=False)
     if os.stat(source_parent).st_dev != os.stat(destination_parent).st_dev:
-        raise SpecialistError("recoverable retirement requires a same-volume rename")
+        raise SpecialistError("safe no-replace move requires a same-volume rename")
     if path_exists_without_following_links(destination):
         raise SpecialistError(f"rename destination already exists: {destination}")
     if os.name == "nt":
@@ -334,14 +331,6 @@ def rename_no_replace(source: Path, destination: Path) -> None:
     if renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), str(destination))
-
-
-def receipt_json_bytes(receipt: dict[str, Any]) -> bytes:
-    if "owner_token" in receipt:
-        raise SpecialistError("retirement receipt must not duplicate owner_token")
-    return (json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
-        "utf-8"
-    )
 
 
 def validate_role_key(value: str) -> str:
@@ -975,7 +964,6 @@ class SpecialistRegistry:
         self.agents_dir = ensure_plain_directory(self.codex_home / "agents", create=create)
         self.state_dir = ensure_plain_directory(self.codex_home / "lean-stack", create=create)
         self.pending_deletion_dir = self.state_dir / PENDING_DELETION_DIR_NAME
-        self.restored_receipt_dir = self.pending_deletion_dir / RESTORED_RECEIPT_DIR_NAME
         self.db_path = self.state_dir / DB_NAME
         self.old_db_path = self.state_dir / OLD_DB_NAME
 
@@ -1782,7 +1770,9 @@ class SpecialistRegistry:
         if row is None:
             raise SpecialistError(f"unknown owned specialist: {name}")
         if row["retired_at"] is not None:
-            raise SpecialistError("owned specialist is retired and requires protected restore")
+            raise SpecialistError(
+                "legacy retired identity requires one-time manual purge"
+            )
         path = Path(row["path"]).absolute()
         validate_direct_agent_file(path, self.agents_dir)
         data = path.read_bytes()
@@ -2005,40 +1995,9 @@ class SpecialistRegistry:
             ).fetchone()
             if existing is not None:
                 if existing["retired_at"] is not None:
-                    if (
-                        expected_sha256 is not None
-                        and expected_sha256 != existing["expected_sha256"]
-                    ):
-                        raise SpecialistError(
-                            "expected SHA-256 does not match the retired owned agent"
-                        )
-                    receipt_data, _, _, _, _, _, receipt_header = (
-                        self._load_retirement_receipt(
-                            name=existing["name"],
-                            receipt_path=None,
-                            expected_sha256=existing["expected_sha256"],
-                        )
+                    raise SpecialistError(
+                        "legacy retired identity must be explicitly purged before reuse"
                     )
-                    if (
-                        receipt_data["agent_id"] != existing["agent_id"]
-                        or receipt_data["retired_at"] != existing["retired_at"]
-                        or receipt_header["owner_token"] != existing["owner_token"]
-                    ):
-                        raise SpecialistError(
-                            "retired specialist receipt does not match the ownership ledger"
-                        )
-                    connection.execute("COMMIT")
-                    return {
-                        "ok": True,
-                        "action": "protected_restore_required",
-                        "compatible": False,
-                        "recoverable": True,
-                        "agent_id": existing["agent_id"],
-                        "name": existing["name"],
-                        "sha256": existing["expected_sha256"],
-                        "active": False,
-                        "host_visibility": "retired_not_loadable",
-                    }
                 row, path, original, _, header = self._owned_agent(
                     connection,
                     name=existing["name"],
@@ -2579,6 +2538,42 @@ class SpecialistRegistry:
         finally:
             connection.close()
 
+    @staticmethod
+    def _delete_all_agent_records(
+        connection: sqlite3.Connection, *, agent_id: str
+    ) -> None:
+        """Delete one specialist identity and every dependent retained record."""
+        connection.execute(
+            "DELETE FROM experience_summaries WHERE agent_id = ?", (agent_id,)
+        )
+        connection.execute(
+            "DELETE FROM experience_events "
+            "WHERE agent_id = ? AND retracts_event_id IS NOT NULL",
+            (agent_id,),
+        )
+        connection.execute(
+            "DELETE FROM experience_events WHERE agent_id = ?", (agent_id,)
+        )
+        connection.execute("DELETE FROM agent_runs WHERE agent_id = ?", (agent_id,))
+        deleted = connection.execute(
+            "DELETE FROM agents WHERE agent_id = ?", (agent_id,)
+        )
+        if deleted.rowcount != 1:
+            raise SpecialistError("agent identity changed before permanent removal")
+
+    @staticmethod
+    def _rollback_deleted_agent_file(*, path: Path, data: bytes) -> str | None:
+        if path_exists_without_following_links(path):
+            return f"agent rollback destination appeared concurrently: {path}"
+        try:
+            write_new_file(path, data)
+            validate_direct_agent_file(path, path.parent)
+            if path.read_bytes() != data:
+                raise SpecialistError("rolled-back agent bytes do not match the deleted file")
+        except (OSError, SpecialistError) as exc:
+            return f"agent file rollback failed: {exc}"
+        return None
+
     def record_run(
         self,
         *,
@@ -2600,10 +2595,7 @@ class SpecialistRegistry:
         connection = self.connect()
         path: Path | None = None
         data: bytes | None = None
-        pending_path: Path | None = None
-        receipt_path: Path | None = None
-        receipt_bytes: bytes | None = None
-        moved_to_pending = False
+        removed_file = False
         committed = False
         transaction_started = False
         try:
@@ -2670,37 +2662,22 @@ class SpecialistRegistry:
             attempt_count = int(counts["attempt_count"])
             survival_rounds = int(counts["success_count"] or 0)
             failure_count = int(counts["failure_count"] or 0)
-            retirement: dict[str, Any] | None = None
+            removal_triggered = False
             if (
                 existing is None
                 and outcome == "failure"
-                and failure_count >= FAILURE_RETIREMENT_THRESHOLD
+                and failure_count >= FAILURE_REMOVAL_THRESHOLD
             ):
                 assert path is not None and data is not None
-                retirement = self._stage_retirement(
-                    row=row,
-                    path=path,
-                    data=data,
-                    expected_sha256=expected_sha256,
-                    reason="recorded_task_failure_threshold",
-                )
-                pending_path = retirement["pending_path"]
-                receipt_path = retirement["receipt_path"]
-                receipt_bytes = retirement["receipt_bytes"]
-                moved_to_pending = True
-                updated = connection.execute(
-                    "UPDATE agents SET retired_at = ? "
-                    "WHERE agent_id = ? AND retired_at IS NULL AND expected_sha256 = ?",
-                    (
-                        retirement["retired_at"],
-                        agent_id,
-                        expected_sha256,
-                    ),
-                )
-                if updated.rowcount != 1:
-                    raise SpecialistError("agent changed before failure-threshold retirement")
+                validate_direct_agent_file(path, self.agents_dir)
+                if path.read_bytes() != data or sha256_bytes(data) != expected_sha256:
+                    raise SpecialistError("agent changed immediately before permanent removal")
+                path.unlink()
+                removed_file = True
+                self._delete_all_agent_records(connection, agent_id=agent_id)
                 active = False
-                action = "task_failure_recorded_and_retired"
+                removal_triggered = True
+                action = "task_failure_recorded_and_permanently_removed"
             connection.execute("COMMIT")
             committed = True
             transaction_started = False
@@ -2716,18 +2693,18 @@ class SpecialistRegistry:
                 "successful_attempt_count": survival_rounds,
                 "failed_attempt_count": failure_count,
                 "survival_rounds": survival_rounds,
-                "failure_retirement_threshold": FAILURE_RETIREMENT_THRESHOLD,
+                "failure_removal_threshold": FAILURE_REMOVAL_THRESHOLD,
                 "active": active,
-                "retirement_triggered": retirement is not None,
+                "permanent_removal_triggered": removal_triggered,
                 "historical_backfill": False,
             }
-            if retirement is not None:
+            if removal_triggered:
                 result.update(
                     {
-                        "recoverable": True,
-                        "disposition": "plugin_pending_deletion",
-                        "pending_path": str(retirement["pending_path"]),
-                        "receipt_path": str(retirement["receipt_path"]),
+                        "recoverable": False,
+                        "disposition": "permanently_removed",
+                        "retired_identity_recorded": False,
+                        "all_persisted_agent_data_removed": True,
                     }
                 )
             return result
@@ -2740,22 +2717,9 @@ class SpecialistRegistry:
                     connection.execute("ROLLBACK")
                 except sqlite3.Error as rollback_exc:
                     rollback_error = f"database rollback failed: {rollback_exc}"
-            if (
-                moved_to_pending
-                and path is not None
-                and pending_path is not None
-                and receipt_path is not None
-                and receipt_bytes is not None
-                and data is not None
-            ):
-                recovery_error = self._rollback_staged_retirement(
-                    source=pending_path,
-                    destination=path,
-                    expected=data,
-                    receipt_path=receipt_path,
-                    receipt_bytes=receipt_bytes,
-                )
-                rollback_error = rollback_error or recovery_error
+            if removed_file and path is not None and data is not None:
+                file_rollback_error = self._rollback_deleted_agent_file(path=path, data=data)
+                rollback_error = rollback_error or file_rollback_error
             if rollback_error is not None:
                 raise SpecialistError(
                     "attempt recording failed and exact recovery was not completed: "
@@ -2993,301 +2957,6 @@ class SpecialistRegistry:
         finally:
             connection.close()
 
-    def _receipt_paths(self, agent_id: str, digest: str) -> tuple[Path, Path]:
-        base = f"{agent_id}.{digest}"
-        return (
-            self.pending_deletion_dir / f"{base}.toml",
-            self.pending_deletion_dir / f"{base}.receipt.json",
-        )
-
-    def _load_retirement_receipt(
-        self,
-        *,
-        name: str | None,
-        receipt_path: Path | None,
-        expected_sha256: str,
-    ) -> tuple[dict[str, Any], Path, bytes, Path, bytes, dict[str, Any], dict[str, str]]:
-        pending_dir = ensure_plain_directory(self.pending_deletion_dir, create=False)
-        if (name is None) == (receipt_path is None):
-            raise SpecialistError("restore requires exactly one of name or receipt")
-        candidates: list[Path]
-        if receipt_path is not None:
-            candidates = [receipt_path.expanduser().absolute()]
-        else:
-            if name is None or not NAME_RE.fullmatch(name):
-                raise SpecialistError("restore name is invalid")
-            candidates = []
-            for index, candidate in enumerate(pending_dir.glob("*.receipt.json")):
-                if index >= MAX_MANAGED_SCAN_FILES:
-                    raise AuxiliarySkipped(
-                        f"retirement receipt scan exceeded {MAX_MANAGED_SCAN_FILES} files"
-                    )
-                validate_direct_plain_file(
-                    candidate,
-                    pending_dir,
-                    kind="retirement receipt",
-                    max_bytes=MAX_RECEIPT_BYTES,
-                )
-                raw = candidate.read_bytes()
-                try:
-                    parsed = json.loads(raw.decode("utf-8"))
-                except (UnicodeError, json.JSONDecodeError) as exc:
-                    raise SpecialistError(f"retirement receipt is invalid: {candidate}") from exc
-                if isinstance(parsed, dict) and parsed.get("name") == name:
-                    candidates.append(candidate)
-            if len(candidates) != 1:
-                raise SpecialistError(
-                    f"restore name must match exactly one pending retirement receipt: {name}"
-                )
-        selected = candidates[0]
-        validate_direct_plain_file(
-            selected,
-            pending_dir,
-            kind="retirement receipt",
-            max_bytes=MAX_RECEIPT_BYTES,
-        )
-        receipt_bytes = selected.read_bytes()
-        try:
-            receipt = json.loads(receipt_bytes.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise SpecialistError("retirement receipt is not valid UTF-8 JSON") from exc
-        required = {
-            "format_version",
-            "agent_id",
-            "name",
-            "role_key",
-            "original_path",
-            "pending_path",
-            "sha256",
-            "created_at",
-            "updated_at",
-            "retired_at",
-            "global_contract_version",
-            "global_domain_key",
-            "global_contract",
-            "global_contract_digest",
-        }
-        if not isinstance(receipt, dict) or not required.issubset(receipt):
-            raise SpecialistError("retirement receipt is missing required fields")
-        if "owner_token" in receipt:
-            raise SpecialistError("retirement receipt must not contain owner_token")
-        if receipt["format_version"] != RETIREMENT_RECEIPT_FORMAT_VERSION:
-            raise SpecialistError("retirement receipt format_version is unsupported")
-        string_fields = required - {"format_version", "global_contract_version"}
-        if any(not isinstance(receipt[field], str) for field in string_fields):
-            raise SpecialistError("retirement receipt field types are invalid")
-        if not UUID_RE.fullmatch(receipt["agent_id"]):
-            raise SpecialistError("retirement receipt agent_id is invalid")
-        if not NAME_RE.fullmatch(receipt["name"]):
-            raise SpecialistError("retirement receipt name is invalid")
-        validate_role_key(receipt["role_key"])
-        if receipt["global_contract_version"] != GLOBAL_CONTRACT_VERSION:
-            raise SpecialistError("retirement receipt global contract version is invalid")
-        domain_key = validate_global_domain_key(receipt["global_domain_key"])
-        canonical_contract, contract_digest, _ = normalize_global_contract(
-            receipt["global_contract"], domain_key=domain_key
-        )
-        if canonical_contract != receipt["global_contract"] or contract_digest != receipt["global_contract_digest"]:
-            raise SpecialistError("retirement receipt global contract is inconsistent")
-        if receipt["sha256"] != expected_sha256:
-            raise SpecialistError("expected SHA-256 does not match the retirement receipt")
-        for field in ("created_at", "updated_at", "retired_at"):
-            if not isinstance(receipt[field], str) or not receipt[field]:
-                raise SpecialistError(f"retirement receipt {field} is invalid")
-        pending_path, expected_receipt_path = self._receipt_paths(
-            receipt["agent_id"], receipt["sha256"]
-        )
-        original_path = (self.agents_dir / f"{receipt['name']}.toml").absolute()
-        if selected != expected_receipt_path.absolute():
-            raise SpecialistError("retirement receipt filename does not match its identity")
-        if Path(receipt["pending_path"]).absolute() != pending_path.absolute():
-            raise SpecialistError("retirement receipt pending_path is inconsistent")
-        if Path(receipt["original_path"]).absolute() != original_path:
-            raise SpecialistError("retirement receipt original_path is inconsistent")
-        validate_direct_plain_file(
-            pending_path,
-            pending_dir,
-            kind="pending specialist",
-            max_bytes=MAX_AGENT_BYTES,
-        )
-        data = pending_path.read_bytes()
-        if sha256_bytes(data) != expected_sha256:
-            raise SpecialistError("pending specialist SHA-256 does not match the receipt")
-        text = data.decode("utf-8")
-        header = parse_header(text)
-        payload = tomllib.loads(text)
-        if (
-            header["agent_id"] != receipt["agent_id"]
-            or header["role_key"] != receipt["role_key"]
-            or header["global_domain_key"] != receipt["global_domain_key"]
-            or header["global_contract_digest"] != receipt["global_contract_digest"]
-            or payload.get("name") != receipt["name"]
-        ):
-            raise SpecialistError("pending specialist identity does not match the receipt")
-        return receipt, selected, receipt_bytes, pending_path, data, payload, header
-
-    @staticmethod
-    def _rollback_exact_move(
-        *,
-        source: Path,
-        destination: Path,
-        expected: bytes,
-        source_parent: Path,
-        kind: str,
-        max_bytes: int,
-    ) -> str | None:
-        if not path_exists_without_following_links(source):
-            return f"{kind} rollback source is missing: {source}"
-        try:
-            validate_direct_plain_file(
-                source,
-                source_parent,
-                kind=kind,
-                max_bytes=max_bytes,
-            )
-            if source.read_bytes() != expected:
-                return f"{kind} rollback source bytes changed: {source}"
-            if path_exists_without_following_links(destination):
-                return f"{kind} rollback destination appeared concurrently: {destination}"
-            rename_no_replace(source, destination)
-        except (OSError, SpecialistError) as exc:
-            return f"{kind} rollback failed: {exc}"
-        return None
-
-    def _stage_retirement(
-        self,
-        *,
-        row: sqlite3.Row,
-        path: Path,
-        data: bytes,
-        expected_sha256: str,
-        reason: str,
-    ) -> dict[str, Any]:
-        pending_dir = ensure_plain_directory(self.pending_deletion_dir, create=True)
-        pending_path, receipt_path = self._receipt_paths(
-            row["agent_id"], expected_sha256
-        )
-        if path_exists_without_following_links(pending_path):
-            raise SpecialistError(f"pending specialist target already exists: {pending_path}")
-        if path_exists_without_following_links(receipt_path):
-            raise SpecialistError(f"retirement receipt target already exists: {receipt_path}")
-        validate_direct_agent_file(path, self.agents_dir)
-        if path.read_bytes() != data or sha256_bytes(data) != expected_sha256:
-            raise SpecialistError("agent changed immediately before retirement")
-        retired_at = utc_now()
-        receipt = {
-            "format_version": RETIREMENT_RECEIPT_FORMAT_VERSION,
-            "agent_id": row["agent_id"],
-            "name": row["name"],
-            "role_key": row["role_key"],
-            "original_path": str(path),
-            "pending_path": str(pending_path),
-            "sha256": expected_sha256,
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "retired_at": retired_at,
-            "retirement_reason": reason,
-            "global_contract_version": int(row["global_contract_version"]),
-            "global_domain_key": row["global_domain_key"],
-            "global_contract": row["global_contract"],
-            "global_contract_digest": row["global_contract_digest"],
-        }
-        receipt_bytes = receipt_json_bytes(receipt)
-        receipt_created = False
-        try:
-            write_new_file(receipt_path, receipt_bytes)
-            receipt_created = True
-            validate_direct_plain_file(
-                receipt_path,
-                pending_dir,
-                kind="retirement receipt",
-                max_bytes=MAX_RECEIPT_BYTES,
-            )
-            if receipt_path.read_bytes() != receipt_bytes:
-                raise SpecialistError("retirement receipt changed immediately after creation")
-            rename_no_replace(path, pending_path)
-            validate_direct_plain_file(
-                pending_path,
-                pending_dir,
-                kind="pending specialist",
-                max_bytes=MAX_AGENT_BYTES,
-            )
-            if pending_path.read_bytes() != data:
-                raise SpecialistError("pending specialist changed immediately after retirement")
-        except BaseException as exc:
-            rollback_error: str | None = None
-            if path_exists_without_following_links(pending_path):
-                rollback_error = self._rollback_exact_move(
-                    source=pending_path,
-                    destination=path,
-                    expected=data,
-                    source_parent=self.pending_deletion_dir,
-                    kind="pending specialist",
-                    max_bytes=MAX_AGENT_BYTES,
-                )
-            if receipt_created and path_exists_without_following_links(receipt_path):
-                try:
-                    validate_direct_plain_file(
-                        receipt_path,
-                        pending_dir,
-                        kind="retirement receipt",
-                        max_bytes=MAX_RECEIPT_BYTES,
-                    )
-                    if receipt_path.read_bytes() != receipt_bytes:
-                        raise SpecialistError(
-                            "retirement receipt rollback bytes changed"
-                        )
-                    receipt_path.unlink()
-                except (OSError, SpecialistError) as cleanup_exc:
-                    rollback_error = rollback_error or (
-                        f"retirement receipt rollback failed: {cleanup_exc}"
-                    )
-            if rollback_error is not None:
-                raise SpecialistError(
-                    "retirement staging failed and exact recovery was not completed: "
-                    f"{rollback_error}"
-                ) from exc
-            raise
-        return {
-            "pending_path": pending_path,
-            "receipt_path": receipt_path,
-            "receipt_bytes": receipt_bytes,
-            "retired_at": retired_at,
-        }
-
-    def _rollback_staged_retirement(
-        self,
-        *,
-        source: Path,
-        destination: Path,
-        expected: bytes,
-        receipt_path: Path,
-        receipt_bytes: bytes,
-    ) -> str | None:
-        rollback_error = self._rollback_exact_move(
-            source=source,
-            destination=destination,
-            expected=expected,
-            source_parent=self.pending_deletion_dir,
-            kind="pending specialist",
-            max_bytes=MAX_AGENT_BYTES,
-        )
-        if rollback_error is not None:
-            return rollback_error
-        try:
-            validate_direct_plain_file(
-                receipt_path,
-                self.pending_deletion_dir,
-                kind="retirement receipt",
-                max_bytes=MAX_RECEIPT_BYTES,
-            )
-            if receipt_path.read_bytes() != receipt_bytes:
-                raise SpecialistError("retirement receipt rollback bytes changed")
-            receipt_path.unlink()
-        except (OSError, SpecialistError) as exc:
-            return f"retirement receipt rollback failed: {exc}"
-        return None
-
     def delete(
         self,
         *,
@@ -3300,10 +2969,7 @@ class SpecialistRegistry:
         connection = self.connect()
         data: bytes | None = None
         path: Path | None = None
-        pending_path: Path | None = None
-        receipt_path: Path | None = None
-        receipt_bytes: bytes | None = None
-        moved_to_pending = False
+        removed_file = False
         committed = False
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -3313,23 +2979,10 @@ class SpecialistRegistry:
                 committed = True
                 return {"ok": True, "action": "already_absent", "deleted": False}
             if row["retired_at"] is not None:
-                if expected_sha256 != row["expected_sha256"]:
-                    raise SpecialistError(
-                        "expected SHA-256 does not match the retired agent's ownership row"
-                    )
-                if owner_token != row["owner_token"]:
-                    raise SpecialistError(
-                        "provided owner token does not match the retired agent's ownership row"
-                    )
-                connection.execute("COMMIT")
-                committed = True
-                return {
-                    "ok": True,
-                    "action": "already_retired",
-                    "deleted": False,
-                    "recoverable": True,
-                    "active": False,
-                }
+                raise SpecialistError(
+                    "legacy retired identity requires one-time manual purge; "
+                    "new lifecycle removals retain no identity or recovery data"
+                )
             path = Path(row["path"]).absolute()
             if not path_exists_without_following_links(path):
                 if expected_sha256 != row["expected_sha256"]:
@@ -3355,7 +3008,17 @@ class SpecialistRegistry:
             )
             if experience_count:
                 raise SpecialistError(
-                    "owned specialist with recorded experience cannot be retired"
+                    "owned specialist with recorded experience cannot be manually removed"
+                )
+            summary_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM experience_summaries WHERE agent_id = ?",
+                    (row["agent_id"],),
+                ).fetchone()[0]
+            )
+            if summary_count:
+                raise SpecialistError(
+                    "owned specialist with recorded summary cannot be manually removed"
                 )
             recorded_attempts = int(
                 connection.execute(
@@ -3365,7 +3028,7 @@ class SpecialistRegistry:
             )
             if recorded_attempts:
                 raise SpecialistError(
-                    "owned specialist with recorded attempts cannot be manually retired"
+                    "owned specialist with recorded attempts cannot be manually removed"
                 )
             if data is None:
                 connection.execute("DELETE FROM agents WHERE agent_id = ?", (row["agent_id"],))
@@ -3376,44 +3039,27 @@ class SpecialistRegistry:
                     "action": "stale_registry_row_removed",
                     "deleted": False,
                 }
-            staged = self._stage_retirement(
-                row=row,
-                path=path,
-                data=data,
-                expected_sha256=expected_sha256,
-                reason="manual_unused_specialist_retirement",
-            )
-            pending_path = staged["pending_path"]
-            receipt_path = staged["receipt_path"]
-            receipt_bytes = staged["receipt_bytes"]
-            moved_to_pending = True
-            updated = connection.execute(
-                "UPDATE agents SET retired_at = ? "
-                "WHERE agent_id = ? AND retired_at IS NULL AND expected_sha256 = ?",
-                (
-                    staged["retired_at"],
-                    row["agent_id"],
-                    expected_sha256,
-                ),
-            )
-            if updated.rowcount != 1:
-                raise SpecialistError("agent changed before manual retirement")
+            validate_direct_agent_file(path, self.agents_dir)
+            if path.read_bytes() != data or sha256_bytes(data) != expected_sha256:
+                raise SpecialistError("agent changed immediately before permanent removal")
+            path.unlink()
+            removed_file = True
+            self._delete_all_agent_records(connection, agent_id=row["agent_id"])
             connection.execute("COMMIT")
             committed = True
             return {
                 "ok": True,
-                "action": "retired_to_pending_deletion",
+                "action": "permanently_removed",
                 "deleted": True,
-                "deleted_from": "active_specialist_registry",
-                "recoverable": True,
-                "disposition": "plugin_pending_deletion",
+                "deleted_from": "specialist_registry_and_filesystem",
+                "recoverable": False,
+                "disposition": "permanently_removed",
                 "path": str(path),
-                "original_path": str(path),
-                "pending_path": str(pending_path),
-                "receipt_path": str(receipt_path),
                 "sha256": expected_sha256,
                 "agent_id": row["agent_id"],
                 "active": False,
+                "retired_identity_recorded": False,
+                "all_persisted_agent_data_removed": True,
             }
         except BaseException as exc:
             if committed:
@@ -3423,227 +3069,13 @@ class SpecialistRegistry:
                 connection.execute("ROLLBACK")
             except sqlite3.Error as rollback_exc:
                 rollback_error = f"database rollback failed: {rollback_exc}"
-            if (
-                moved_to_pending
-                and path is not None
-                and pending_path is not None
-                and receipt_path is not None
-                and receipt_bytes is not None
-                and data is not None
-            ):
-                move_error = self._rollback_staged_retirement(
-                    source=pending_path,
-                    destination=path,
-                    expected=data,
-                    receipt_path=receipt_path,
-                    receipt_bytes=receipt_bytes,
-                )
-                rollback_error = rollback_error or move_error
+            if removed_file and path is not None and data is not None:
+                file_rollback_error = self._rollback_deleted_agent_file(path=path, data=data)
+                rollback_error = rollback_error or file_rollback_error
             if rollback_error is not None:
                 raise SpecialistError(
-                    f"retirement failed and exact recovery was not completed: {rollback_error}"
-                ) from exc
-            raise
-        finally:
-            connection.close()
-
-    def restore(
-        self,
-        *,
-        expected_sha256: str,
-        owner_token: str,
-        name: str | None = None,
-        receipt: Path | None = None,
-    ) -> dict[str, Any]:
-        expected_sha256 = validate_sha256(expected_sha256)
-        if not TOKEN_RE.fullmatch(owner_token):
-            raise SpecialistError("owner_token is invalid")
-        connection = self.connect()
-        original_path: Path | None = None
-        pending_path: Path | None = None
-        data: bytes | None = None
-        moved_to_original = False
-        committed = False
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            (
-                receipt_data,
-                receipt_path,
-                receipt_bytes,
-                pending_path,
-                data,
-                _,
-                header,
-            ) = self._load_retirement_receipt(
-                name=name,
-                receipt_path=receipt,
-                expected_sha256=expected_sha256,
-            )
-            if header["owner_token"] != owner_token:
-                raise SpecialistError("provided owner token is incorrect")
-            original_path = Path(receipt_data["original_path"]).absolute()
-            retired_row = connection.execute(
-                "SELECT * FROM agents WHERE agent_id = ?",
-                (receipt_data["agent_id"],),
-            ).fetchone()
-            if retired_row is not None:
-                identity_fields = (
-                    ("name", "name"),
-                    ("role_key", "role_key"),
-                    ("path", "original_path"),
-                    ("expected_sha256", "sha256"),
-                    ("global_domain_key", "global_domain_key"),
-                    ("global_contract", "global_contract"),
-                    ("global_contract_digest", "global_contract_digest"),
-                )
-                if any(
-                    retired_row[column] != receipt_data[receipt_field]
-                    for column, receipt_field in identity_fields
-                ) or int(retired_row["global_contract_version"]) != int(
-                    receipt_data["global_contract_version"]
-                ):
-                    raise SpecialistError(
-                        "retired ownership row does not match the retirement receipt identity"
-                    )
-                if retired_row["owner_token"] != owner_token:
-                    raise SpecialistError(
-                        "provided owner token does not match the retired ownership row"
-                    )
-                if retired_row["retired_at"] != receipt_data["retired_at"]:
-                    raise SpecialistError(
-                        "retired ownership row does not match the receipt lifecycle state"
-                    )
-            conflict = connection.execute(
-                "SELECT agent_id, name, role_key, path FROM agents "
-                "WHERE agent_id <> ? AND "
-                "(name = ? OR role_key = ? OR path = ?) LIMIT 1",
-                (
-                    receipt_data["agent_id"],
-                    receipt_data["name"],
-                    receipt_data["role_key"],
-                    str(original_path),
-                ),
-            ).fetchone()
-            if conflict is not None:
-                raise SpecialistError(
-                    "active registry has an agent_id, name, role_key, or path conflict"
-                )
-            if path_exists_without_following_links(original_path):
-                raise SpecialistError(f"original specialist target already exists: {original_path}")
-            validate_direct_plain_file(
-                pending_path,
-                self.pending_deletion_dir,
-                kind="pending specialist",
-                max_bytes=MAX_AGENT_BYTES,
-            )
-            if pending_path.read_bytes() != data:
-                raise SpecialistError("pending specialist changed immediately before restore")
-            ensure_plain_directory(self.restored_receipt_dir, create=True)
-            rename_no_replace(pending_path, original_path)
-            moved_to_original = True
-            validate_direct_agent_file(original_path, self.agents_dir)
-            if original_path.read_bytes() != data:
-                raise SpecialistError("restored specialist changed immediately after restore")
-            if retired_row is None:
-                connection.execute(
-                    "INSERT INTO agents(agent_id,name,role_key,path,owner_token,expected_sha256,created_at,updated_at,"
-                    "global_contract_version,global_domain_key,global_contract,global_contract_digest,retired_at) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)",
-                    (
-                        receipt_data["agent_id"],
-                        receipt_data["name"],
-                        receipt_data["role_key"],
-                        str(original_path),
-                        owner_token,
-                        expected_sha256,
-                        receipt_data["created_at"],
-                        receipt_data["updated_at"],
-                        receipt_data["global_contract_version"],
-                        receipt_data["global_domain_key"],
-                        receipt_data["global_contract"],
-                        receipt_data["global_contract_digest"],
-                    ),
-                )
-            else:
-                updated = connection.execute(
-                    "UPDATE agents SET retired_at = NULL "
-                    "WHERE agent_id = ? AND retired_at = ? AND expected_sha256 = ?",
-                    (
-                        receipt_data["agent_id"],
-                        receipt_data["retired_at"],
-                        expected_sha256,
-                    ),
-                )
-                if updated.rowcount != 1:
-                    raise SpecialistError("retired ownership row changed before restore")
-            connection.execute("COMMIT")
-            committed = True
-
-            archive_path = self.restored_receipt_dir / (
-                f"{receipt_data['agent_id']}.{expected_sha256}.restored."
-                f"{uuid.uuid4().hex}.receipt.json"
-            )
-            receipt_disposition = "archived_after_restore"
-            receipt_archive_error: str | None = None
-            try:
-                validate_direct_plain_file(
-                    receipt_path,
-                    self.pending_deletion_dir,
-                    kind="retirement receipt",
-                    max_bytes=MAX_RECEIPT_BYTES,
-                )
-                if receipt_path.read_bytes() != receipt_bytes:
-                    raise SpecialistError("retirement receipt changed before archival")
-                rename_no_replace(receipt_path, archive_path)
-            except (OSError, SpecialistError) as archive_exc:
-                archive_path = receipt_path
-                receipt_disposition = "retained_after_archive_conflict"
-                receipt_archive_error = str(archive_exc)
-            result = {
-                "ok": True,
-                "action": "restored_from_pending_deletion",
-                "restored": True,
-                "path": str(original_path),
-                "original_path": str(original_path),
-                "pending_path": str(pending_path),
-                "receipt_path": str(archive_path),
-                "receipt_disposition": receipt_disposition,
-                "receipt_replayable": False,
-                "replay_prevention": "active_registry_identity_conflicts",
-                "sha256": expected_sha256,
-                "agent_id": receipt_data["agent_id"],
-                "name": receipt_data["name"],
-                "role_key": receipt_data["role_key"],
-            }
-            if receipt_archive_error is not None:
-                result["receipt_archive_error"] = receipt_archive_error
-            return result
-        except BaseException as exc:
-            if committed:
-                raise
-            rollback_error: str | None = None
-            try:
-                connection.execute("ROLLBACK")
-            except sqlite3.Error as rollback_exc:
-                rollback_error = f"database rollback failed: {rollback_exc}"
-            if (
-                moved_to_original
-                and original_path is not None
-                and pending_path is not None
-                and data is not None
-            ):
-                move_error = self._rollback_exact_move(
-                    source=original_path,
-                    destination=pending_path,
-                    expected=data,
-                    source_parent=self.agents_dir,
-                    kind="restored specialist",
-                    max_bytes=MAX_AGENT_BYTES,
-                )
-                rollback_error = rollback_error or move_error
-            if rollback_error is not None:
-                raise SpecialistError(
-                    f"restore failed and exact recovery was not completed: {rollback_error}"
+                    "permanent removal failed and exact rollback was not completed: "
+                    f"{rollback_error}"
                 ) from exc
             raise
         finally:
@@ -3757,21 +3189,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     delete = subparsers.add_parser(
         "delete",
-        help="recoverably retire one exactly owned unused specialist to plugin pending deletion",
+        help="permanently remove one exactly owned unused specialist and all retained data",
     )
     delete.add_argument("--name", required=True)
     delete.add_argument("--expected-sha256", required=True)
     delete.add_argument("--owner-token", required=True)
 
-    restore = subparsers.add_parser(
-        "restore",
-        help="restore one exactly verified specialist from plugin pending deletion",
-    )
-    restore_identity = restore.add_mutually_exclusive_group(required=True)
-    restore_identity.add_argument("--name")
-    restore_identity.add_argument("--receipt", type=Path)
-    restore.add_argument("--expected-sha256", required=True)
-    restore.add_argument("--owner-token", required=True)
     return parser
 
 
@@ -3848,13 +3271,6 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
     if arguments.command == "delete":
         return registry.delete(
             name=arguments.name,
-            expected_sha256=arguments.expected_sha256,
-            owner_token=arguments.owner_token,
-        )
-    if arguments.command == "restore":
-        return registry.restore(
-            name=arguments.name,
-            receipt=arguments.receipt,
             expected_sha256=arguments.expected_sha256,
             owner_token=arguments.owner_token,
         )

@@ -40,11 +40,11 @@
 2. **竞争不会丢掉合格成果。** 复制和变体先分别交付并被采用，再比较哪种配置更适合以后复用；竞争只选未来保留者，不抹掉本轮有效结果。
 3. **只保留全局领域角色。** 角色持久化前删除项目名、路径、版本和一次任务事实，每个领域保留一个可跨任务、跨项目、跨会话复用的休眠角色，没有项目保留层。
 4. **子代理会积累经过采用的经验。** 区分规则缺陷、执行失误和原因未明；记录情境、做法、证据与例外，扩大适用范围须有独立样本。未采用路线只留核验后的短避坑结论及重开条件；用户否定的子代理结果不得回流。仍用现有追加与纠正机制，不引入优化器或训练任务。
-5. **任务结果只记录明确完成。** 启动前分配 UUID `run_id`；成功只有在达到条件、结果被采用且线程进入 Done 后才记录，失败只有整个任务已有明确失败结论时才记录。运行中、中断、未采用、用户停止或否定、工具缺失后停止及结果未定都不计失败。累计两次明确任务失败后，该身份从活跃台账可恢复退役；身份、成功/失败尝试、经验和纠正审计仍保留。0 成功轮次可由总尝试与失败数区分为“从未调用”或“尚未成功”。
+5. **任务结果只记录明确完成。** 启动前分配 UUID `run_id`；成功只有在达到条件、结果被采用且线程进入 Done 后才记录，失败只有整个任务已有明确失败结论时才记录。运行中、中断、未采用、用户停止或否定、工具缺失后停止及结果未定都不计失败。累计两次明确任务失败后，永久移除该角色的 TOML、身份、全部成功/失败运行、原始经验、纠正事件与摘要；不保留退役角色、收据或恢复入口。一次失败的角色仍可由总尝试与失败数区分“从未调用”和“尚未成功”。
 6. **经验写入不阻塞主任务。** `ensure` 和 `improve` 只各做一次短提交，遇到忙锁、结构漂移、权限或文件身份问题立即跳过，不排队、不轮询、不重试。
 7. **保留角色不会常驻耗费模型。** 跨会话保留的是休眠 TOML 配置和去敏经验，当前子代理线程完成后正常结束，未来任务需要时才重新生成。
 8. **初版不等于完成。** 实现任务持续到已授权的运行或测试、检查结果、修复本次失败并交付实际入口；用户明确只读、只要方案或先审阅时，按该范围停止。
-9. **生命周期统计可以只读查看。** `status --for-dashboard` 输出一次活跃/退役角色、总尝试、成功、失败、经验与纠正事件聚合；追加 `--watch-seconds 2` 会在前台每两秒输出一条 NDJSON 快照，按 `Ctrl+C` 结束。它不会创建后台任务，也不代表 Codex 插件卡已经自动刷新。
+9. **生命周期统计可以只读查看。** `status --for-dashboard` 输出一次当前保留角色、总尝试、成功、失败、经验与纠正事件聚合；追加 `--watch-seconds 2` 会在前台每两秒输出一条 NDJSON 快照，按 `Ctrl+C` 结束。永久移除的角色不会出现在后续快照中；该功能不创建后台任务，也不代表 Codex 插件卡已经自动刷新。
 
 ### 精简与安全
 
@@ -54,7 +54,7 @@
 4. **测试只覆盖受影响边界。** 迭代时先跑最窄检查，代码、依赖、配置和环境没变就复用通过证据，只有真实高风险边界变化才扩大验证。复核修补后做增量检查；剩余疑问需要真实运行时，进入已授权的窄验证，不循环追加静态意见。
 5. **同一规则只有一个权威源。** README 只解释用户需要知道的行为，详细规则留在技能和参考文档，不在 UI、流程图、测试和交接中逐字维护多份副本。
 6. **没有后台编排系统。** 插件不建立认领数据库、锁租约、代理评分、心跳服务、守护进程或第二套任务状态机。
-7. **删除保持可恢复。** 普通文件进入 Windows 回收站，重要文件进入任务或插件专属 `待删文件`；委派不自动获得提交、推送、部署、外部消息或重启权限。
+7. **一般清理保持可恢复，角色生命周期按明确合同永久移除。** 普通文件进入 Windows 回收站，重要文件进入任务或插件专属 `待删文件`；保留角色只有累计第二次明确失败，或严格匹配零经验零尝试的手动删除条件时，才永久移除全部角色资料。委派不自动获得提交、推送、部署、外部消息或重启权限。
 8. **消融只在你明确要求时启动。** 说“进行消融实验”或明确要求精简当前代码/设计后，一个不含作者推理历史的新上下文每次真实删除、内联或合并一个候选，并用同一验收集比较前后；改名、搬移或再包一层不算精简，核心功能和设计意图先冻结。防御候选同时按发生频率、影响、可检测性和人工恢复成本判断：可检测、可人工修复的极低频问题不默认增加自动补偿或自愈，安全、权限、数据完整性或不可逆损失仍保留相称防护。
 
 ### 调用流程
@@ -121,11 +121,11 @@ maintenance needs them, and reuse unchanged instructions already in context.
 2. **Competition preserves useful output.** Copies and variants deliver first; competition selects the future retained configuration without discarding accepted current results.
 3. **Retention is global-domain only.** Remove project names, paths, versions, and one-off facts before keeping one dormant specialist per reusable domain; there is no project-retention layer.
 4. **Accepted work becomes experience.** Generalize, redact, deduplicate, and append adopted methods and failure-avoidance lessons to SQLite; corrections remain append-only and auditable.
-5. **Record only explicit completed outcomes.** Allocate UUID `run_id` before a retained-role task. Record success only after completion, adoption, and Done; record failure only when the whole task has a decisive failed outcome. Running, interrupted, unadopted, user-stopped or rejected, tool-blocked, and undetermined calls are not failures. After two cumulative explicit task failures, retire the identity recoverably from active routing while preserving identity, successes, failures, experience, and corrections. Attempt and failure totals distinguish zero successes caused by no invocation from zero successes after failed work.
+5. **Record only explicit completed outcomes.** Allocate UUID `run_id` before a retained-role task. Record success only after completion, adoption, and Done; record failure only when the whole task has a decisive failed outcome. Running, interrupted, unadopted, user-stopped or rejected, tool-blocked, and undetermined calls are not failures. After two cumulative explicit task failures, permanently remove the role TOML, identity, every success/failure run, raw experience, correction, and summary. No retired-role record, receipt, or restore path remains. Attempt and failure totals can still distinguish a never-invoked role from one with a single failure before removal.
 6. **Persistence never blocks delivery.** Try `ensure` and `improve` once each, then skip immediately on locks, schema drift, permission, or file-identity problems.
 7. **Retained agents do not stay alive.** Only dormant TOML configuration and redacted experience persist; runtime threads end normally and consume no continuing model calls.
 8. **The first implementation is intermediate.** Continue through authorized execution or tests, inspection, repair of failures caused by the change, and delivery of the real entry point. Respect an explicit read-only, proposal-only, or review-first request.
-9. **Lifecycle aggregates are read-only and observable.** `status --for-dashboard` returns one active/retired, attempt, success, failure, experience, and correction snapshot. Add `--watch-seconds 2` for foreground NDJSON every two seconds and stop it with `Ctrl+C`; this creates no background task and does not claim automatic Codex plugin-card refresh.
+9. **Lifecycle aggregates are read-only and observable.** `status --for-dashboard` returns one current-retained-role, attempt, success, failure, experience, and correction snapshot. Permanently removed roles disappear from later snapshots. Add `--watch-seconds 2` for foreground NDJSON every two seconds and stop it with `Ctrl+C`; this creates no background task and does not claim automatic Codex plugin-card refresh.
 
 ### Process removal and safety
 
@@ -135,7 +135,7 @@ maintenance needs them, and reuse unchanged instructions already in context.
 4. **Run only affected checks.** Reuse unchanged evidence and broaden validation only when the changed behavior or risk requires it. Check review fixes incrementally and move to authorized runtime validation when more static opinions cannot resolve the remaining question.
 5. **Keep one authoritative source.** README explains the user-facing behavior while detailed rules remain in the skill and focused references.
 6. **No background orchestrator.** The plugin creates no claim database, lease system, scorecard, heartbeat service, daemon, or second task state machine.
-7. **Cleanup remains recoverable.** Ordinary files go to the Windows Recycle Bin; important files go to a scoped `待删文件`, and delegation grants no extra external authority.
+7. **General cleanup remains recoverable; the explicit role-lifecycle contract is permanent.** Ordinary files go to the Windows Recycle Bin and important files go to a scoped `待删文件`. A retained role is permanently removed only after its second explicit task failure or when an exact zero-experience, zero-attempt manual-deletion guard passes. Delegation grants no extra external authority.
 8. **Ablation is explicitly requested.** When asked to run an ablation or simplify the current code or design, a fresh context with no author rationale removes, inlines, or merges one candidate at a time and reruns the same acceptance checks; renaming, moving, or wrapping it does not count, and core behavior is frozen first. Defensive candidates are judged by frequency, impact, detectability, and manual recovery cost: detectable, manually recoverable outliers do not automatically earn compensation or self-healing, while security, permission, data-integrity, and irreversible-loss protections remain proportionate to impact.
 
 ## 安装与使用 / Install and use

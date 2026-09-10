@@ -819,7 +819,6 @@ class SkillContractTests(unittest.TestCase):
             "Windows 回收站",
             "待删文件",
             "记录原路径",
-            "<CODEX_HOME>/lean-stack/待删文件",
             "不是不可恢复的物理清除",
         ):
             self.assertIn(required, combined)
@@ -854,9 +853,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("无人否决即同意", combined)
         self.assertNotIn("用户明确要求调用其他或新建 Codex 父代理任务时", combined)
 
-    def test_recoverable_retirement_changes_destination_without_changing_scale(
-        self,
-    ) -> None:
+    def test_twice_failed_role_removal_is_permanent_and_complete(self) -> None:
         combined = (
             self.skill
             + self.collaboration
@@ -869,22 +866,18 @@ class SkillContractTests(unittest.TestCase):
         for required in (
             "普通文件进入 Windows 回收站",
             "重要文件进入任务或插件专属 `待删文件`",
-            "<CODEX_HOME>/lean-stack/待删文件",
-            "直接普通文件",
-            "单一硬链接",
-            "所有权令牌",
-            "经验与任务尝试都必须为零",
-            "`delete` 和 `restore`",
-            "--receipt",
-            "--expected-sha256",
-            "--owner-token",
-            "已恢复收据",
-            "不能借恢复接管用户文件或替换活跃角色",
+            "累计第二次明确失败",
+            "永久移除",
+            "身份",
+            "运行记录",
+            "原始经验",
+            "纠正事件",
+            "摘要",
         ):
             self.assertIn(required, combined)
 
         delete_body = re.search(
-            r"(?ms)^    def delete\(.*?(?=^    def restore\()",
+            r"(?ms)^    def delete\(.*?(?=^def build_parser\()",
             self.agents_source,
         )
         self.assertIsNotNone(delete_body)
@@ -894,25 +887,23 @@ class SkillContractTests(unittest.TestCase):
             "_owned_agent",
             "experience_events",
             "agent_runs",
-            "_stage_retirement",
             "expected_sha256",
             "owner_token",
-            "UPDATE agents SET retired_at",
-            "retired_to_pending_deletion",
+            "_delete_all_agent_records",
+            ".unlink(",
+            '"recoverable": False',
+            '"all_persisted_agent_data_removed": True',
         ):
             self.assertIn(retained_guard, delete_text)
-        self.assertNotIn(".unlink(", delete_text)
 
-        for restore_guard in (
+        for removed_restore_surface in (
             "def restore(",
-            "retirement receipt must not contain owner_token",
-            "active registry has an agent_id, name, role_key, or path conflict",
+            "retirement receipt",
             "restored_from_pending_deletion",
+            'add_parser("restore"',
             'restore_identity.add_argument("--receipt", type=Path)',
-            'restore.add_argument("--expected-sha256", required=True)',
-            'restore.add_argument("--owner-token", required=True)',
         ):
-            self.assertIn(restore_guard, self.agents_source)
+            self.assertNotIn(removed_restore_surface, self.agents_source)
 
     def test_bounded_key_step_messages_continue_without_ack_or_scope_expansion(
         self,
@@ -1047,8 +1038,12 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("OLD_DB_NAME", script)
         self.assertIn("retracts_event_id", script)
         self.assertIn("experience_corrected", script)
-        self.assertIn("recorded experience cannot be retired", script)
-        self.assertIn("recorded attempts cannot be manually retired", script)
+        self.assertIn("recorded experience cannot be manually removed", script)
+        self.assertIn("recorded summary cannot be manually removed", script)
+        self.assertIn("recorded attempts cannot be manually removed", script)
+        self.assertIn("def _delete_all_agent_records", script)
+        self.assertIn("task_failure_recorded_and_permanently_removed", script)
+        self.assertNotIn("def restore(", script)
         self.assertIn('SPEEDS = {"standard", "fast"}', script)
         self.assertIn('service_tier = {json_text(\'fast\')}', script)
         self.assertIn('skills_config = "[skills]\\ninclude_instructions = false\\n"', script)
@@ -1095,7 +1090,6 @@ class SkillContractTests(unittest.TestCase):
                 "record-run",
                 "improve",
                 "delete",
-                "restore",
                 "migrate-global",
                 "migrate-attempts",
             },
@@ -1104,7 +1098,6 @@ class SkillContractTests(unittest.TestCase):
         ensure_parser = action.choices["ensure"]
         record_parser = action.choices["record-run"]
         status_parser = action.choices["status"]
-        restore_parser = action.choices["restore"]
         migrate_parser = action.choices["migrate-global"]
         ensure_options = {
             option
@@ -1126,11 +1119,6 @@ class SkillContractTests(unittest.TestCase):
             for parser_action in status_parser._actions
             for option in parser_action.option_strings
         }
-        restore_options = {
-            option
-            for parser_action in restore_parser._actions
-            for option in parser_action.option_strings
-        }
         migrate_options = {
             option
             for parser_action in migrate_parser._actions
@@ -1142,10 +1130,6 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("--invocation-kind", record_options)
         self.assertIn("--outcome", record_options)
         self.assertIn("--watch-seconds", status_options)
-        self.assertEqual(
-            restore_options,
-            {"-h", "--help", "--name", "--receipt", "--expected-sha256", "--owner-token"},
-        )
         self.assertEqual(migrate_options, {"-h", "--help", "--plan"})
         self.assertFalse((SKILL_DIR / "scripts" / "manage_agents.py").exists())
         self.assertFalse((ROOT / "tests" / "test_manage_agents.py").exists())
@@ -1376,7 +1360,7 @@ class SkillContractTests(unittest.TestCase):
             "多个可写子代理可以并行",
             "最近的协作授权不改变删除、删减或候选清理尺度",
             "精确送入 Windows 回收站",
-            "TOML 与收据移入插件专属待删文件",
+            "永久删除 TOML 与身份行",
             "定制运行时新子代理不等于持久创建",
             "父代理按任务类型联合选择",
             "保留子代理读取自己的",
