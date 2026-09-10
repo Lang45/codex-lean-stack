@@ -379,9 +379,9 @@ def validate_effort(value: str) -> str:
 def validate_subagent_model_effort(model: str, effort: str) -> tuple[str, str]:
     model = validate_model(model)
     effort = validate_effort(effort)
-    if model == "gpt-6-astra" and effort in {"xhigh", "max", "ultra"}:
+    if model == "gpt-6-astra" and effort in {"max", "ultra"}:
         raise SpecialistError(
-            "gpt-6-astra subagents support at most high reasoning effort"
+            "gpt-6-astra subagents support at most xhigh reasoning effort"
         )
     return model, effort
 

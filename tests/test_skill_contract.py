@@ -772,11 +772,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("gpt-6-astra", combined)
         for content in (self.skill, self.routing, self.delegation, self.cost):
             self.assertIn(
-                "派出的gpt-6-astra子代理思考程度最高为high",
+                "派出的gpt-6-astra子代理思考程度最高为xhigh",
                 re.sub(r"\s+", "", content),
             )
         self.assertIsNone(
-            re.search(r"Astra\s*/\s*(?:xhigh|max|ultra)", combined, re.IGNORECASE)
+            re.search(r"Astra\s*/\s*(?:max|ultra)", combined, re.IGNORECASE)
         )
         for forced_route in (
             "Sol父代理必须调用Astra",
@@ -1636,7 +1636,7 @@ class SkillContractTests(unittest.TestCase):
         for behavior_term in (
             "gpt-6-astra",
             "最高",
-            "high",
+            "xhigh",
             "落盘前拒绝",
             "Sol 父代理",
             "显式选择",

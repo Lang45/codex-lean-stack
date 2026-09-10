@@ -926,22 +926,22 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(old.read_bytes(), before)
         self.assertNotEqual(old, self.registry.db_path)
 
-    def test_astra_subagent_effort_is_capped_at_high(self) -> None:
-        first = self.ensure(model="gpt-6-astra", effort="high")
-        second = self.ensure(model="gpt-6-astra", effort="high")
+    def test_astra_subagent_effort_is_capped_at_xhigh(self) -> None:
+        first = self.ensure(model="gpt-6-astra", effort="xhigh")
+        second = self.ensure(model="gpt-6-astra", effort="xhigh")
         path = Path(first["path"])
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(payload["model"], "gpt-6-astra")
-        self.assertEqual(payload["model_reasoning_effort"], "high")
+        self.assertEqual(payload["model_reasoning_effort"], "xhigh")
         self.assertEqual(second["action"], "reused")
         self.assertEqual(first["sha256"], second["sha256"])
         before = path.read_bytes()
 
-        for effort in ("xhigh", "max", "ultra"):
+        for effort in ("max", "ultra"):
             with self.subTest(effort=effort, route="create"):
                 with self.assertRaisesRegex(
                     agents.SpecialistError,
-                    "gpt-6-astra subagents support at most high reasoning effort",
+                    "gpt-6-astra subagents support at most xhigh reasoning effort",
                 ):
                     self.ensure(
                         role_key=f"astra-{effort}-rejected",
@@ -954,7 +954,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             with self.subTest(effort=effort, route="reconfigure"):
                 with self.assertRaisesRegex(
                     agents.SpecialistError,
-                    "gpt-6-astra subagents support at most high reasoning effort",
+                    "gpt-6-astra subagents support at most xhigh reasoning effort",
                 ):
                     self.ensure(
                         model="gpt-6-astra",
