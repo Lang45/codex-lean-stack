@@ -357,6 +357,77 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertNotIn(rejected_quota, detailed_authority)
 
+    def test_routing_rechecks_changed_work_and_requires_adoptable_results(self) -> None:
+        """Keep re-routing, cost, expert escalation, and closeout behavior coupled."""
+        routing_decision = self.routing.split("## 四、", 1)[0]
+        early_dispatch = self.delegation.split("### 持续多工作流任务的早期派发", 1)[1].split(
+            "###", 1
+        )[0]
+        direct_parent_cost = routing_decision.split("判断“不派发”时", 1)[1].split(
+            "收益只需", 1
+        )[0]
+        total_cost = self.routing.split("总成本包含", 1)[1].split("\n\n", 1)[0]
+        expert_route = self.delegation.split("当 Sol 本身担任父代理时", 1)[1].split(
+            "### 持续多工作流任务的早期派发", 1
+        )[0]
+        closeout = self.delegation.split("每个子代理达到成功条件", 1)[1].split(
+            "最终回复使用：", 1
+        )[0]
+
+        # A changed request re-opens the positive delegation judgment; it must not
+        # preserve an earlier direct-parent decision after the work shape changes.
+        self.assertIn("重新判断受影响的任务形状", routing_decision)
+        self.assertIn(
+            "新要求改变工作流时立即重新判断",
+            re.sub(r"\s+", "", early_dispatch),
+        )
+        self.assertIn("全部当前有收益且互不冲突", early_dispatch)
+
+        # Total cost includes the expensive parent's continued independent work,
+        # rather than treating only child startup or a parent-token reduction as cost.
+        compact_direct_parent_cost = re.sub(r"\s+", "", direct_parent_cost)
+        for cost_part in ("父代理接下来独立承担", "上下文", "生成", "调试", "验证", "总成本"):
+            self.assertIn(cost_part, compact_direct_parent_cost)
+        for cost_part in ("token", "时间", "返工"):
+            self.assertIn(cost_part, total_cost)
+        self.assertNotIn("只算子代理启动成本", total_cost)
+
+        # A bounded expert question can be sent directly; neither a cheap-model
+        # failure nor a batch-wide escalation is a prerequisite.
+        compact_expert_route = re.sub(r"\s+", "", expert_route)
+        for expert_boundary in ("具体困难", "需要专家协助", "有界子任务", "gpt-6-astra"):
+            self.assertIn(expert_boundary, compact_expert_route)
+        for forced_ladder in (
+            "先让 Sol 或较低价模型实际失败",
+            "只路由当前困难",
+            "不升级已经通过的切片或无关批次",
+            "更不批量升级",
+        ):
+            self.assertIn(re.sub(r"\s+", "", forced_ladder), compact_expert_route)
+
+        # Progress commentary is not an adoptable result: adoption comes from a
+        # child's final result/receipt, with one bounded retry per named gap.
+        compact_closeout = re.sub(r"\s+", "", closeout)
+        for closeout_boundary in (
+            "commentary-only",
+            "不能登记为已采用",
+            "最终回复",
+            "轻量结果收据",
+            "同一来源快照和同一决定性缺口只发送一次有界增量请求",
+            "仍不足时直接补齐、如实报告缺口或等待新证据",
+        ):
+            self.assertIn(re.sub(r"\s+", "", closeout_boundary), compact_closeout)
+
+        # Dispatch remains shaped by benefit and capacity, never by a preset count,
+        # elapsed-time gate, or indiscriminate "send everything" rule.
+        self.assertIn("调用数量随真实工作流、边际收益与运行容量变化", early_dispatch)
+        self.assertIn(
+            "不按固定时间、文件数量或轮次机械重判",
+            re.sub(r"\s+", "", early_dispatch),
+        )
+        for mechanical_rule in ("固定委派数量", "固定时间阈值", "强制全部派发"):
+            self.assertNotIn(mechanical_rule, self.skill + self.routing + self.delegation)
+
     def test_long_context_is_not_replicated_across_parent_child_or_nested_agents(self) -> None:
         detailed = self.skill + self.routing + self.delegation + self.cost
         compact_detailed = re.sub(r"\s+", "", detailed)
