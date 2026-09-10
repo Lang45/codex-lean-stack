@@ -926,14 +926,42 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(old.read_bytes(), before)
         self.assertNotEqual(old, self.registry.db_path)
 
-    def test_astra_ultra_configuration_is_preserved_and_idempotent(self) -> None:
-        first = self.ensure(model="gpt-6-astra", effort="ultra")
-        second = self.ensure(model="gpt-6-astra", effort="ultra")
-        payload = tomllib.loads(Path(first["path"]).read_text(encoding="utf-8"))
+    def test_astra_subagent_effort_is_capped_at_high(self) -> None:
+        first = self.ensure(model="gpt-6-astra", effort="high")
+        second = self.ensure(model="gpt-6-astra", effort="high")
+        path = Path(first["path"])
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(payload["model"], "gpt-6-astra")
-        self.assertEqual(payload["model_reasoning_effort"], "ultra")
+        self.assertEqual(payload["model_reasoning_effort"], "high")
         self.assertEqual(second["action"], "reused")
         self.assertEqual(first["sha256"], second["sha256"])
+        before = path.read_bytes()
+
+        for effort in ("xhigh", "max", "ultra"):
+            with self.subTest(effort=effort, route="create"):
+                with self.assertRaisesRegex(
+                    agents.SpecialistError,
+                    "gpt-6-astra subagents support at most high reasoning effort",
+                ):
+                    self.ensure(
+                        role_key=f"astra-{effort}-rejected",
+                        global_domain_key=f"astra-{effort}-rejected",
+                        model="gpt-6-astra",
+                        effort=effort,
+                    )
+                self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 1)
+
+            with self.subTest(effort=effort, route="reconfigure"):
+                with self.assertRaisesRegex(
+                    agents.SpecialistError,
+                    "gpt-6-astra subagents support at most high reasoning effort",
+                ):
+                    self.ensure(
+                        model="gpt-6-astra",
+                        effort=effort,
+                        expected_sha256=first["sha256"],
+                    )
+                self.assertEqual(path.read_bytes(), before)
 
     def test_configuration_evidence_boundary_survives_experience_rewrite(self) -> None:
         for speed in ("standard", "fast"):

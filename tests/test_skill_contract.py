@@ -753,6 +753,14 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(required, compact)
         self.assertIn("gpt-5.6-sol", combined)
         self.assertIn("gpt-6-astra", combined)
+        for content in (self.skill, self.routing, self.delegation, self.cost):
+            self.assertIn(
+                "派出的gpt-6-astra子代理思考程度最高为high",
+                re.sub(r"\s+", "", content),
+            )
+        self.assertIsNone(
+            re.search(r"Astra\s*/\s*(?:xhigh|max|ultra)", combined, re.IGNORECASE)
+        )
         for forced_route in (
             "Sol父代理必须调用Astra",
             "所有视觉任务都调用Astra",
@@ -1609,13 +1617,13 @@ class SkillContractTests(unittest.TestCase):
         ]
         visible_summary = self.readme + descriptions + current_notes
         for behavior_term in (
-            "低成本 GPT-5.6",
-            "模型价差",
-            "正向总成本",
-            "内部硬条件",
-            "独立父任务",
-            "真实",
-            "可采用结果",
+            "gpt-6-astra",
+            "最高",
+            "high",
+            "落盘前拒绝",
+            "Sol 父代理",
+            "显式选择",
+            "启动事件",
         ):
             self.assertIn(behavior_term, visible_summary)
 

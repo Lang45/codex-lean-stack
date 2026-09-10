@@ -376,6 +376,16 @@ def validate_effort(value: str) -> str:
     return value
 
 
+def validate_subagent_model_effort(model: str, effort: str) -> tuple[str, str]:
+    model = validate_model(model)
+    effort = validate_effort(effort)
+    if model == "gpt-6-astra" and effort in {"xhigh", "max", "ultra"}:
+        raise SpecialistError(
+            "gpt-6-astra subagents support at most high reasoning effort"
+        )
+    return model, effort
+
+
 def validate_authority(value: str) -> str:
     if value not in AUTHORITIES:
         raise SpecialistError("authority must be read or write")
@@ -1955,8 +1965,7 @@ class SpecialistRegistry:
         display_name = validate_display_name(display_name)
         description = validate_description(description)
         role_instructions = validate_role_instructions(role_instructions)
-        model = validate_model(model)
-        effort = validate_effort(effort)
+        model, effort = validate_subagent_model_effort(model, effort)
         authority = validate_authority(authority)
         speed = resolve_ensure_speed(model, speed)
         terms = normalize_origin_terms(origin_terms)
