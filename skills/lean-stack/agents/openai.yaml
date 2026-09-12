@@ -1,4 +1,4 @@
 interface:
   display_name: "子代理调用"
   short_description: "按质量、成本、时间选择工具、四模型子代理与思考程度。"
-  default_prompt: "使用 $lean-stack。按质量→成本→时间选四模型/思考/速度并记 MODEL_ROUTE；长来源一人读，其余复用证据包。Astra 用于 GPT-5.6 有决定性差距或整项更省，普通视觉不触发。首条四行配置后接存活轮次/经验，不回显 run_id。"
+  default_prompt: "先用 $lean-simplify 为非平凡主任务选择最小完整步骤和最窄验证；只有步骤需要模型或子代理时再用 $lean-stack，派发任务卡须写入子代理首条可见回复的四行配置、存活轮次与经验状态。"

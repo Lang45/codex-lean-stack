@@ -73,7 +73,7 @@ py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace person
 “必须调用已安装的 `codex-lean-stack` 插件。”时视为满足，不重复追加、不改写原句：
 
 ```text
-默认调用已安装的 `codex-lean-stack` 插件；是否启动子代理仍由插件自身规则决定。
+默认调用已安装的 `codex-lean-stack` 插件：非平凡主任务先用 `$lean-simplify`，只有步骤需要模型或子代理时再用 `$lean-stack`。
 ```
 
 Windows 上本插件脚本和官方校验器都必须由 `py -3 -X utf8` 启动。即使当前 PowerShell、

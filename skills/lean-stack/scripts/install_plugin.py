@@ -20,7 +20,8 @@ from typing import Any, Callable, Iterator
 
 PLUGIN_NAME = "codex-lean-stack"
 DEFAULT_INVOCATION_LINE = (
-    "默认调用已安装的 `codex-lean-stack` 插件；是否启动子代理仍由插件自身规则决定。"
+    "默认调用已安装的 `codex-lean-stack` 插件：非平凡主任务先用 `$lean-simplify`，"
+    "只有步骤需要模型或子代理时再用 `$lean-stack`。"
 )
 USER_GLOBAL_INVOCATION_LINE = "必须调用已安装的 `codex-lean-stack` 插件。"
 USER_GLOBAL_INVOCATION_PREFIX = USER_GLOBAL_INVOCATION_LINE.removesuffix("。")

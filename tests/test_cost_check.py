@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,22 +216,32 @@ class CostCheckTests(unittest.TestCase):
                     now=dt.datetime(2026, 9, 2, tzinfo=UTC),
                 )
 
-    def test_state_symbolic_link_is_rejected_when_supported(self) -> None:
+    def test_state_link_metadata_is_rejected_before_reading(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = self.make_home(temporary)
             state_dir = home / "lean-stack"
             state_dir.mkdir()
-            target = home / "target.json"
-            target.write_text("{}\n", encoding="utf-8")
-            try:
-                os.symlink(target, state_dir / COST_CHECK.STATE_NAME)
-            except OSError as exc:
-                self.skipTest(f"symbolic links unavailable: {exc}")
-            with self.assertRaisesRegex(COST_CHECK.CostCheckError, "link or reparse"):
-                COST_CHECK.status(
-                    codex_home=home,
-                    now=dt.datetime(2026, 9, 2, tzinfo=UTC),
-                )
+            state_path = state_dir / COST_CHECK.STATE_NAME
+            state_path.write_text("不要读取\n", encoding="utf-8")
+            real_lstat = COST_CHECK.os.lstat
+
+            def link_for_state(path: Path):
+                if Path(path) == state_path:
+                    return SimpleNamespace(
+                        st_mode=COST_CHECK.stat.S_IFLNK,
+                        st_file_attributes=0,
+                        st_nlink=1,
+                    )
+                return real_lstat(path)
+
+            with mock.patch.object(COST_CHECK.os, "lstat", side_effect=link_for_state):
+                with self.assertRaisesRegex(
+                    COST_CHECK.CostCheckError, "link or reparse"
+                ):
+                    COST_CHECK.status(
+                        codex_home=home,
+                        now=dt.datetime(2026, 9, 2, tzinfo=UTC),
+                    )
 
     def test_cli_returns_json_and_a_nonzero_code_for_safe_skip(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

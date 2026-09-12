@@ -310,14 +310,23 @@ class PluginInstallTests(unittest.TestCase):
             (self.codex_home / ".AGENTS.md.lean-stack.lock").exists()
         )
 
-    def test_dangling_symlink_is_rejected_when_supported(self) -> None:
-        target = self.codex_home / "missing-target"
-        try:
-            self.agents.symlink_to(target)
-        except OSError as error:
-            self.skipTest(f"symlink creation unavailable: {error}")
-        with self.assertRaisesRegex(install_plugin.InstallError, "link or reparse point"):
-            install_plugin.ensure_default_invocation(self.codex_home)
+    def test_link_metadata_is_rejected_before_reading_agents(self) -> None:
+        self.agents.write_text("不要读取\n", encoding="utf-8")
+        real_lstat = install_plugin.os.lstat
+
+        def link_for_agents(path: Path):
+            if Path(path) == self.agents:
+                return SimpleNamespace(
+                    st_mode=install_plugin.stat.S_IFLNK,
+                    st_file_attributes=0,
+                )
+            return real_lstat(path)
+
+        with mock.patch.object(install_plugin.os, "lstat", side_effect=link_for_agents):
+            with self.assertRaisesRegex(
+                install_plugin.InstallError, "link or reparse point"
+            ):
+                install_plugin.ensure_default_invocation(self.codex_home)
 
     def test_marketplace_must_point_to_this_source_root(self) -> None:
         payload = json.loads(self.marketplace.read_text(encoding="utf-8"))

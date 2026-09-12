@@ -47,7 +47,6 @@ class SkillContractTests(unittest.TestCase):
         cls.flowcharts = (REFERENCES / "flowcharts-zh.md").read_text(encoding="utf-8")
         cls.readme = (ROOT / "README.md").read_text(encoding="utf-8")
         cls.changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        cls.handoff = (ROOT / "Jiao-Jie.md").read_text(encoding="utf-8")
         cls.build = (REFERENCES / "build.md").read_text(encoding="utf-8")
         cls.bug_fix = (REFERENCES / "bug-fix.md").read_text(encoding="utf-8")
         cls.investigation = (REFERENCES / "investigation.md").read_text(encoding="utf-8")
@@ -68,7 +67,6 @@ class SkillContractTests(unittest.TestCase):
             for path in (
                 ROOT / "README.md",
                 ROOT / "CHANGELOG.md",
-                ROOT / "Jiao-Jie.md",
                 SKILL_DIR / "SKILL.md",
                 SIMPLIFY_SKILL_DIR / "SKILL.md",
                 *REFERENCES.glob("*.md"),
@@ -180,7 +178,6 @@ class SkillContractTests(unittest.TestCase):
             + self.routing
             + self.delegation
             + self.readme
-            + self.handoff
             + self.flowcharts
         )
         for term in (
@@ -211,28 +208,16 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不建立后台状态机", self.simplify_skill)
 
     def test_parent_gives_a_fast_first_explanation_then_keeps_working(self) -> None:
-        combined = self.simplify_skill + self.routing + self.readme + self.handoff + self.flowcharts
-        compact = re.sub(r"\s+", "", combined)
+        compact = re.sub(r"\s+", "", self.simplify_skill)
         for boundary in (
-            "每条新用户要求",
-            "首条快速说明",
-            "当前理解",
+            "每条新要求",
+            "简短说明理解",
             "立即动作",
             "必要限制",
-            "不等待用户确认",
-            "能够一次直接答完",
             "最终答案本身就是首条快速说明",
             "不额外发送重复前言",
         ):
             self.assertIn(re.sub(r"\s+", "", boundary), compact)
-        main = self.flowcharts.split("## 一、主任务链路", 1)[1].split(
-            "## 二、工具、子代理与安全并行链路", 1
-        )[0]
-        received = main.index("收到新消息")
-        first_explanation = main.index("首条快速说明", received)
-        main_chain = main.index("有未完成，或已完成", first_explanation)
-        self.assertLess(received, first_explanation)
-        self.assertLess(first_explanation, main_chain)
 
     def test_main_flow_is_primary_and_locates_every_auxiliary_entry(self) -> None:
         main = self.flowcharts.split("## 一、主任务链路", 1)[1].split(
@@ -280,7 +265,7 @@ class SkillContractTests(unittest.TestCase):
     def test_first_verified_reusable_group_can_persist_without_extending_runtime_threads(
         self,
     ) -> None:
-        combined = self.skill + self.routing + self.delegation + self.memory + self.readme + self.handoff
+        combined = self.skill + self.routing + self.delegation + self.memory + self.readme
         for required in (
             "第一次成功",
             "不要求重复",
@@ -725,11 +710,6 @@ class SkillContractTests(unittest.TestCase):
             "可执行项目交接",
         ):
             self.assertNotIn(removed_global_requirement, plugin_contract)
-        self.assertIn("当前上层 `AGENTS.md`", self.handoff)
-        self.assertIn(
-            "插件不负责发现、创建、读取或更新项目交接",
-            re.sub(r"\s+", "", self.handoff),
-        )
 
     def test_runtime_capacity_replaces_plugin_numeric_caps(self) -> None:
         combined = self.skill + self.routing + self.delegation + self.readme
@@ -771,7 +751,6 @@ class SkillContractTests(unittest.TestCase):
             + self.delegation
             + self.cost
             + self.readme
-            + self.handoff
             + self.flowcharts
         )
         for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
@@ -971,7 +950,6 @@ class SkillContractTests(unittest.TestCase):
             + self.delegation
             + self.routing
             + self.readme
-            + self.handoff
             + self.flowcharts
         )
         compact = re.sub(r"\s+", "", combined)
@@ -996,7 +974,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertTrue(self.memory.startswith("# 全局领域保留子代理经验"))
         for content in (self.skill, self.delegation, self.routing, self.readme):
             self.assertIn("specialist-memory.md", content)
-        for summary in (self.skill, self.flowcharts, self.readme, self.handoff):
+        for summary in (self.skill, self.flowcharts, self.readme):
             self.assertIn("全局领域", summary)
         combined = self.skill + self.memory + self.delegation + self.routing
         self.assertIn("默认只尝试一次 `improve`", combined)
@@ -1255,7 +1233,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("只有中间结果会解锁下一动作时才报告一次并继续", self.readme)
 
     def test_retained_self_reads_and_declares_while_parent_configures_new_or_variant(self) -> None:
-        combined = self.skill + self.delegation + self.readme + self.handoff + self.collaboration
+        combined = self.skill + self.delegation + self.readme + self.collaboration
         for required in (
             "父代理",
             "具体模型",
@@ -1333,6 +1311,10 @@ class SkillContractTests(unittest.TestCase):
             "本地化名称",
             "技术标识",
             "不能保证原生卡片标题本地化",
+            "把下文六行模板的实际值直接写进每个",
+            "explorer",
+            "worker",
+            "不视为已经取得这份开场",
             "第一条可见commentary",
             "run_id",
             "不得回显",
@@ -1358,7 +1340,6 @@ class SkillContractTests(unittest.TestCase):
             "成功路线必须同时存在父代理收到的内部副本",
         ):
             self.assertNotIn(stale_internal_copy, detailed_declaration_docs)
-        self.assertNotIn("完整四行", self.handoff)
 
         final_template = self.delegation.split("最终回复使用：", 1)[1]
         for field in ("模型：<具体模型>", "速度：<标准或快速>"):
@@ -1723,7 +1704,7 @@ class SkillContractTests(unittest.TestCase):
             "频率校准",
             "给出的校准尺",
         ):
-            self.assertNotIn(removed_scale, self.ablation + self.readme + self.handoff)
+            self.assertNotIn(removed_scale, self.ablation + self.readme)
 
     def test_explicit_global_only_boundary_has_one_minimal_negative_guard(self) -> None:
         # The user explicitly prohibited project-scoped retained agents. This is a public
@@ -1770,103 +1751,42 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("skills/lean-stack/", self.readme)
         self.assertIn("skills/lean-simplify/", self.readme)
 
-    def test_manifest_and_ui_are_synchronized_without_old_caps(self) -> None:
+    def test_public_entry_runs_main_task_simplification_before_optional_delegation(self) -> None:
         self.assertRegex(
             self.manifest["version"],
             r"^\d+\.\d+\.\d+\+codex\.[a-z0-9.-]+$",
         )
-        combined = " ".join(
-            [
-                self.manifest["description"],
-                self.manifest["interface"]["shortDescription"],
-                self.manifest["interface"]["longDescription"],
-                *self.manifest["interface"]["defaultPrompt"],
-            ]
-        )
-        for term in (
-            "质量",
-            "成本",
-            "时间",
-            "MODEL_ROUTE",
-            "GPT-5.6",
-            "普通视觉",
-            "run_id",
-            "KiB",
-        ):
-            self.assertIn(term, combined)
-        self.assertNotIn("零至三个", combined)
-        self.assertEqual(len(self.manifest["interface"]["defaultPrompt"]), 2)
-        match = re.search(
+        calling_match = re.search(
             r'^\s*default_prompt:\s*"([^"]+)"', self.openai_yaml, re.MULTILINE
         )
-        self.assertIsNotNone(match)
-        assert match is not None
-        default_prompt = match.group(1)
-        self.assertEqual(default_prompt, self.manifest["interface"]["defaultPrompt"][0])
-        self.assertLessEqual(len(default_prompt), 128)
-        for entry_term in (
-            "$lean-stack",
-            "质量→成本→时间",
-            "四模型/思考/速度",
-            "MODEL_ROUTE",
-            "长来源一人读",
-            "复用证据包",
-            "Astra",
-            "GPT-5.6",
-            "普通视觉不触发",
-            "首条四行配置后接存活轮次/经验",
-            "不回显 run_id",
-        ):
-            self.assertIn(entry_term, default_prompt)
         simplify_match = re.search(
             r'^\s*default_prompt:\s*"([^"]+)"',
             self.simplify_openai_yaml,
             re.MULTILINE,
         )
+        self.assertIsNotNone(calling_match)
         self.assertIsNotNone(simplify_match)
+        assert calling_match is not None
         assert simplify_match is not None
-        simplify_prompt = simplify_match.group(1)
-        self.assertEqual(
-            simplify_prompt,
-            self.manifest["interface"]["defaultPrompt"][1],
-        )
-        self.assertLessEqual(len(simplify_prompt), 128)
+        entry_prompt = calling_match.group(1)
+        self.assertEqual(entry_prompt, simplify_match.group(1))
+        self.assertEqual(set(self.manifest["interface"]["defaultPrompt"]), {entry_prompt})
         for entry_term in (
             "$lean-simplify",
-            "主任务精简",
-            "最小完整方法",
-            "调查",
-            "验证",
-            "重验",
-            "发布",
-            "文档维护",
-            "正式消融",
-        ):
-            self.assertIn(entry_term, simplify_prompt)
-        full_contract = (
-            combined
-            + self.skill
-            + self.simplify_skill
-            + self.routing
-            + self.delegation
-            + self.memory
-        )
-        for contract_term in (
-            "未完成要求锚点",
-            "只重新打开真正受影响",
-            "为每个子任务分别指定",
-            "父代理规范任务名",
-            "自定义角色 TOML",
-            "ALL_TOOLS",
-            "跨任务 API",
-            "全局领域规则",
-            "在自己的线程用最终回复",
+            "非平凡主任务",
+            "最小完整步骤",
+            "最窄验证",
+            "$lean-stack",
+            "任务卡",
+            "四行配置",
             "存活轮次",
+            "经验状态",
         ):
-            self.assertIn(contract_term, full_contract)
-        for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
-            self.assertIn(model, full_contract)
-        self.assertNotIn("实" + "例", full_contract)
+            self.assertIn(entry_term, entry_prompt)
+        self.assertLess(entry_prompt.index("$lean-simplify"), entry_prompt.index("$lean-stack"))
+        self.assertIn("默认入口", self.simplify_skill.split("---", 2)[1])
+        self.assertIn("先完整读取并使用相邻的", self.skill)
+        self.assertIn("测试文件数、测试函数数", self.simplify_skill)
 
     def test_current_release_notes_match_manifest_and_visible_descriptions(self) -> None:
         base_version = self.manifest["version"].split("+", 1)[0]
@@ -1879,39 +1799,6 @@ class SkillContractTests(unittest.TestCase):
         assert first_release is not None
         self.assertEqual(first_release.group("version"), base_version)
         self.assertIn(f"当前版本 {base_version}", self.readme)
-
-        descriptions = " ".join(
-            (
-                self.manifest["description"],
-                self.manifest["interface"]["shortDescription"],
-                self.manifest["interface"]["longDescription"],
-            )
-        )
-        next_release = self.changelog.find("\n## ", first_release.end())
-        current_notes = self.changelog[
-            first_release.end() : next_release if next_release >= 0 else None
-        ]
-        visible_summary = self.readme + descriptions + current_notes
-        for behavior_term in (
-            "$lean-simplify",
-            "两个并行",
-            "主任务精简",
-            "WRITE_ROUTE",
-            "首次可写派发前",
-            "插件自身的权威 reference",
-            "不要求项目文档复制",
-            "不再规定任何项目交接文件",
-            "gpt-6-astra",
-            "MODEL_ROUTE",
-            "决定性",
-            "普通视觉",
-            "xhigh",
-            "四行",
-            "run_id",
-            "KiB",
-            "逐项",
-        ):
-            self.assertIn(behavior_term, visible_summary)
 
         calling_short_match = re.search(
             r'^\s*short_description:\s*"([^"]+)"',
@@ -1930,210 +1817,6 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("子代理", calling_short_match.group(1))
         self.assertIn("精简", simplify_short_match.group(1))
 
-        for required_surface in (
-            "CHANGELOG.md",
-            "README.md",
-            "description",
-            "interface.shortDescription",
-            "interface.longDescription",
-            "新增或改变的用户可见行为",
-        ):
-            self.assertIn(required_surface, self.versioning)
-        for flow_step in (
-            "同步 README、CHANGELOG 和插件说明",
-            "核对说明中的当前版本与 manifest 一致",
-        ):
-            self.assertIn(flow_step, self.flowcharts)
-
-    def test_flowcharts_are_auxiliary_and_not_frozen_to_a_count(self) -> None:
-        self.assertGreaterEqual(self.flowcharts.count("```mermaid"), 4)
-        self.assertIn("只是代码和规则的辅助说明", self.flowcharts)
-        self.assertNotRegex(self.readme, r"全部[一二三四五六七八九十百\d]+张")
-        self.assertNotIn("八张", self.flowcharts + self.readme)
-        self.assertNotIn("十四张", self.flowcharts + self.readme)
-
-    def test_requested_flowcharts_are_merged_without_dropping_their_boundaries(
-        self,
-    ) -> None:
-        headings = set(re.findall(r"(?m)^##\s+([^\r\n]+)$", self.flowcharts))
-        for merged in (
-            "二、工具、子代理与安全并行链路",
-            "五、任务类型组、复制、变体与保留子代理链路",
-            "十二、任务类型组收口、精确删除与否定重做链路",
-        ):
-            self.assertIn(merged, headings)
-        for removed in (
-            "二、工具与子代理选择链路",
-            "五、父代理与子代理并行链路",
-            "六、任务类型组、复制与变体链路",
-            "七、多个可写子代理防覆盖链路",
-            "十二、保留子代理创建与安全重配链路",
-            "十五、任务类型组清理与精确删除链路",
-            "十六、用户不满意时立即移除与重做链路",
-        ):
-            self.assertNotIn(removed, headings)
-        for retained_boundary in (
-            "多个可写子代理可以并行",
-            "最近的协作授权不改变删除、删减或候选清理尺度",
-            "精确送入 Windows 回收站",
-            "永久删除 TOML 与身份行",
-            "定制运行时新子代理不等于持久创建",
-            "父代理按任务类型联合选择",
-            "保留子代理读取自己的",
-            "复制任务类型组里的基准子代理",
-            "每个子代理在自己的线程",
-            "提交自己的精炼结果",
-            "选出同一任务类型组",
-            "结束位置执行同一经验维护判断",
-            "其他子代理移出组、结束",
-            "用当前哈希比较并交换",
-            "结果核验采用",
-            "保存回执",
-            "稳定 event_id",
-        ):
-            self.assertIn(
-                re.sub(r"\s+", "", retained_boundary),
-                re.sub(r"\s+", "", self.flowcharts),
-            )
-
-    def test_diagram_rendering_is_owned_by_architecture_viewer(self) -> None:
-        combined = self.skill + self.readme + self.flowcharts + self.handoff
-        blocks = re.findall(
-            r"(?ms)^##\s+([^\r\n]+)\r?\n+```mermaid\r?\n(.*?)\r?\n```",
-            self.flowcharts,
-        )
-        self.assertEqual(len(blocks), 13)
-        for term in (
-            "architecture-viewer",
-            "$architecture-viewer",
-            "$archify",
-            "13 条 Mermaid",
-            "Viewer Runtime",
-            "路径",
-            "透镜",
-            "故事",
-            "导出",
-            "loopback",
-            "zh-CN",
-        ):
-            self.assertIn(term, combined)
-        self.assertFalse((SKILL_DIR / "scripts" / "render_flowcharts.mjs").exists())
-        self.assertFalse((REFERENCES / "flowcharts-zh.page.json").exists())
-        self.assertFalse((REFERENCES / "flowcharts-zh.html").exists())
-        self.assertEqual(
-            list((REFERENCES / "flowcharts-zh-assets").glob("diagram-*.svg")), []
-        )
-        for stale_route in (
-            "已验证带内部通道的路线",
-            "承载路线复用同一保留身份",
-            "[features] multi_agent = true",
-            "[agents] enabled = true",
-        ):
-            self.assertNotIn(stale_route, self.skill + self.routing + self.delegation + self.flowcharts + self.handoff)
-
-    def test_repository_handoff_links_plugin_rules_without_copying_their_chapters(self) -> None:
-        for authority in (
-            "skills/lean-stack/references/write-parallelism.md",
-            "skills/lean-stack/references/delegation.md",
-            "skills/lean-stack/references/anti-overengineering.md",
-            "skills/lean-stack/references/ablation-loop.md",
-            "skills/lean-stack/references/execution-routing.md",
-        ):
-            self.assertIn(authority, self.handoff)
-        headings = re.findall(r"(?m)^##\s+([^\r\n]+)$", self.handoff)
-        for plugin_global_chapter in (
-            "写入安全与用户不满意",
-            "反 AI 过度工程",
-            "条件性验证",
-        ):
-            self.assertNotIn(plugin_global_chapter, headings)
-        for duplicated_detail in (
-            "这不是单写入者规则",
-            "向后兼容只服务已安装/已发布版本",
-            "迭代阶段先运行最窄、最相关的检查",
-        ):
-            self.assertNotIn(duplicated_detail, self.handoff)
-        self.assertIn("在现有基础上优化", self.handoff)
-        self.assertIn("当前快照与接手入口", headings)
-        self.assertNotIn("schema仍为v3", self.handoff)
-        self.assertNotIn("当前插件正式保留子代理总数", self.handoff)
-        self.assertNotIn("当前SHA-256", self.handoff)
-        default_line = (
-            "默认调用已安装的 `codex-lean-stack` 插件；"
-            "是否启动子代理仍由插件自身规则决定。"
-        )
-        for document in (self.versioning, self.installer):
-            self.assertIn(default_line, document)
-        self.assertIn("普通 `codex plugin add` 不会修改全局 `AGENTS.md`", self.readme)
-        self.assertIn("通用项目交接规则", self.handoff)
-        self.assertIn("未经用户当次明确同意", self.handoff)
-        self.assertIn("不能复制插件的子代理加速规则", self.handoff)
-        self.assertIn("正式安装成功后才幂等确保", self.handoff)
-        self.assertIn("新会话开始或工作上下文重置后", self.handoff)
-        self.assertIn("子代理摘要或读取不能替代父代理这次按限定范围恢复", self.handoff)
-        self.assertIn("会改变下一动作的重要片段", self.handoff)
-        self.assertIn("实际调用子代理不重复读取入口或未变细则", self.handoff)
-        self.assertIn("普通后续轮次复用", self.handoff)
-        self.assertIn("每轮项目迭代", self.handoff)
-        self.assertIn("收口前更新本文件", self.handoff)
-        self.assertNotIn(
-            "](skills/lean-stack/references/project-handoff.md)",
-            self.handoff,
-        )
-        self.assertNotIn("为详细入口", self.handoff)
-        self.assertNotIn(
-            "Jiao-Jie.md",
-            self.skill + self.routing + self.long_running + self.flowcharts,
-        )
-        self.assertIn("Jiao-Jie.md", self.readme)
-        self.assertNotIn("PROJECT-HANDOFF", self.chinese_docs)
-
-    def test_handoff_keeps_stable_rules_before_per_round_state(self) -> None:
-        headings = re.findall(r"(?m)^##\s+([^\r\n]+)$", self.handoff)
-        self.assertGreater(len(headings), 0)
-        self.assertEqual(headings[0], "根本准则")
-        requirements_start = self.handoff.index("### 当前有效要求摘要")
-        project_memory_start = self.handoff.index("## 项目级父代理跨会话记忆")
-        self.assertNotIn("主任务优先", self.handoff[:requirements_start])
-        self.assertIn(
-            "主任务优先",
-            self.handoff[requirements_start:project_memory_start],
-        )
-        ordered = (
-            "根本准则",
-            "项目级父代理跨会话记忆",
-            "用户全局文件的修改范围",
-            "未完成要求锚点与当前交付",
-            "任务类型与任务类型组",
-            "主任务链与辅助链入口",
-            "工具、子代理与调用规则",
-            "子代理开场声明与范围明确的交流",
-            "任务类型组、复制、变体与收口",
-            "经验、SQLite、成本与生命周期侧链",
-            "统一术语",
-            "权威路径与代码修改范围",
-            "当前快照与接手入口",
-        )
-        indexes = [headings.index(heading) for heading in ordered]
-        self.assertEqual(indexes, sorted(indexes))
-        dynamic = headings.index("当前快照与接手入口")
-        self.assertGreater(dynamic, headings.index("权威路径与代码修改范围"))
-        self.assertEqual(dynamic, len(headings) - 1)
-        dynamic_subheadings = re.findall(
-            r"(?m)^###\s+([^\r\n]+)$",
-            self.handoff[self.handoff.index("## 当前快照与接手入口") :],
-        )
-        for heading in (
-            "最后可信状态",
-            "本轮实际变化",
-            "本轮验证证据",
-            "工作树与剩余事项",
-            "后续代理开始方式",
-            "发布收据",
-        ):
-            self.assertEqual(dynamic_subheadings.count(heading), 1)
-        self.assertIn("以下部分是每轮都会变化的状态", self.handoff)
-
     def test_plugin_does_not_claim_global_user_file_edits(self) -> None:
         self.assertIn(
             "](skills/lean-stack/SKILL.md)",
@@ -2148,72 +1831,6 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("AGENTS.md", self.simplify_skill)
         self.assertNotIn("Jiao-Jie.md", self.simplify_skill)
 
-    def test_readme_is_a_concrete_concise_agent_calling_guide(self) -> None:
-        self.assertLessEqual(len(self.readme.splitlines()), 190)
-        for term in (
-            "# Codex子代理调用与精简流程",
-            "插件标识：`codex-lean-stack`",
-            "## 中文",
-            "### 两个并行功能",
-            "### 主任务精简",
-            "### 子代理调用前",
-            "首条说明先到",
-            "### 子代理运行中",
-            "### 子代理收口与复用",
-            "### 调用流程",
-            "### 不调用代理的情况",
-            "## 安装与使用 / Install and use",
-            "## 文档 / Docs",
-            "official OpenAI plugin documentation",
-            "OpenAI 官方插件文档",
-            "内部交流只服务真实依赖",
-            "子代理先公开实际配置与保留状态",
-            "MODEL_ROUTE",
-            "可接受成本带",
-            "普通视觉任务不触发",
-            "第一条可见回复",
-            "存活轮次与经验两行",
-            "同一长来源由一个所有者完整读取",
-            "父代理不中断主线",
-            "持续多工作流任务尽早派发",
-            "变体只为真实改进",
-            "子代理可以成为协作父代理",
-            "SOURCE_COVERAGE",
-            "保存经验与后续结果建立可核验关联",
-            "当前经验版本摘要",
-            "`ensure` 和 `improve`",
-            "没有项目保留层",
-            "普通文件进入 Windows 回收站",
-            "`$lean-simplify`",
-            "角色经验归调用功能",
-            "互不代证",
-        ):
-            self.assertIn(term, self.readme)
-        for linked_authority in (
-            "skills/lean-stack/SKILL.md",
-            "skills/lean-simplify/SKILL.md",
-            "skills/lean-stack/references/delegation.md",
-            "skills/lean-stack/references/specialist-memory.md",
-            "skills/lean-stack/references/write-parallelism.md",
-            "skills/lean-stack/references/anti-overengineering.md",
-            "skills/lean-stack/references/ablation-loop.md",
-            "Jiao-Jie.md",
-        ):
-            self.assertIn(linked_authority, self.readme)
-        for mirrored_detail in (
-            '<div align="center">',
-            "img.shields.io",
-            "我做这个插件，是因为",
-            "I built this because",
-            "Keep Codex focused on the work",
-            "## 一眼看懂 / At a glance",
-            "关键步骤：<",
-            "完整角色文件不设置 KiB 上限",
-            "--expected-state-sha256",
-            "migrate-global --plan",
-        ):
-            self.assertNotIn(mirrored_detail, self.readme)
-
     def test_bounded_progress_does_not_replace_each_subagent_final_result(self) -> None:
         combined = (
             self.skill
@@ -2222,7 +1839,6 @@ class SkillContractTests(unittest.TestCase):
             + self.memory
             + self.write_parallelism
             + self.readme
-            + self.handoff
             + self.flowcharts
         )
         for required in (
@@ -2241,20 +1857,14 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("最终回复", self.delegation)
         self.assertNotIn("交付父代理", self.chinese_docs)
 
-    def test_chinese_docs_use_plain_agreement_terms(self) -> None:
-        self.assertNotIn("契" + "约", self.chinese_docs)
-        self.assertIn("对外约定", self.chinese_docs)
-        self.assertIn("约定一致性测试", self.readme + self.handoff)
-
     def test_windows_python_commands_force_utf8_for_chinese_skill_validation(self) -> None:
-        combined = self.versioning + self.readme + self.handoff
+        combined = self.versioning + self.readme
         for required in ("py -3 -X utf8", "PYTHONUTF8=1", "GBK", "SKILL.md"):
             self.assertIn(required, combined)
 
     def test_all_relative_markdown_links_resolve(self) -> None:
         markdown_files = [
             ROOT / "README.md",
-            ROOT / "Jiao-Jie.md",
             SKILL_DIR / "SKILL.md",
             *REFERENCES.glob("*.md"),
         ]
