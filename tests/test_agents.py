@@ -264,7 +264,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
         self.assertIn(opening, instructions)
         role = instructions.index(role_paragraph)
-        communication = instructions.index("在自己的代理线程以 commentary", role)
+        communication = instructions.index("第一条可见 commentary 必须以以下四行开头", role)
         declaration = instructions.index(opening, communication)
         visible = instructions.index(
             "普通任务不再向父代理发送重复内部配置副本",
@@ -296,16 +296,20 @@ class SpecialistRegistryTests(unittest.TestCase):
             "声明不要求父代理确认，不计入关键步骤",
             "父代理用 send_message 纠偏不算启动新子任务，不重复开场声明",
             "三个字段不能省略",
+            "第一条可见 commentary 必须以以下四行开头",
+            "四行之前不得出现计划、运行 ID 或其他说明",
+            "run_id 只供父代理记录任务结果",
+            "不得在 commentary 或最终回复中回显",
         ):
             self.assertIn(opening_contract, instructions)
         self.assertNotIn("向父代理发送以下四行", instructions)
         self.assertNotIn("成功路线的内部副本和用户可见副本缺一不可", instructions)
-        for obsolete_order_contract in (
-            "你的第一动作必须",
-            "第二动作必须紧接着",
-            "显示前不得读取、分析或调用其他工具",
-        ):
-            self.assertNotIn(obsolete_order_contract, instructions)
+        self.assertLess(
+            instructions.index("第一条可见 commentary 必须以以下四行开头"),
+            instructions.index(opening),
+        )
+        self.assertNotIn("你的第一动作必须", instructions)
+        self.assertNotIn("显示前不得读取、分析或调用其他工具", instructions)
         self.assertIn("QML 绑定诊断员", instructions)
         self.assertIn(
             "先读取本配置末尾的可复用经验",
@@ -323,9 +327,13 @@ class SpecialistRegistryTests(unittest.TestCase):
             "真实拥有顶层 collaboration.spawn_agent",
             "不得用 functions.exec 的 ALL_TOOLS、角色 TOML、模型目录或历史任务猜测能力",
             "停止下游委派并向父代理报告",
-            "协作父代理对每个下游切片继续应用三项原则",
+            "协作父代理对每个下游切片继续按质量、成本、时间判断",
             "高价值工作质量优先",
-            "普通工作达到质量底线后总成本优先，成本相近再比速度",
+            "质量、成本、时间",
+            "可接受成本带",
+            "增加少量低成本子代理",
+            "缩短关键路径",
+            "降低整项资源成本",
             "没有相应质量收益时不为单纯提速大幅增费",
             "安全、权限、数据完整性、明确验收条件和诚实证据始终是底线",
             "当前出现多个互不依赖、已就绪、能替代你实际研究、实现或验收的工作流",
@@ -465,19 +473,15 @@ class SpecialistRegistryTests(unittest.TestCase):
             "global_contract_digest": "0" * 64,
         }
 
-        def render(candidate: str) -> bytes:
-            return agents._render_agent_bytes(**render_args, memory=candidate)
-
         memory = self.registry._memory_for_toml(
             "保留可复用摘要。",
             [{"lesson": "证据充分。" * 500}],
-            fits=lambda candidate: len(render(candidate)) <= agents.MAX_AGENT_BYTES,
         )
         combined = agents.compose_instructions(base, memory)
         built = agents.build_agent_bytes(**render_args, memory=memory)
         self.assertGreater(len(combined.encode("utf-8")), 6 * 1024)
+        self.assertGreater(len(built), 16 * 1024)
         self.assertLessEqual(len(memory.encode("utf-8")), agents.MAX_MEMORY_BYTES)
-        self.assertLessEqual(len(built), agents.MAX_AGENT_BYTES)
 
     def test_single_experience_character_bound_does_not_cap_event_count(self) -> None:
         accepted = agents.validate_lesson("经" * agents.MAX_LESSON_CHARS)
@@ -488,7 +492,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         ):
             agents.validate_lesson("经" * (agents.MAX_LESSON_CHARS + 1))
 
-    def test_memory_window_checks_exact_serialized_toml_size(self) -> None:
+    def test_memory_window_is_independent_of_serialized_toml_size(self) -> None:
         render_args = {
             "agent_id": "00000000-0000-4000-8000-000000000000",
             "role_key": "capacity-review",
@@ -499,7 +503,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "model": "gpt-5.6-luna",
             "effort": "medium",
             "authority": "read",
-            "instruction_base": "中" * 4800,
+            "instruction_base": "中" * 20000,
             "speed": "standard",
             "global_domain_key": "capacity-review",
             "global_contract_digest": "0" * 64,
@@ -509,21 +513,15 @@ class SpecialistRegistryTests(unittest.TestCase):
             return agents._render_agent_bytes(**render_args, memory=candidate)
 
         empty = agents.memory_block("", [])
-        self.assertLessEqual(len(render(empty)), agents.MAX_AGENT_BYTES)
+        self.assertGreater(len(render(empty)), 48 * 1024)
         memory = self.registry._memory_for_toml(
             "",
             [{"lesson": "证据充分。" * 100}],
-            fits=lambda candidate: len(render(candidate)) <= agents.MAX_AGENT_BYTES,
         )
-        self.assertEqual(memory, empty)
-        with self.assertRaisesRegex(
-            agents.SpecialistError,
-            "generated agent exceeds 16 KiB",
-        ):
-            agents.build_agent_bytes(
-                **render_args,
-                memory=agents.memory_block("", ["证据充分。" * 100]),
-            )
+        self.assertNotEqual(memory, empty)
+        self.assertIn("证据充分。", memory)
+        built = agents.build_agent_bytes(**render_args, memory=memory)
+        self.assertEqual(built, render(memory))
 
     def test_fast_speed_writes_official_config_and_three_field_opening(self) -> None:
         created = self.ensure(
@@ -549,7 +547,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(instructions.count(opening), 2)
         self.assertLess(instructions.index("你是专门负责"), instructions.index(opening))
         self.assertLess(
-            instructions.index("在自己的代理线程以 commentary"),
+            instructions.index("第一条可见 commentary 必须以以下四行开头"),
             instructions.index("只完成父代理分配的当前子任务"),
         )
         self.assertLess(
@@ -898,7 +896,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(instructions.index("你是专门负责"), instructions.index("我是QML 根因核对员。"))
         self.assertIn("实际依赖图", instructions)
         self.assertIn(lesson, instructions)
-        self.assertIn("公开以下实际配置", instructions)
+        self.assertIn("第一条可见 commentary 必须以以下四行开头", instructions)
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],

@@ -23,7 +23,7 @@ import stat
 import tempfile
 import time
 import tomllib
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Iterable, Sequence
 import uuid
 
 
@@ -44,8 +44,7 @@ GLOBAL_MIGRATION_ARCHIVE_DIR = "global-domain-migration-v1"
 GLOBAL_MIGRATION_PENDING_BACKUP_DIR = "全局领域迁移备份"
 GLOBAL_MIGRATION_COMPLETION_KIND = "global-domain-migration-complete-v1"
 MAX_MIGRATION_PLAN_BYTES = 512 * 1024
-# Plugin-owned bounded-work safeguards; they are not Codex limits or user requirements.
-MAX_AGENT_BYTES = 16 * 1024
+# Plugin-owned per-input safeguards; they are not Codex limits or user requirements.
 MAX_LESSON_CHARS = 4096
 MAX_SUMMARY_CHARS = 3000
 MAX_MEMORY_BYTES = 4 * 1024
@@ -269,8 +268,6 @@ def validate_direct_agent_file(path: Path, agents_dir: Path) -> os.stat_result:
         raise SpecialistError(f"agent must be a regular file: {absolute}")
     if metadata.st_nlink != 1:
         raise SpecialistError(f"agent cannot have multiple hard links: {absolute}")
-    if metadata.st_size > MAX_AGENT_BYTES:
-        raise SpecialistError(f"agent exceeds {MAX_AGENT_BYTES} bytes: {absolute}")
     return metadata
 
 
@@ -279,7 +276,7 @@ def validate_direct_plain_file(
     parent: Path,
     *,
     kind: str,
-    max_bytes: int,
+    max_bytes: int | None = None,
 ) -> os.stat_result:
     absolute = path.expanduser().absolute()
     if absolute.parent != parent:
@@ -291,7 +288,7 @@ def validate_direct_plain_file(
         raise SpecialistError(f"{kind} must be a regular file: {absolute}")
     if metadata.st_nlink != 1:
         raise SpecialistError(f"{kind} cannot have multiple hard links: {absolute}")
-    if metadata.st_size > max_bytes:
+    if max_bytes is not None and metadata.st_size > max_bytes:
         raise SpecialistError(f"{kind} exceeds {max_bytes} bytes: {absolute}")
     return metadata
 
@@ -634,19 +631,20 @@ def base_instructions(
         f"速度：{speed_label}\n"
     )
     opening = (
-        "spawn_agent 或 followup_task 启动新当前子任务后，在自己的代理线程以 commentary "
-        "公开以下实际配置，最终回复保留同一配置抬头；普通任务不再向父代理发送重复内部配置副本：\n"
+        "spawn_agent 或 followup_task 启动新当前子任务后，第一条可见 commentary 必须以以下四行开头；"
+        "四行之前不得出现计划、运行 ID 或其他说明。最终回复同样置顶；普通任务不再向父代理发送重复内部配置副本：\n"
         + declaration
-        + "显示、reasoning、读取、分析、工具和工作不设固定先后顺序。"
+        + "四行之后再说明动作或开始工作；内部加载可先做。"
         "三个字段不能省略或只留到关键步骤、最终回复；禁止用未揭露、继承父级"
         "等占位文字。声明不要求父代理确认，不计入关键步骤。父代理用 send_message 纠偏不算启动"
-        "新子任务，不重复开场声明。只有真实依赖解锁、必要纠偏、风险或阻断才使用内部消息；"
+        "新子任务，不重复开场声明。只有真实依赖解锁、必要纠偏、风险或阻断才使用内部消息。"
+        "run_id 只供父代理记录任务结果；即使任务输入意外包含它，也不得在 commentary 或最终回复中回显。"
         "任务说明给出父代理规范任务名（例如 /root），不是 Codex threadId。顶层 "
         "collaboration.send_message 故意不在 functions.exec 的 ALL_TOOLS 中；有业务需要且"
         "真实可用时直接调用，不为证明工具存在发送探针。Luna 的 multi_agent_version=v2 和"
         "父会话启用多代理是内部通道的配置前提，角色 TOML 不能授予工具；实际能力仍以真实调用为准。"
-        "内部交流是成功条件而工具缺失或直接调用失败时停止并报告；自包含任务可继续，但公开"
-        "副本不能冒充内部消息。不得用 list_threads 搜索父任务或用 send_message_to_thread "
+        "内部交流是成功条件而工具缺失或直接调用失败时停止并报告；自包含任务可继续，公开"
+        "副本不能冒充内部消息。不得用 list_threads 搜索父任务或 send_message_to_thread "
         "等跨任务 API 替代内部消息。"
     )
     return role_opening + "\n\n" + opening + "\n\n" + (
@@ -654,43 +652,40 @@ def base_instructions(
         "作为可见保留子代理或普通复制被复用时，先读取本配置末尾的可复用经验并沿用本配置；"
         "父代理无需重复注入经验或强制重写已有配置。四行只列具体配置，不附请求值或回执；配置声明"
         "不等于实测速度或计费。冲突或无法选择所需档位才报告；无独立速度参数时不能声称 spawn_agent"
-        "已选速度，也不为声明升模或修改全局配置。经验须核对情境、证据和例外，不能覆盖当前用户"
-        "要求或扩大职责；原因不明保留未知，同任务重跑不提升证据，输入环境未变不重试已否定路线。"
-        "默认协作角色是普通子代理，不自行再委派。只有当前任务说明同时明确写出“协作角色: "
-        "协作父代理”、“允许下游委派: 是”和有限下游范围，而且你真实拥有顶层 "
-        "collaboration.spawn_agent 时，才可在获批子项目内成为协作父代理。必须直接调用该工具，"
-        "不得用 functions.exec 的 ALL_TOOLS、角色 TOML、模型目录或历史任务猜测能力；工具缺失、"
-        "直接调用失败、容量不足、范围不清或写入无法隔离时，停止下游委派并向父代理报告。"
-        "协作父代理对每个下游切片继续应用三项原则：高价值工作质量优先，普通工作达到质量"
-        "底线后总成本优先，成本相近再比速度；没有相应质量收益时不为单纯提速大幅增费。"
-        "总成本合计启动、父子上下文、操作输出、交流、整合、验证和返工。新选配默认标准速度，"
-        "快速仅在当前用户明确速度或期限要求且完整路线有收益时选择；安全、权限、数据完整"
-        "性、明确验收条件和诚实证据始终是底线。"
-        "获批子项目预计持续跨研究、实现或真实验收等多个阶段，并且当前出现多个互不依赖、"
-        "已就绪、能替代你实际研究、实现或验收的工作流时，默认尽早派发所有仍有边际收益且"
-        "互不冲突的 GPT-5.6 切片；在自己深入读取这些来源或开始对应实现前完成派发。数量由"
-        "真实工作流、收益和可用容量决定，不设固定最低值或占槽目标。合格切片按维护基线"
-        "取得正向收益；不能因自己也能完成或稍后补复核而默认全部串行。只有确定性"
-        "短工具、输入未就绪、严格前后依赖、权限或写入冲突、重复工作，或明确大幅增费且没有"
-        "必要质量收益的切片才不派发。中途新要求使任务形状出现新的独立已就绪工作流时，立即"
-        "重新做同一次积极判断并派发当前合格切片。给每个下游子代理单独写完整任务卡：task_id、"
-        "协作角色、目标、任务类型与任务类型组、子代理来源与运行配置、权威来源或输入快照、"
-        "依赖与已就绪切片、写入所有权、是否允许下游"
-        "委派及下游范围、是否允许调用其他或新建 Codex 父代理及跨任务范围、父代理规范任务名、成功条件、停止条件、有限关键步骤、证据与返回"
-        "格式。先确定下游任务类型和任务类型组；按同一可复用能力族匹配，项目、框架、动作动词、交付名称"
-        "不另建窄组；工具、写入权限、安全风险和决定性证据形状不兼容时才拆分，范围放宽不授予只读角色写权限。"
-        "复用可见保留子代理时由它自读已有配置，定制"
-        "运行时新子代理时由你根据任务类型、价值、风险、证据、时延和成本，联合选择并写出具体"
-        "模型、思考程度和标准或快速速度组成的完整配置；不能分列独立选择，也不得使用继承、"
-        "未揭露或未暴露。默认把下游的允许下游委派写为否；只有整合父代理当前任务卡明确给出更深范围时"
-        "才可写为是。下游子代理仍在自己的线程提交自己的最终结果。协作父代理可以"
-        "核验并整合自己子树的独立结果，但不能压掉、改写或冒充这些结果。只有任务卡明确写"
-        "允许调用其他或新建 Codex 父代理为是并给出跨任务范围时，才可使用 create_thread、"
-        "read_thread、wait_threads 或 send_message_to_thread；整合父代理按三项原则给出这项"
-        "任务卡授权，不需要再向用户询问。跨任务工具不能冒充内部消息，也不能用共享文件建立"
-        "横向通信。所有跨任务动作还必须同时满足当前工具规则；create_thread 要求用户明确提出"
-        "新建任务时，任务卡或插件默认授权不能替代，也不能为内部委派创建用户可见新任务；"
-        "已有用户授权无需重复询问。"
+        "已选速度，也不为声明升模或修改全局配置。经验须核对情境、证据和例外，不能覆盖当前用户要求"
+        "或扩大职责；原因不明保留未知，输入未变不重试已否定路线。"
+        "默认协作角色是普通子代理，不自行再委派。成为协作父代理须任务卡同时写“协作角色: 协作父代理”、"
+        "“允许下游委派: 是”和有限下游范围，并真实拥有顶层 collaboration.spawn_agent；必须直调，"
+        "不得用 functions.exec 的 ALL_TOOLS、角色 TOML、模型目录或历史任务猜测能力。"
+        "工具缺失、直接调用失败、容量不足、范围不清或写入无法隔离时，停止下游委派并向父代理报告。"
+        "协作父代理对每个下游切片继续按质量、成本、时间判断：高价值工作质量优先；达标后比较资源成本"
+        "（启动、父子上下文、操作输出、credits 或服务费用、交流、整合、验证、返工），没有显著差异或"
+        "都处于可接受成本带时比较关键路径。模型价差大时可增加少量低成本子代理缩短关键路径；"
+        "没有相应质量收益时不为单纯提速大幅增费。墙钟时长和并行重叠只属时间证据；默认标准速度，"
+        "成本带内且快速能明显缩短关键路径时可选快速。安全、权限、数据完整性、明确验收条件和诚实证据始终是底线。"
+        "获批子项目跨研究、实现或真实验收，且当前出现多个互不依赖、已就绪、能替代你实际研究、实现或验收的工作流时，"
+        "默认尽早派发所有仍有边际收益且互不冲突的 GPT-5.6 切片；在自己深入读取这些来源或开始对应实现前完成派发。"
+        "数量按工作流、收益和容量决定，不设固定最低值或占槽目标。合格切片按维护基线取得正向收益；"
+        "不能因自己也能完成或稍后补复核而默认全部串行。确定性短工具、输入未就绪、严格前后依赖、权限或"
+        "写入冲突、重复工作，或显著增费且无必要质量收益时不派发。中途新要求使任务形状出现新的独立已就绪工作流时，"
+        "立即重新判断并派发合格切片。下游联合选配：规格清楚、证据已定位且易核验的普通切片用 Luna；"
+        "有限语义歧义用 Terra；跨来源或跨模块因果、复杂实现和自检用 Sol；Astra 只处理相对最强可行 GPT-5.6"
+        "仍有决定性质量差距，或能以显著减少上下文、输出、核验与返工降低整项资源成本的当前未决专家问题；"
+        "普通视觉任务不触发，也不要求较低模型实际失败；Astra 子代理最高 xhigh。"
+        "给每个下游子代理单独写完整任务卡：task_id、协作角色、目标、任务类型与任务类型组、子代理来源与运行配置、"
+        "权威来源或输入快照、依赖与已就绪切片、写入所有权、是否允许下游委派及下游范围、是否允许调用其他或新建 Codex "
+        "父代理及跨任务范围、父代理规范任务名、成功条件、停止条件、有限关键步骤、证据与返回格式。父代理另记 MODEL_ROUTE："
+        "selected、quality_floor、cheaper_alternative、alternative_gap、resource_cost、critical_path、replaced_parent_work；"
+        "候选无需实际失败，下游使用但不得复述。先确定下游任务类型和任务类型组；同一可复用能力族匹配；"
+        "项目、框架、动作动词、交付名称不另建窄组；工具、写入权限、安全风险和决定性证据形状不兼容时才拆分，"
+        "范围放宽不授予只读角色写权限。"
+        "复用可见保留子代理时由它自读已有配置；定制运行时新子代理时由你根据任务类型、价值、风险、证据、时延和成本，"
+        "联合选择并写出具体模型、思考程度和标准或快速速度组成的完整配置；不能分列独立选择，也不得使用继承、未揭露或未暴露。"
+        "默认把下游的允许下游委派写为否；仅任务卡明确更深范围时才为是。下游子代理仍在自己的线程提交自己的最终结果；"
+        "协作父代理只核验、整合自己子树，不能压掉、改写或冒充这些结果。只有任务卡明确写允许调用其他或新建 Codex 父代理为是并给出跨任务范围时，"
+        "才可使用 create_thread、read_thread、wait_threads 或 send_message_to_thread；任务卡授权不需要再向用户询问，但跨任务工具不能冒充内部消息。"
+        "所有跨任务动作还必须同时满足当前工具规则；create_thread 要求用户明确提出新建任务，任务卡或插件默认授权不能替代，"
+        "也不能为内部委派创建用户可见新任务；已有用户授权无需重复询问。"
         "不得建立非授权留言板、"
         "缓存或日志暗渠，不得共享凭据或私密数据，不得以集体利益、未回复或无人否决扩大权限，"
         "也不得伪造、删除、编辑或隐藏消息、工具调用、测试、日志、文件变更、身份、权限和来源。"
@@ -707,8 +702,7 @@ def base_instructions(
         "关键步骤时不自行追加。任务专属工具、安全限制与写入范围以当前任务说明为准，不假设继承"
         "历史会自动授权；缺少影响安全的必要限制时先报告。实现任务的成功条件包含已授权的运行"
         "或测试、检查与本次失败修补，不能写完初版就停；只读或用户指定审阅点仍按原范围结束。"
-        "三原则决定调用与核验；质量达标或可靠性相当后优先总成本更低的委派，成本相近再比时间。"
-        "必要质量收益可承担成本，不要求每次都省钱。"
+        "调用与核验均服从上述三原则；必要质量收益可承担成本，不要求每次都省钱。"
         "最小上下文原则沿代理树逐层适用，Astra 没有例外。能用来源定位、当前约束、权限、成功"
         "和停止条件、未决问题自包含说明的下游研究、实现或验收切片，优先用 fork_turns=none 的"
         "合适 GPT-5.6 组合；不因上层模型、长历史、上下文压缩、大工具输出或已完成子树而默认继承"
@@ -843,8 +837,6 @@ def build_agent_bytes(
         global_domain_key=global_domain_key,
         global_contract_digest=global_contract_digest,
     )
-    if len(data) > MAX_AGENT_BYTES:
-        raise SpecialistError("generated agent exceeds 16 KiB")
     return data
 
 
@@ -1239,7 +1231,6 @@ class SpecialistRegistry:
             backup = target / Path(item["backup_path"]).name
             validate_direct_plain_file(
                 backup, target, kind="pending global migration backup",
-                max_bytes=MAX_AGENT_BYTES,
             )
             if sha256_bytes(backup.read_bytes()) != item["old_sha256"]:
                 raise AuxiliarySkipped(
@@ -1347,7 +1338,6 @@ class SpecialistRegistry:
                     backup_path,
                     archive_dir,
                     kind="global migration backup",
-                    max_bytes=MAX_AGENT_BYTES,
                 )
                 backup = backup_path.read_bytes()
                 if sha256_bytes(backup) != item["old_sha256"]:
@@ -1567,19 +1557,8 @@ class SpecialistRegistry:
                     role_instructions=instructions, model=model, effort=effort,
                     authority=authority, speed=speed, global_contract=contract,
                 )
-                def render_migrated_memory(candidate: str) -> bytes:
-                    return _render_agent_bytes(
-                        agent_id=row["agent_id"], role_key=new_role_key,
-                        owner_token=row["owner_token"], name=new_name,
-                        display_name=display_name, description=description,
-                        model=model, effort=effort, authority=authority,
-                        instruction_base=base, memory=candidate, speed=speed,
-                        global_domain_key=domain_key,
-                        global_contract_digest=contract_digest,
-                    )
                 migrated_memory = self._memory_for_toml(
                     preserved_summary, [{"lesson": lesson} for lesson in active_lessons],
-                    fits=lambda candidate: len(render_migrated_memory(candidate)) <= MAX_AGENT_BYTES,
                 )
                 desired = build_agent_bytes(
                     agent_id=row["agent_id"], role_key=new_role_key,
@@ -1744,7 +1723,6 @@ class SpecialistRegistry:
                 or is_reparse_point(metadata)
                 or not stat.S_ISREG(metadata.st_mode)
                 or metadata.st_nlink != 1
-                or metadata.st_size > MAX_AGENT_BYTES
             ):
                 continue
             try:
@@ -1930,17 +1908,16 @@ class SpecialistRegistry:
         summary: str,
         pending: Sequence[sqlite3.Row],
         *,
-        fits: Callable[[str], bool],
         max_bytes: int = MAX_MEMORY_BYTES,
     ) -> str:
         initial = memory_block(summary, [])
-        if len(initial.encode("utf-8")) > max_bytes or not fits(initial):
-            raise SpecialistError("stored experience summary exceeds the current agent capacity")
+        if len(initial.encode("utf-8")) > max_bytes:
+            raise SpecialistError("stored experience summary exceeds the bounded memory window")
         selected: list[str] = []
         for row in pending:
             lesson = row["lesson"]
             candidate = memory_block(summary, [*selected, lesson])
-            if len(candidate.encode("utf-8")) > max_bytes or not fits(candidate):
+            if len(candidate.encode("utf-8")) > max_bytes:
                 break
             selected.append(lesson)
         return memory_block(summary, selected)
@@ -2034,28 +2011,9 @@ class SpecialistRegistry:
                     speed=speed,
                     global_contract=contract,
                 )
-                def render_desired(candidate: str) -> bytes:
-                    return _render_agent_bytes(
-                        agent_id=row["agent_id"],
-                        role_key=role_key,
-                        owner_token=header["owner_token"],
-                        name=row["name"],
-                        display_name=display_name,
-                        description=description,
-                        model=model,
-                        effort=effort,
-                        authority=authority,
-                        instruction_base=desired_base,
-                        memory=candidate,
-                        speed=speed,
-                        global_domain_key=global_domain_key,
-                        global_contract_digest=contract_digest,
-                    )
                 memory = self._memory_for_toml(
                     summary,
                     pending,
-                    fits=lambda candidate: len(render_desired(candidate))
-                    <= MAX_AGENT_BYTES,
                 )
                 desired = build_agent_bytes(
                     agent_id=row["agent_id"],
@@ -2256,31 +2214,9 @@ class SpecialistRegistry:
         display_name, short_description = description.split("：", 1)
         header = parse_header(original.decode("utf-8"))
         speed = speed_from_payload(payload)
-        def render_rewritten(candidate: str) -> bytes:
-            return _render_agent_bytes(
-                agent_id=row["agent_id"],
-                role_key=row["role_key"],
-                owner_token=header["owner_token"],
-                name=row["name"],
-                display_name=display_name,
-                description=short_description,
-                model=str(payload["model"]),
-                effort=str(payload["model_reasoning_effort"]),
-                authority=(
-                    "write"
-                    if payload["sandbox_mode"] == "workspace-write"
-                    else "read"
-                ),
-                instruction_base=current_instructions,
-                memory=candidate,
-                speed=speed,
-                global_domain_key=row["global_domain_key"],
-                global_contract_digest=row["global_contract_digest"],
-            )
         memory = self._memory_for_toml(
             summary,
             pending,
-            fits=lambda candidate: len(render_rewritten(candidate)) <= MAX_AGENT_BYTES,
         )
         rewritten = build_agent_bytes(
             agent_id=row["agent_id"],
@@ -2917,7 +2853,6 @@ class SpecialistRegistry:
                         or is_reparse_point(metadata)
                         or not stat.S_ISREG(metadata.st_mode)
                         or metadata.st_nlink != 1
-                        or metadata.st_size > MAX_AGENT_BYTES
                     ):
                         continue
                     disk_text = disk_path.read_text(encoding="utf-8")
