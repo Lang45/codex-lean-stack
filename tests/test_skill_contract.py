@@ -1026,7 +1026,6 @@ class SkillContractTests(unittest.TestCase):
             + self.write_parallelism
             + self.memory
             + self.readme
-            + self.handoff
         )
         for required in (
             "立即停止该子代理",
@@ -1056,10 +1055,58 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertNotIn(removed, combined)
 
-    def test_semantic_review_is_conditional_not_a_universal_main_chain(self) -> None:
-        self.assertIn("只验证当前改动、公共约定和风险可能影响的对象", self.skill)
-        self.assertIn("只重跑受影响检查", self.routing)
+    def test_conditional_validation_is_a_direct_plugin_contract(self) -> None:
+        for required in (
+            "## 七、条件性验证",
+            "每次改动只运行最窄、最可能失败的检查",
+            "失败后只展开失败项，修复后只重跑受影响检查",
+            "只有代码、配置、公共行为或高风险范围变化时",
+            "停止追加同类静态意见",
+            "复用通过证据不能跳过仍在活动清单中的未完成验收",
+            "只运行当前改动和风险需要的最终检查",
+            "多个短命令优先工具级并发",
+            "代码再次变化后只补跑受影响检查",
+        ):
+            self.assertIn(required, self.routing)
+        self.assertIn(
+            "条件性验证](references/execution-routing.md#七、条件性验证)",
+            self.skill,
+        )
+        self.assertIn(
+            "子代理自报、编译或模拟结果冒充真实运行证据",
+            self.routing,
+        )
+        self.assertIn("纯文档默认核对内容与链接", self.skill)
         self.assertIn("测试只覆盖受影响范围", self.readme)
+
+    def test_writable_parallelism_has_plugin_trigger_and_parent_receipt(self) -> None:
+        for content in (self.skill, self.routing, self.delegation):
+            self.assertIn("WRITE_ROUTE", content)
+        self.assertIn(
+            "预计两个或更多子代理将同时修改文件或共享状态时",
+            self.skill,
+        )
+        self.assertIn("首次可写派发前", self.skill + self.delegation)
+        for field in (
+            "writers",
+            "ranges",
+            "hotspots",
+            "isolation",
+            "rollback_basis",
+            "affected_checks",
+        ):
+            self.assertIn(f"`{field}`", self.write_parallelism)
+        for consumer in (
+            "任务说明消费",
+            "用户否定候选或",
+            "汇合与最终说明消费",
+            "范围、热点或基线变化时更新同一条收据",
+        ):
+            self.assertIn(consumer, self.write_parallelism)
+        self.assertIn(
+            "可写并行与用户否定、反过度工程、消融和条件性验证属于插件全局能力",
+            self.project_handoff,
+        )
 
     def test_parent_parallelism_permissions_and_source_coverage_remain(self) -> None:
         combined = self.skill + self.delegation + self.write_parallelism + self.readme
@@ -1164,7 +1211,6 @@ class SkillContractTests(unittest.TestCase):
             + self.memory
             + self.readme
             + self.flowcharts
-            + self.handoff
         )
         for required in (
             "普通文件进入 Windows 回收站",
@@ -1172,7 +1218,7 @@ class SkillContractTests(unittest.TestCase):
             "累计第二次明确失败",
             "永久移除",
             "身份",
-            "运行记录",
+            "全部成功/失败运行",
             "原始经验",
             "纠正事件",
             "摘要",
@@ -1680,6 +1726,10 @@ class SkillContractTests(unittest.TestCase):
         ]
         visible_summary = self.readme + descriptions + current_notes
         for behavior_term in (
+            "WRITE_ROUTE",
+            "首次可写派发前",
+            "插件全局合同",
+            "项目交接只",
             "gpt-6-astra",
             "MODEL_ROUTE",
             "决定性",
@@ -1805,38 +1855,37 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertNotIn(stale_route, self.skill + self.routing + self.delegation + self.flowcharts + self.handoff)
 
-    def test_handoff_contains_only_the_current_drift_guards(self) -> None:
-        compact_handoff = re.sub(r"\s+", "", self.handoff)
-        for term in (
-            "只有全局领域保留，没有项目保留层",
-            "跨任务、跨项目、跨会话",
-            "每个全局领域任务类型组各保留一个休眠配置",
-            "模型+思考程度+速度",
-            "migrate-global",
-            "来源词只用于",
-            "不写入SQLite、TOML、规则或完成收据",
-            "anti-overengineering.md",
-            "现实消费者",
-            "已经决定不实现的假想功能",
-            "第二事实源",
-            "schema v5",
-            "agents.py status",
-            "只追加原始经验和纠正事件",
-            "经验数量不封顶",
-            "经验摘要压缩",
-            "这不是单写入者规则",
-            "不设置同时调用数字",
-            "不在每个任务重新搜索费率",
-            "链路图只是辅助说明",
-            "未完成要求锚点",
-            "此前已经交付的完成项不重复总结",
-            "Windows回收站",
-            "待删文件",
+    def test_handoff_links_plugin_global_rules_without_copying_their_chapters(self) -> None:
+        for authority in (
+            "skills/lean-stack/references/write-parallelism.md",
+            "skills/lean-stack/references/delegation.md",
+            "skills/lean-stack/references/anti-overengineering.md",
+            "skills/lean-stack/references/ablation-loop.md",
+            "skills/lean-stack/references/execution-routing.md",
         ):
-            self.assertIn(re.sub(r"\s+", "", term), compact_handoff)
-        self.assertNotIn("schema仍为v3", compact_handoff)
-        self.assertNotIn("当前插件正式保留子代理总数", compact_handoff)
-        self.assertNotIn("当前SHA-256", compact_handoff)
+            self.assertIn(authority, self.handoff)
+        headings = re.findall(r"(?m)^##\s+([^\r\n]+)$", self.handoff)
+        for plugin_global_chapter in (
+            "写入安全与用户不满意",
+            "反 AI 过度工程",
+            "条件性验证",
+        ):
+            self.assertNotIn(plugin_global_chapter, headings)
+        for duplicated_detail in (
+            "这不是单写入者规则",
+            "向后兼容只服务已安装/已发布版本",
+            "迭代阶段先运行最窄、最相关的检查",
+        ):
+            self.assertNotIn(duplicated_detail, self.handoff)
+        self.assertIn(
+            "可写并行与用户否定、反过度工程、消融和条件性验证属于插件全局能力",
+            self.project_handoff,
+        )
+        self.assertIn("在现有基础上优化", self.handoff)
+        self.assertIn("当前快照与接手入口", headings)
+        self.assertNotIn("schema仍为v3", self.handoff)
+        self.assertNotIn("当前插件正式保留子代理总数", self.handoff)
+        self.assertNotIn("当前SHA-256", self.handoff)
         default_line = (
             "默认调用已安装的 `codex-lean-stack` 插件；"
             "是否启动子代理仍由插件自身规则决定。"
@@ -1862,6 +1911,13 @@ class SkillContractTests(unittest.TestCase):
         headings = re.findall(r"(?m)^##\s+([^\r\n]+)$", self.handoff)
         self.assertGreater(len(headings), 0)
         self.assertEqual(headings[0], "根本准则")
+        requirements_start = self.handoff.index("### 当前有效要求摘要")
+        project_memory_start = self.handoff.index("## 项目级父代理跨会话记忆")
+        self.assertNotIn("主任务优先", self.handoff[:requirements_start])
+        self.assertIn(
+            "主任务优先",
+            self.handoff[requirements_start:project_memory_start],
+        )
         ordered = (
             "根本准则",
             "项目级父代理跨会话记忆",
@@ -1872,25 +1928,29 @@ class SkillContractTests(unittest.TestCase):
             "工具、子代理与调用规则",
             "子代理开场声明与范围明确的交流",
             "任务类型组、复制、变体与收口",
-            "写入安全与用户不满意",
-            "反 AI 过度工程",
-            "条件性验证",
             "经验、SQLite、成本与生命周期侧链",
             "统一术语",
             "权威路径与代码修改范围",
-            "运行环境状态快照",
+            "当前快照与接手入口",
+        )
+        indexes = [headings.index(heading) for heading in ordered]
+        self.assertEqual(indexes, sorted(indexes))
+        dynamic = headings.index("当前快照与接手入口")
+        self.assertGreater(dynamic, headings.index("权威路径与代码修改范围"))
+        self.assertEqual(dynamic, len(headings) - 1)
+        dynamic_subheadings = re.findall(
+            r"(?m)^###\s+([^\r\n]+)$",
+            self.handoff[self.handoff.index("## 当前快照与接手入口") :],
+        )
+        for heading in (
+            "最后可信状态",
             "本轮实际变化",
             "本轮验证证据",
             "工作树与剩余事项",
             "后续代理开始方式",
-        )
-        indexes = [headings.index(heading) for heading in ordered]
-        self.assertEqual(indexes, sorted(indexes))
-        dynamic = headings.index("运行环境状态快照")
-        self.assertGreater(dynamic, headings.index("权威路径与代码修改范围"))
-        for heading in ("本轮实际变化", "本轮验证证据", "工作树与剩余事项"):
-            self.assertGreater(headings.index(heading), dynamic)
-            self.assertEqual(headings.count(heading), 1)
+            "发布收据",
+        ):
+            self.assertEqual(dynamic_subheadings.count(heading), 1)
         self.assertIn("以下部分是每轮都会变化的状态", self.handoff)
 
     def test_subagent_acceleration_stays_in_the_plugin_not_global_agents(self) -> None:
