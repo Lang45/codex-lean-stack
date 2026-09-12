@@ -1,4 +1,4 @@
 interface:
   display_name: "主任务精简"
   short_description: "精简主任务步骤、验证和维护面，按需进行显式消融。"
-  default_prompt: "先用 $lean-simplify 为非平凡主任务选择最小完整步骤和最窄验证；只有步骤需要模型或子代理时再用 $lean-stack，派发任务卡须写入子代理首条可见回复的四行配置、存活轮次与经验状态。"
+  default_prompt: "使用 $lean-simplify 独立收窄非平凡主任务的必要步骤、验证和维护面；不得等待或阻断 $lean-stack 的子代理调用。"

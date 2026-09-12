@@ -1751,7 +1751,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("skills/lean-stack/", self.readme)
         self.assertIn("skills/lean-simplify/", self.readme)
 
-    def test_public_entry_runs_main_task_simplification_before_optional_delegation(self) -> None:
+    def test_public_entries_keep_simplification_and_delegation_independent(self) -> None:
         self.assertRegex(
             self.manifest["version"],
             r"^\d+\.\d+\.\d+\+codex\.[a-z0-9.-]+$",
@@ -1768,24 +1768,43 @@ class SkillContractTests(unittest.TestCase):
         self.assertIsNotNone(simplify_match)
         assert calling_match is not None
         assert simplify_match is not None
-        entry_prompt = calling_match.group(1)
-        self.assertEqual(entry_prompt, simplify_match.group(1))
-        self.assertEqual(set(self.manifest["interface"]["defaultPrompt"]), {entry_prompt})
+        calling_prompt = calling_match.group(1)
+        simplify_prompt = simplify_match.group(1)
+        self.assertNotEqual(calling_prompt, simplify_prompt)
+        for entry_prompt in (calling_prompt, simplify_prompt):
+            self.assertIn(entry_prompt, self.manifest["interface"]["defaultPrompt"])
         for entry_term in (
-            "$lean-simplify",
-            "非平凡主任务",
-            "最小完整步骤",
-            "最窄验证",
             "$lean-stack",
+            "无需先加载或完成 $lean-simplify",
             "任务卡",
             "四行配置",
             "存活轮次",
             "经验状态",
         ):
-            self.assertIn(entry_term, entry_prompt)
-        self.assertLess(entry_prompt.index("$lean-simplify"), entry_prompt.index("$lean-stack"))
-        self.assertIn("默认入口", self.simplify_skill.split("---", 2)[1])
-        self.assertIn("先完整读取并使用相邻的", self.skill)
+            self.assertIn(entry_term, calling_prompt)
+        for entry_term in (
+            "$lean-simplify",
+            "非平凡主任务",
+            "独立收窄",
+            "不得等待或阻断 $lean-stack",
+        ):
+            self.assertIn(entry_term, simplify_prompt)
+        public_contract = (
+            self.skill
+            + self.simplify_skill
+            + self.manifest["description"]
+            + self.manifest["interface"]["shortDescription"]
+            + "".join(self.manifest["interface"]["defaultPrompt"])
+        )
+        for forbidden in (
+            "先用 $lean-simplify",
+            "只有步骤需要模型或子代理时再用 $lean-stack",
+            "已选定主任务必要步骤后",
+            "先完整读取并使用相邻的",
+        ):
+            self.assertNotIn(forbidden, public_contract)
+        self.assertIn("不互相要求先加载、先完成或取得对方结果", self.skill)
+        self.assertIn("不阻断或延后 `$lean-stack`", self.simplify_skill)
         self.assertIn("测试文件数、测试函数数", self.simplify_skill)
 
     def test_current_release_notes_match_manifest_and_visible_descriptions(self) -> None:
