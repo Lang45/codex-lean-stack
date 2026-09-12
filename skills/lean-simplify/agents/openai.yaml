@@ -1,0 +1,4 @@
+interface:
+  display_name: "主任务精简"
+  short_description: "精简主任务步骤、验证和维护面，按需进行显式消融。"
+  default_prompt: "使用 $lean-simplify 做主任务精简：选择最小完整方法，收窄调查、实现、验证、重验、发布和文档维护；正式消融仅在用户明确要求时启动。"

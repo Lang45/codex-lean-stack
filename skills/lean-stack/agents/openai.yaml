@@ -1,4 +1,4 @@
 interface:
-  display_name: "精益任务栈"
-  short_description: "按质量、成本、时间联合选择四模型，并先公开实际配置。"
+  display_name: "子代理调用"
+  short_description: "按质量、成本、时间选择工具、四模型子代理与思考程度。"
   default_prompt: "使用 $lean-stack。委派按质量→成本→时间选四模型/思考/速度并记 MODEL_ROUTE。Astra 只处理 GPT-5.6 有决定性差距或整项资源更省的问题，普通视觉不触发。子代理首条以名称/模型/思考/速度四行开头，不回显 run_id。"
