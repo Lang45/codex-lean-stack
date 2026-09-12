@@ -640,7 +640,16 @@ class SkillContractTests(unittest.TestCase):
     def test_long_context_is_not_replicated_across_parent_child_or_nested_agents(self) -> None:
         detailed = self.skill + self.routing + self.delegation + self.cost
         compact_detailed = re.sub(r"\s+", "", detailed)
-        compact_generated = re.sub(r"\s+", "", self.agents_source)
+        compact_generated = re.sub(r'"\s*"', "", self.agents_source)
+        compact_generated = re.sub(r"\s+", "", compact_generated)
+        for source_route_field in (
+            "source_identity:",
+            "owner:",
+            "snapshot:",
+            "consumers:",
+            "remaining_gap:",
+        ):
+            self.assertIn(source_route_field, self.routing)
         for boundary in (
             "最小上下文原则沿代理树逐层适用",
             "Astra 对这些上下文读取、传播、结果复用和增量补缺规则没有例外",
@@ -658,14 +667,10 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(re.sub(r"\s+", "", boundary), compact_detailed)
 
         for generated_boundary in (
-            "最小上下文原则沿代理树逐层适用",
-            "Astra 没有例外",
-            "fork_turns=none",
-            "fork_turns=all",
-            "轻量收据",
-            "已交付最终结果不再等待",
-            "重读或要求重发",
-            "不循环追问",
+            "只按职责和具名缺口有限读取",
+            "同一来源已有所有者和完整快照时不重新发现或通读",
+            "只补具名缺口",
+            "不重复粘贴同一完整内容",
         ):
             self.assertIn(re.sub(r"\s+", "", generated_boundary), compact_generated)
 
@@ -703,14 +708,12 @@ class SkillContractTests(unittest.TestCase):
             "成功条件不同就建立不同组",
         ):
             self.assertNotIn(rejected_narrowing, combined)
-        compact_generated = re.sub(r"\s+", "", self.agents_source)
-        for generated_boundary in (
-            "同一可复用能力族",
+        self.assertIn("可复用专长标识", self.agents_source)
+        for parent_owned_boundary in (
             "项目、框架、动作动词、交付名称",
-            "工具、写入权限、安全风险和决定性证据形状",
             "范围放宽不授予只读角色写权限",
         ):
-            self.assertIn(re.sub(r"\s+", "", generated_boundary), compact_generated)
+            self.assertNotIn(parent_owned_boundary, self.agents_source)
 
     def test_plugin_does_not_own_project_handoff_lifecycle(self) -> None:
         plugin_contract = self.skill + self.routing + self.long_running + self.flowcharts
@@ -882,7 +885,6 @@ class SkillContractTests(unittest.TestCase):
             "routing": self.routing,
             "cost": self.cost,
             "collaboration": self.collaboration,
-            "generated_prompt": self.agents_source,
         }
         for name, content in selection_consumers.items():
             with self.subTest(document=name):
@@ -1168,9 +1170,9 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(required, combined)
         for concrete_config_boundary in (
-            "复用可见保留子代理时由它自读已有配置",
+            "可见保留子代理",
+            "recall 取得配置、经验摘要和两行客观状态",
             "运行时新子代理",
-            "具体模型、思考程度和标准或快速速度",
             "具体模型、思考程度和标准或快速速度",
         ):
             self.assertIn(concrete_config_boundary, combined)
@@ -1179,22 +1181,10 @@ class SkillContractTests(unittest.TestCase):
             "只有新父代理任务能带来必要质量或质量达标后的总成本收益时才调用 `create_thread`",
             self.collaboration,
         )
-        self.assertIn("只有任务卡明确写", self.agents_source)
-        self.assertIn(
-            "允许调用其他或新建 Codex 父代理为是并给出跨任务范围",
-            self.agents_source,
-        )
-        generated_prompt = re.sub(r'"\s*"', "", self.agents_source)
-        generated_prompt = re.sub(r"\s+", "", generated_prompt)
-        self.assertIn(
-            "create_thread、read_thread、wait_threads或send_message_to_thread",
-            generated_prompt,
-        )
-        self.assertIn("工具缺失、", self.agents_source)
-        self.assertIn(
-            "直接调用失败、容量不足、范围不清或写入无法隔离时",
-            self.agents_source,
-        )
+        self.assertIn("只有任务卡明确指定协作父代理", self.agents_source)
+        self.assertIn("真实工具可用", self.agents_source)
+        self.assertNotIn("create_thread、read_thread、wait_threads", self.agents_source)
+        self.assertNotIn("当前用户已为本插件建立持续协作授权", self.agents_source)
         self.assertNotIn("无人否决即同意", combined)
         self.assertNotIn("用户明确要求调用其他或新建 Codex 父代理任务时", combined)
 
@@ -1307,17 +1297,19 @@ class SkillContractTests(unittest.TestCase):
             "collaboration.send_message",
             "spawn_agent",
             "followup_task",
-            "完整四行",
             "自己的任务界面",
             "commentary",
-            "公开完整四行",
+            "四行配置",
+            "两行客观状态",
+            "存活轮次",
+            "经验",
             "最终回复顶部",
             "实际模型、思考程度和速度",
-            "不计入关键步骤",
+            "不占关键步骤",
             "第一条可见commentary必须以以下四行开头",
-            "四行之前不得出现计划、运行ID或其他说明",
-            "run_id只供父代理记录任务结果",
-            "不得在commentary或最终回复中回显",
+            "六行前不写计划、运行ID或其他说明",
+            "run_id即使出现在输入中也不得回显",
+            "不得声明经验适用性",
             "reasoning",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact)
@@ -1350,15 +1342,12 @@ class SkillContractTests(unittest.TestCase):
         for boundary in (
             "send_message_to_thread",
             "跨任务操作冒充内部消息",
-            "工具缺失或直接调用失败",
-            "自包含任务可继续",
-            "实际能力仍以真实调用为准",
         ):
             self.assertIn(boundary, self.delegation + self.agents_source)
 
         for boundary in (
-            "只有真实依赖解锁、必要纠偏、风险或阻断才使用内部消息",
-            "不为证明工具存在发送探针",
+            "只在依赖解锁、必要纠偏、风险或阻断时使用 collaboration.send_message",
+            "不使用跨任务 API 冒充内部消息",
         ):
             self.assertIn(boundary, self.agents_source)
         self.assertNotIn("向父代理发送以下四行", self.agents_source)
@@ -1820,11 +1809,12 @@ class SkillContractTests(unittest.TestCase):
             "质量→成本→时间",
             "四模型/思考/速度",
             "MODEL_ROUTE",
+            "长来源一人读",
+            "复用证据包",
             "Astra",
             "GPT-5.6",
             "普通视觉不触发",
-            "子代理首条",
-            "名称/模型/思考/速度四行",
+            "首条四行配置后接存活轮次/经验",
             "不回显 run_id",
         ):
             self.assertIn(entry_term, default_prompt)
@@ -2177,19 +2167,20 @@ class SkillContractTests(unittest.TestCase):
             "official OpenAI plugin documentation",
             "OpenAI 官方插件文档",
             "内部交流只服务真实依赖",
-            "子代理先公开实际配置",
+            "子代理先公开实际配置与保留状态",
             "MODEL_ROUTE",
             "可接受成本带",
             "普通视觉任务不触发",
             "第一条可见回复",
-            "普通任务不再向父代理重复发送相同四行",
+            "存活轮次与经验两行",
+            "同一长来源由一个所有者完整读取",
             "父代理不中断主线",
             "持续多工作流任务尽早派发",
             "变体只为真实改进",
             "子代理可以成为协作父代理",
             "SOURCE_COVERAGE",
-            "子代理会积累经过采用的经验",
-            "UUID `run_id`",
+            "保存经验与后续结果建立可核验关联",
+            "当前经验版本摘要",
             "`ensure` 和 `improve`",
             "没有项目保留层",
             "普通文件进入 Windows 回收站",

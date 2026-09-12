@@ -128,6 +128,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             elif version == 2:
                 connection.execute("DROP TABLE agent_runs")
             else:
+                connection.execute("ALTER TABLE agent_runs DROP COLUMN loaded_experience_digest")
                 connection.execute("ALTER TABLE agent_runs DROP COLUMN outcome")
             connection.execute(f"PRAGMA user_version = {version}")
             connection.execute("COMMIT")
@@ -194,6 +195,18 @@ class SpecialistRegistryTests(unittest.TestCase):
             self.assertEqual(
                 agents.exact_schema(connection),
                 agents.expected_schema(agents.SCHEMA_V4_TABLE_SQL),
+            )
+
+    def downgrade_experience_schema(self) -> None:
+        with contextlib.closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("ALTER TABLE agent_runs DROP COLUMN loaded_experience_digest")
+            connection.execute("PRAGMA user_version = 5")
+            connection.execute("COMMIT")
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                agents.exact_schema(connection),
+                agents.expected_schema(agents.SCHEMA_V5_TABLE_SQL),
             )
 
     def write_migration_plan(
@@ -266,44 +279,35 @@ class SpecialistRegistryTests(unittest.TestCase):
         role = instructions.index(role_paragraph)
         communication = instructions.index("第一条可见 commentary 必须以以下四行开头", role)
         declaration = instructions.index(opening, communication)
-        visible = instructions.index(
-            "普通任务不再向父代理发送重复内部配置副本",
-            communication,
-        )
-        final_result = instructions.index("最终回复固定写", visible)
+        status = instructions.index("紧接着逐字显示任务卡提供的“存活轮次”和“经验”两行", declaration)
+        execution = instructions.index("只完成任务卡分配的当前子任务", status)
+        final_result = instructions.index("最终回复顶部再次写实际模型", execution)
         final_declaration = instructions.index(opening, final_result)
         final_task = instructions.index("子任务：<当前子任务>", final_declaration)
         self.assertEqual(instructions.count(opening), 2)
         self.assertLess(role, communication)
         self.assertLess(communication, declaration)
-        self.assertLess(visible, declaration)
+        self.assertLess(declaration, status)
+        self.assertLess(status, execution)
         self.assertLess(final_result, final_declaration)
         self.assertLess(final_declaration, final_task)
-        for opening_contract in (
-            "multi_agent_version=v2",
-            "collaboration.send_message 故意不在 functions.exec 的 ALL_TOOLS 中",
-            "角色 TOML 不能授予工具",
-            "list_threads 搜索父任务",
-            "send_message_to_thread 等跨任务 API 替代内部消息",
-            "有业务需要且真实可用时直接调用，不为证明工具存在发送探针",
-            "Luna 的 multi_agent_version=v2 和父会话启用多代理是内部通道的配置前提",
-            "实际能力仍以真实调用为准",
-            "内部交流是成功条件而工具缺失或直接调用失败时停止并报告",
-            "自包含任务可继续",
-            "公开副本不能冒充内部消息",
-            "不能省略或只留到关键步骤、最终回复",
-            "最终回复顶部再次写实际模型、思考程度和速度",
-            "声明不要求父代理确认，不计入关键步骤",
-            "父代理用 send_message 纠偏不算启动新子任务，不重复开场声明",
-            "三个字段不能省略",
+        for child_contract in (
             "第一条可见 commentary 必须以以下四行开头",
-            "四行之前不得出现计划、运行 ID 或其他说明",
-            "run_id 只供父代理记录任务结果",
-            "不得在 commentary 或最终回复中回显",
+            "运行时子代理显示 0 轮和未加载保留经验",
+            "不得声明经验适用性",
+            "run_id 即使出现在输入中也不得回显",
+            "只按职责和具名缺口有限读取",
+            "同一来源已有所有者和完整快照时不重新发现或通读",
+            "已加载经验只作有界提示",
+            "默认是普通子代理，不自行委派",
+            "只有任务卡明确指定协作父代理",
+            "只在依赖解锁、必要纠偏、风险或阻断时使用 collaboration.send_message",
+            "实现任务须完成授权范围内的运行或测试与失败修补",
+            "不代交或隐藏其他子代理结果",
+            "状态：完成 | 部分完成 | 受阻",
+            "SOURCE_COVERAGE",
         ):
-            self.assertIn(opening_contract, instructions)
-        self.assertNotIn("向父代理发送以下四行", instructions)
-        self.assertNotIn("成功路线的内部副本和用户可见副本缺一不可", instructions)
+            self.assertIn(child_contract, instructions)
         self.assertLess(
             instructions.index("第一条可见 commentary 必须以以下四行开头"),
             instructions.index(opening),
@@ -311,123 +315,18 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertNotIn("你的第一动作必须", instructions)
         self.assertNotIn("显示前不得读取、分析或调用其他工具", instructions)
         self.assertIn("QML 绑定诊断员", instructions)
-        self.assertIn(
-            "先读取本配置末尾的可复用经验",
-            instructions,
-        )
-        self.assertIn(
-            "父代理无需重复注入经验或强制重写已有配置",
-            instructions,
-        )
-        for coordination_contract in (
-            "默认协作角色是普通子代理，不自行再委派",
-            "协作角色: 协作父代理",
-            "允许下游委派: 是",
-            "有限下游范围",
-            "真实拥有顶层 collaboration.spawn_agent",
-            "不得用 functions.exec 的 ALL_TOOLS、角色 TOML、模型目录或历史任务猜测能力",
-            "停止下游委派并向父代理报告",
-            "协作父代理对每个下游切片继续按质量、成本、时间判断",
-            "高价值工作质量优先",
-            "质量、成本、时间",
+        for parent_owned_contract in (
+            "MODEL_ROUTE",
+            "gpt-6-astra",
             "可接受成本带",
-            "增加少量低成本子代理",
-            "缩短关键路径",
-            "降低整项资源成本",
-            "没有相应质量收益时不为单纯提速大幅增费",
-            "安全、权限、数据完整性、明确验收条件和诚实证据始终是底线",
-            "当前出现多个互不依赖、已就绪、能替代你实际研究、实现或验收的工作流",
-            "默认尽早派发所有仍有边际收益且互不冲突的 GPT-5.6 切片",
-            "在自己深入读取这些来源或开始对应实现前完成派发",
-            "不设固定最低值或占槽目标",
-            "合格切片按维护基线取得正向收益",
-            "稍后补复核",
-            "中途新要求使任务形状出现新的独立已就绪工作流时",
-            "给每个下游子代理单独写完整任务卡",
-            "task_id",
-            "协作角色",
-            "目标",
-            "任务类型与任务类型组",
-            "子代理来源与运行配置",
-            "权威来源或输入快照",
-            "依赖与已就绪切片",
-            "写入所有权",
-            "是否允许下游委派及下游范围",
-            "是否允许调用其他或新建 Codex 父代理及跨任务范围",
-            "父代理规范任务名",
-            "成功条件",
-            "停止条件",
-            "有限关键步骤",
-            "证据与返回格式",
-            "先确定下游任务类型和任务类型组",
-            "复用可见保留子代理时由它自读已有配置",
-            "定制运行时新子代理时由你根据任务类型、价值、风险、证据、时延和成本",
-            "联合选择并写出具体模型、思考程度和标准或快速速度组成的完整配置",
-            "不能分列独立选择",
-            "不得使用继承、未揭露或未暴露",
-            "默认把下游的允许下游委派写为否",
-            "下游子代理仍在自己的线程提交自己的最终结果",
-            "不能压掉、改写或冒充这些结果",
-            "只有任务卡明确写允许调用其他或新建 Codex 父代理为是并给出跨任务范围",
-            "create_thread、read_thread、wait_threads 或 send_message_to_thread",
-            "不需要再向用户询问",
-            "所有跨任务动作还必须同时满足当前工具规则",
-            "create_thread 要求用户明确提出新建任务",
-            "任务卡或插件默认授权不能替代",
-            "不能为内部委派创建用户可见新任务",
-            "已有用户授权无需重复询问",
-            "跨任务工具不能冒充内部消息",
-            "不得建立非授权留言板、缓存或日志暗渠",
-            "不得共享凭据或私密数据",
-            "不得以集体利益、未回复或无人否决扩大权限",
-            "不得伪造、删除、编辑或隐藏消息、工具调用、测试、日志、文件变更、身份、权限和来源",
-            "最近的协作授权不改变原有删除、删减或候选清理的资格与尺度",
-            "原规则判定应删的目标仍处理",
-            "原规则不允许删的目标仍不处理",
-            "普通删除不得物理销毁",
-            "普通文件精确送入 Windows 回收站",
-            "重要文件精确移入任务专属待删文件",
-            "直接普通文件、单一硬链接、零经验和零任务尝试资格判断",
-            "合格 TOML与收据移入插件专属待删文件",
-            "不合格目标保持原位并报告",
-        ):
-            self.assertIn(coordination_contract, instructions)
-        self.assertIn(
+            "migrate-attempts",
+            "FAILURE_REMOVAL_THRESHOLD",
+            "WRITE_ROUTE",
+            "create_thread、read_thread、wait_threads",
             "先选唯一子代理、再维护经验、最后结束其他子代理",
-            instructions,
-        )
-        for task_contract in (
-            "组内复制或变体",
-            "父代理分配的当前子任务",
-            "为该子任务单独指定的成功条件",
-            "有限关键步骤清单",
-            "没有预设关键步骤时不自行追加",
-            "仅当预设关键步骤的结果会解锁父代理或队友下一动作时，发送一条短内部消息并立即继续",
-            "没有真实依赖的普通过程随最终回复交付，不按步骤机械发消息",
-            "每个依赖关键步骤最多一条内部进度",
-            "同一方向风险只有状态实质变化后才能再次报告",
-            "不发送定时心跳或纯确认消息",
-            "父代理无异议时可沉默",
-            "收到纠偏或任务目标更新后直接应用并继续",
-            "不得扩大用户授权、移除停止条件或让任务无限延伸",
-            "关键步骤：",
-            "情况：",
-            "下一步：",
-            "在自己的线程用最终回复提交自己的精炼结果",
-            "不建立共享中转文件",
-            "不代交、等待或汇总其他子代理的结果",
-            "任务卡明确指定的协作父代理只整合自己下游子代理已经独立提交的结果",
-            "不预先合并结果",
-            "状态：完成 | 部分完成 | 受阻",
-            "证据或缺口：",
-            "SOURCE_COVERAGE",
+            "普通文件精确送入 Windows 回收站",
         ):
-            self.assertIn(task_contract, instructions)
-        self.assertIn("不决定胜者", instructions)
-        self.assertIn(
-            "禁止用未揭露、继承父级等占位文字",
-            instructions,
-        )
+            self.assertNotIn(parent_owned_contract, instructions)
 
     def test_role_instructions_cannot_collide_with_internal_memory_heading(self) -> None:
         with self.assertRaisesRegex(
@@ -440,7 +339,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                 )
             )
 
-    def test_utf8_memory_window_uses_exact_agent_capacity_without_6k_cap(self) -> None:
+    def test_utf8_memory_window_does_not_impose_a_total_agent_size_limit(self) -> None:
         with self.assertRaisesRegex(
             agents.SpecialistError,
             "summary plus its label must fit",
@@ -479,8 +378,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
         combined = agents.compose_instructions(base, memory)
         built = agents.build_agent_bytes(**render_args, memory=memory)
-        self.assertGreater(len(combined.encode("utf-8")), 6 * 1024)
-        self.assertGreater(len(built), 16 * 1024)
+        self.assertEqual(
+            tomllib.loads(built.decode("utf-8"))["developer_instructions"],
+            combined,
+        )
         self.assertLessEqual(len(memory.encode("utf-8")), agents.MAX_MEMORY_BYTES)
 
     def test_single_experience_character_bound_does_not_cap_event_count(self) -> None:
@@ -548,10 +449,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(instructions.index("你是专门负责"), instructions.index(opening))
         self.assertLess(
             instructions.index("第一条可见 commentary 必须以以下四行开头"),
-            instructions.index("只完成父代理分配的当前子任务"),
+            instructions.index("只完成任务卡分配的当前子任务"),
         )
         self.assertLess(
-            instructions.index("最终回复固定写"),
+            instructions.index("最终回复顶部再次写实际模型"),
             instructions.rindex(opening),
         )
 
@@ -978,8 +879,11 @@ class SpecialistRegistryTests(unittest.TestCase):
                 after = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
                 for payload in (before, after):
                     instructions = payload["developer_instructions"]
-                    for boundary in ("不附请求值", "配置声明不等于实测速度", "无法选择所需档位", "修改全局配置"):
-                        self.assertIn(boundary, instructions)
+                    self.assertIn("模型：gpt-5.6-terra", instructions)
+                    self.assertIn("思考程度：high", instructions)
+                    self.assertIn("状态缺失时如实报告缺口，不猜测", instructions)
+                    self.assertNotIn("MODEL_ROUTE", instructions)
+                    self.assertNotIn("可接受成本带", instructions)
                 self.assertEqual(before.get("service_tier"), after.get("service_tier"))
                 self.assertEqual(after.get("service_tier"), "fast" if speed == "fast" else None)
                 self.assertEqual(before["model"], after["model"])
@@ -1474,6 +1378,67 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertTrue(Path(created["path"]).exists())
         self.assertFalse(self.registry.pending_deletion_dir.exists())
 
+    def test_record_run_links_only_the_verified_loaded_experience_version(self) -> None:
+        created = self.ensure()
+        improved = self.improve_with_lesson(
+            name=created["name"], expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()),
+            lesson="适用情境：已有定位；做法：复用证据包；证据：一次采用结果；例外：来源变化。",
+        )
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=improved["sha256"],
+        )
+        digest = recalled["retention_state"]["experience_digest"]
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertIn("当前配置 1 条", recalled["opening_status"])
+        self.assertIn("尚无关联的后续结果记录", recalled["opening_status"])
+
+        success_id = str(uuid.uuid4())
+        recorded = self.registry.record_run(
+            name=created["name"], expected_sha256=improved["sha256"],
+            run_id=success_id, invocation_kind="spawn_agent",
+            loaded_experience_digest=digest,
+        )
+        replay = self.registry.record_run(
+            name=created["name"], expected_sha256=improved["sha256"],
+            run_id=success_id, invocation_kind="spawn_agent",
+            loaded_experience_digest=digest,
+        )
+        self.assertTrue(recorded["experience_outcome_association_persisted"])
+        self.assertEqual(replay["action"], "survival_round_already_recorded")
+        self.assertEqual(recorded["experience_successful_attempt_count"], 1)
+
+        with self.assertRaisesRegex(agents.SpecialistError, "verified current role memory"):
+            self.registry.record_run(
+                name=created["name"], expected_sha256=improved["sha256"],
+                run_id=str(uuid.uuid4()), invocation_kind="spawn_agent",
+                loaded_experience_digest="0" * 64,
+            )
+
+        unlinked = self.registry.record_run(
+            name=created["name"], expected_sha256=improved["sha256"],
+            run_id=str(uuid.uuid4()), invocation_kind="followup_task",
+        )
+        self.assertFalse(unlinked["experience_outcome_association_persisted"])
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=improved["sha256"],
+        )
+        state = recalled["retention_state"]
+        self.assertEqual(state["survival_rounds"], 2)
+        self.assertEqual(state["experience_successful_attempt_count"], 1)
+        self.assertEqual(state["experience_failed_attempt_count"], 0)
+        self.assertIn("此版本关联的后续结果 1 成功、0 失败", recalled["opening_status"])
+
+    def test_record_run_rejects_experience_digest_when_no_experience_is_loaded(self) -> None:
+        created = self.ensure()
+        with self.assertRaisesRegex(agents.SpecialistError, "verified current role memory"):
+            self.registry.record_run(
+                name=created["name"], expected_sha256=created["sha256"],
+                run_id=str(uuid.uuid4()), invocation_kind="spawn_agent",
+                loaded_experience_digest="0" * 64,
+            )
+        self.assertEqual(self.registry.status()["recorded_attempt_count"], 0)
+
     def test_attempts_distinguish_never_invoked_from_success_and_failure(self) -> None:
         created = self.ensure()
         item = self.registry.status()["registered_agents"][0]
@@ -1712,17 +1677,51 @@ class SpecialistRegistryTests(unittest.TestCase):
         migrated = json.loads(output.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(migrated["action"], "attempt_schema_migrated")
+        self.assertEqual(migrated["source_schema_version"], 4)
         self.assertEqual(migrated["migrated_successful_attempt_count"], 1)
         self.assertEqual(migrated["migrated_failure_attempt_count"], 0)
         self.assertFalse(migrated["historical_failure_backfill"])
+        self.assertFalse(migrated["historical_experience_reuse_backfill"])
+        self.assertTrue(migrated["existing_outcome_semantics_preserved"])
         status = {item["name"]: item for item in self.registry.status()["registered_agents"]}
         self.assertEqual(status[never_invoked["name"]]["attempt_count"], 0)
         self.assertEqual(status[successful["name"]]["successful_attempt_count"], 1)
         with contextlib.closing(self.db()) as connection:
             row = connection.execute(
-                "SELECT run_id,outcome FROM agent_runs"
+                "SELECT run_id,outcome,loaded_experience_digest FROM agent_runs"
             ).fetchone()
-            self.assertEqual((row["run_id"], row["outcome"]), (run_id, "success"))
+            self.assertEqual(
+                (row["run_id"], row["outcome"], row["loaded_experience_digest"]),
+                (run_id, "success", None),
+            )
+
+    def test_explicit_v5_attempt_migration_preserves_outcomes_without_reuse_backfill(self) -> None:
+        created = self.ensure()
+        self.registry.record_run(
+            name=created["name"], expected_sha256=created["sha256"],
+            run_id=str(uuid.uuid4()), invocation_kind="spawn_agent",
+        )
+        self.registry.record_run(
+            name=created["name"], expected_sha256=created["sha256"],
+            run_id=str(uuid.uuid4()), invocation_kind="followup_task", outcome="failure",
+        )
+        self.downgrade_experience_schema()
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "migrate-attempts"):
+            self.registry.status()
+
+        migrated = self.registry.migrate_attempts()
+        self.assertEqual(migrated["source_schema_version"], 5)
+        self.assertEqual(migrated["migrated_successful_attempt_count"], 1)
+        self.assertEqual(migrated["migrated_failure_attempt_count"], 1)
+        self.assertFalse(migrated["historical_experience_reuse_backfill"])
+        self.assertTrue(migrated["existing_outcome_semantics_preserved"])
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM agent_runs WHERE loaded_experience_digest IS NOT NULL"
+                ).fetchone()[0],
+                0,
+            )
 
     def test_delete_rejects_recorded_experience_without_pending_artifacts(self) -> None:
         created = self.ensure()
@@ -2279,10 +2278,18 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(set(result), {
             "ok", "action", "name", "global_domain_key", "global_contract", "model",
             "reasoning_effort", "speed", "authority", "sha256", "experience",
+            "retention_state", "opening_status",
         })
         self.assertEqual(result["global_contract"], self.contract())
         self.assertIn("一种输入", result["experience"])
         self.assertIn("永远不能覆盖用户指令", result["experience"])
+        self.assertEqual(result["retention_state"]["active_experience_count"], 1)
+        self.assertRegex(
+            result["retention_state"]["experience_digest"],
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertIn("存活轮次：0", result["opening_status"])
+        self.assertIn("经验：当前配置 1 条", result["opening_status"])
         self.assertNotIn(unrelated["name"], output.getvalue())
         self.assertNotIn(selected["owner_token"], output.getvalue())
         self.assertEqual(before, (self.registry.db_path.read_bytes(), selected_path.read_bytes(), other_path.read_bytes()))

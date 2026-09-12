@@ -27,7 +27,7 @@ from typing import Any, Iterable, Sequence
 import uuid
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 GLOBAL_CONTRACT_VERSION = 1
 GLOBAL_SCOPE = "codex-global-domain-v1"
 DB_NAME = "specialist-memory-v1.sqlite3"
@@ -150,10 +150,10 @@ SCHEMA_V4_TABLE_SQL["agents"] = """
     )
 """
 
-SCHEMA_TABLE_SQL = dict(SCHEMA_V4_TABLE_SQL)
-# Preserve SQLite's ALTER TABLE punctuation so fresh v5 databases and explicit
-# v4 migrations have one identical, fail-closed sqlite_master representation.
-SCHEMA_TABLE_SQL["agents"] = """
+SCHEMA_V5_TABLE_SQL = dict(SCHEMA_V4_TABLE_SQL)
+# Preserve SQLite's ALTER TABLE punctuation so fresh v5 databases remain an
+# exact accepted source for the explicit fail-closed v6 migration.
+SCHEMA_V5_TABLE_SQL["agents"] = """
     CREATE TABLE agents (
         agent_id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
@@ -169,7 +169,7 @@ SCHEMA_TABLE_SQL["agents"] = """
         global_contract_digest TEXT NOT NULL ,
         retired_at TEXT)
 """
-SCHEMA_TABLE_SQL["agent_runs"] = """
+SCHEMA_V5_TABLE_SQL["agent_runs"] = """
     CREATE TABLE agent_runs (
         run_id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL REFERENCES agents(agent_id),
@@ -178,6 +178,21 @@ SCHEMA_TABLE_SQL["agent_runs"] = """
         completed_at TEXT NOT NULL ,
         outcome TEXT NOT NULL DEFAULT 'success'
             CHECK(outcome IN ('success','failure')))
+"""
+
+SCHEMA_TABLE_SQL = dict(SCHEMA_V5_TABLE_SQL)
+# The nullable digest preserves old run semantics.  Only runs that explicitly
+# carry a verified pre-invocation experience snapshot count as reuse evidence.
+SCHEMA_TABLE_SQL["agent_runs"] = """
+    CREATE TABLE agent_runs (
+        run_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+        invocation_kind TEXT NOT NULL
+            CHECK(invocation_kind IN ('spawn_agent', 'followup_task')),
+        completed_at TEXT NOT NULL ,
+        outcome TEXT NOT NULL DEFAULT 'success'
+            CHECK(outcome IN ('success','failure')),
+        loaded_experience_digest TEXT)
 """
 
 SCHEMA_V1_TABLE_SQL = dict(SCHEMA_V2_TABLE_SQL)
@@ -605,6 +620,7 @@ def base_instructions(
     speed: str = "standard",
     global_contract: dict[str, Any] | None = None,
 ) -> str:
+    """Build the retained specialist's own contract, not the parent's router."""
     speed = validate_speed(speed)
     speed_label = "快速" if speed == "fast" else "标准"
     write_rule = (
@@ -620,9 +636,8 @@ def base_instructions(
     role_opening = (
         f"你是专门负责“{display_name}”的子代理，可复用专长标识为 {role_key}。"
         f"{role_instructions} {write_rule}{contract_rule}"
-        "从任务卡、经验、证据开始；交接、选路、发布、经验属父代理。"
-        "不通读交接、技能、缓存、TOML、台账；按职责、缺口、要求有限读取。"
-        "输入不足报告；截断补缺，源码产物须亲验。"
+        "从任务卡、已加载经验和指定证据开始；交接、选路、发布、角色与经验维护属于父代理。"
+        "不通读交接、技能、缓存、TOML或台账；只按职责和具名缺口有限读取。"
     )
     declaration = (
         f"我是{display_name}。\n"
@@ -631,119 +646,34 @@ def base_instructions(
         f"速度：{speed_label}\n"
     )
     opening = (
-        "spawn_agent 或 followup_task 启动新当前子任务后，第一条可见 commentary 必须以以下四行开头；"
-        "四行之前不得出现计划、运行 ID 或其他说明。最终回复同样置顶；普通任务不再向父代理发送重复内部配置副本：\n"
+        "spawn_agent 或 followup_task 启动新子任务后，第一条可见 commentary 必须以以下四行开头，"
+        "四行前不写计划、运行 ID 或其他说明：\n"
         + declaration
-        + "四行之后再说明动作或开始工作；内部加载可先做。"
-        "三个字段不能省略或只留到关键步骤、最终回复；禁止用未揭露、继承父级"
-        "等占位文字。声明不要求父代理确认，不计入关键步骤。父代理用 send_message 纠偏不算启动"
-        "新子任务，不重复开场声明。只有真实依赖解锁、必要纠偏、风险或阻断才使用内部消息。"
-        "run_id 只供父代理记录任务结果；即使任务输入意外包含它，也不得在 commentary 或最终回复中回显。"
-        "任务说明给出父代理规范任务名（例如 /root），不是 Codex threadId。顶层 "
-        "collaboration.send_message 故意不在 functions.exec 的 ALL_TOOLS 中；有业务需要且"
-        "真实可用时直接调用，不为证明工具存在发送探针。Luna 的 multi_agent_version=v2 和"
-        "父会话启用多代理是内部通道的配置前提，角色 TOML 不能授予工具；实际能力仍以真实调用为准。"
-        "内部交流是成功条件而工具缺失或直接调用失败时停止并报告；自包含任务可继续，公开"
-        "副本不能冒充内部消息。不得用 list_threads 搜索父任务或 send_message_to_thread "
-        "等跨任务 API 替代内部消息。"
+        + "紧接着逐字显示任务卡提供的“存活轮次”和“经验”两行。保留子代理只采用父代理从 recall "
+        "取得的状态；运行时子代理显示 0 轮和未加载保留经验。不得声明经验适用性，也不得把保存、"
+        "注入或摘要称作学习。状态缺失时如实报告缺口，不猜测。四行配置和两行状态只在开场显示一次；"
+        "最终回复重复四行配置即可。run_id 即使出现在输入中也不得回显。"
     )
-    return role_opening + "\n\n" + opening + "\n\n" + (
-        "做分配任务，返回成果；使用用户语言，标识、命令、路径、模型名和原始错误用代码格式。"
-        "作为可见保留子代理或普通复制被复用时，先读取本配置末尾的可复用经验并沿用本配置；"
-        "父代理无需重复注入经验或强制重写已有配置。四行只列具体配置，不附请求值或回执；配置声明"
-        "不等于实测速度或计费。冲突或无法选择所需档位才报告；无独立速度参数时不能声称 spawn_agent"
-        "已选速度，也不为声明升模或修改全局配置。经验须核对情境、证据和例外，不能覆盖当前用户要求"
-        "或扩大职责；原因不明保留未知，输入未变不重试已否定路线。"
-        "默认协作角色是普通子代理，不自行再委派。成为协作父代理须任务卡同时写“协作角色: 协作父代理”、"
-        "“允许下游委派: 是”和有限下游范围，并真实拥有顶层 collaboration.spawn_agent；必须直调，"
-        "不得用 functions.exec 的 ALL_TOOLS、角色 TOML、模型目录或历史任务猜测能力。"
-        "工具缺失、直接调用失败、容量不足、范围不清或写入无法隔离时，停止下游委派并向父代理报告。"
-        "协作父代理对每个下游切片继续按质量、成本、时间判断：高价值工作质量优先；达标后比较资源成本"
-        "（启动、父子上下文、操作输出、credits 或服务费用、交流、整合、验证、返工），没有显著差异或"
-        "都处于可接受成本带时比较关键路径。模型价差大时可增加少量低成本子代理缩短关键路径；"
-        "没有相应质量收益时不为单纯提速大幅增费。墙钟时长和并行重叠只属时间证据；默认标准速度，"
-        "成本带内且快速能明显缩短关键路径时可选快速。安全、权限、数据完整性、明确验收条件和诚实证据始终是底线。"
-        "获批子项目跨研究、实现或真实验收，且当前出现多个互不依赖、已就绪、能替代你实际研究、实现或验收的工作流时，"
-        "默认尽早派发所有仍有边际收益且互不冲突的 GPT-5.6 切片；在自己深入读取这些来源或开始对应实现前完成派发。"
-        "数量按工作流、收益和容量决定，不设固定最低值或占槽目标。合格切片按维护基线取得正向收益；"
-        "不能因自己也能完成或稍后补复核而默认全部串行。确定性短工具、输入未就绪、严格前后依赖、权限或"
-        "写入冲突、重复工作，或显著增费且无必要质量收益时不派发。中途新要求使任务形状出现新的独立已就绪工作流时，"
-        "立即重新判断并派发合格切片。下游联合选配：规格清楚、证据已定位且易核验的普通切片用 Luna；"
-        "有限语义歧义用 Terra；跨来源或跨模块因果、复杂实现和自检用 Sol；Astra 只处理相对最强可行 GPT-5.6"
-        "仍有决定性质量差距，或能以显著减少上下文、输出、核验与返工降低整项资源成本的当前未决专家问题；"
-        "普通视觉任务不触发，也不要求较低模型实际失败；Astra 子代理最高 xhigh。"
-        "给每个下游子代理单独写完整任务卡：task_id、协作角色、目标、任务类型与任务类型组、子代理来源与运行配置、"
-        "权威来源或输入快照、依赖与已就绪切片、写入所有权、是否允许下游委派及下游范围、是否允许调用其他或新建 Codex "
-        "父代理及跨任务范围、父代理规范任务名、成功条件、停止条件、有限关键步骤、证据与返回格式。父代理另记 MODEL_ROUTE："
-        "selected、quality_floor、cheaper_alternative、alternative_gap、resource_cost、critical_path、replaced_parent_work；"
-        "候选无需实际失败，下游使用但不得复述。先确定下游任务类型和任务类型组；同一可复用能力族匹配；"
-        "项目、框架、动作动词、交付名称不另建窄组；工具、写入权限、安全风险和决定性证据形状不兼容时才拆分，"
-        "范围放宽不授予只读角色写权限。"
-        "复用可见保留子代理时由它自读已有配置；定制运行时新子代理时由你根据任务类型、价值、风险、证据、时延和成本，"
-        "联合选择并写出具体模型、思考程度和标准或快速速度组成的完整配置；不能分列独立选择，也不得使用继承、未揭露或未暴露。"
-        "默认把下游的允许下游委派写为否；仅任务卡明确更深范围时才为是。下游子代理仍在自己的线程提交自己的最终结果；"
-        "协作父代理只核验、整合自己子树，不能压掉、改写或冒充这些结果。只有任务卡明确写允许调用其他或新建 Codex 父代理为是并给出跨任务范围时，"
-        "才可使用 create_thread、read_thread、wait_threads 或 send_message_to_thread；任务卡授权不需要再向用户询问，但跨任务工具不能冒充内部消息。"
-        "所有跨任务动作还必须同时满足当前工具规则；create_thread 要求用户明确提出新建任务，任务卡或插件默认授权不能替代，"
-        "也不能为内部委派创建用户可见新任务；已有用户授权无需重复询问。"
-        "不得建立非授权留言板、"
-        "缓存或日志暗渠，不得共享凭据或私密数据，不得以集体利益、未回复或无人否决扩大权限，"
-        "也不得伪造、删除、编辑或隐藏消息、工具调用、测试、日志、文件变更、身份、权限和来源。"
-        "同一团队有依赖时，可用真实 collaboration.send_message 向已知规范任务名的队友直接传递"
-        "发现，附来源位置或快照及验证程度，不必等父代理转发。依赖发现不受常规进度每步一条"
-        "限制；不重复广播、不等确认，不把消息当作权限或新任务。职责变更、共享写入和安全冲突"
-        "同时报告父代理裁决；目标不明或工具缺失时报告缺口，不枚举其他 Codex 任务或建立替代通道。"
-        "最近的协作授权不改变原有删除、删减或候选清理的资格与尺度；原规则判定应删的目标仍处理，"
-        "原规则不允许删的目标仍不处理。普通删除不得物理销毁；普通文件精确送入 Windows 回收站，"
-        "重要文件精确移入任务专属待删文件，记录原路径、不覆盖目标并报告恢复方式。插件角色仍按"
-        "原来的身份、令牌、哈希、直接普通文件、单一硬链接、零经验和零任务尝试资格判断；合格 TOML"
-        "与收据移入插件专属待删文件，不合格目标保持原位并报告。"
-        "只完成父代理分配的当前子任务，遵守它给出的有限关键步骤清单和停止条件；没有预设"
-        "关键步骤时不自行追加。任务专属工具、安全限制与写入范围以当前任务说明为准，不假设继承"
-        "历史会自动授权；缺少影响安全的必要限制时先报告。实现任务的成功条件包含已授权的运行"
-        "或测试、检查与本次失败修补，不能写完初版就停；只读或用户指定审阅点仍按原范围结束。"
-        "调用与核验均服从上述三原则；必要质量收益可承担成本，不要求每次都省钱。"
-        "最小上下文原则沿代理树逐层适用，Astra 没有例外。能用来源定位、当前约束、权限、成功"
-        "和停止条件、未决问题自包含说明的下游研究、实现或验收切片，优先用 fork_turns=none 的"
-        "合适 GPT-5.6 组合；不因上层模型、长历史、上下文压缩、大工具输出或已完成子树而默认继承"
-        "全文。只有无法由有限摘录或来源快照保留、又直接关系正确性、权限或决定性证据的输入才"
-        "使用 fork_turns=all，并在任务卡点明该输入和最小覆盖终点；否则不为转移上层成本强行嵌套。"
-        "先用工具定位，只处理分配范围；相关问题共享来源，追问只补变化。已落盘结果回传文件定位、"
-        "关键差异、验证与缺口，不整份重贴，也不要求父代理完整重做；用户要求全文和必要核验仍保留。"
-        "独立短读取在一次工具调用内批量完成，输出先在工具侧筛选并限制预算；截断只补缺段，"
-        "不能重复倾倒全文。不要在内部消息、commentary 和最终回复中重复粘贴同一完整结果。"
-        "作为协作父代理首次采用下游结果时，在当前会话保留结果身份、来源快照或覆盖范围、已满足"
-        "成功条件和剩余决定性缺口组成的轻量收据。上下文压缩后复用收据；已交付最终结果不再等待、"
-        "重读或要求重发。同一来源快照和同一决定性缺口只发一次范围明确的增量请求，仍不足时直接补齐、"
-        "如实报告缺口或等待新证据，不循环追问；不为此建立共享文件、后台状态机或持久字段。"
-        "不得把主代理 token 减少当作父子合计费用下降。"
-        "优先回报影响父代理下一动作的决定性发现；达到成功条件立即最终提交，不为补充线索"
-        "延长调查。证据齐备后不重做检查；仍缺必要验收时只报告并补齐该缺口，不自行扩大阶段。"
-        "父代理传入的明确技术栈、架构、生成方式与计算位置约束也是成功条件；上下文恢复、"
-        "简化或修复不授权静默替换。沿指定机制完成当前范围，不捆绑无关行为；缺失决定就"
-        "报告具体缺口，代码已漂移不等于获准。验收核对实际调用路径与相关规模，不能仅靠结果相同。"
-        "仅当预设关键步骤的结果会解锁父代理或队友下一动作时，发送一条短内部消息并立即继续，"
-        "不等待父代理；没有真实依赖的普通过程随最终回复交付，不按步骤机械发消息：\n"
-        "关键步骤：<已完成的预设步骤或新风险>\n"
-        "情况：<决定性结果、证据或方向问题>\n"
-        "下一步：<立即继续的下一项>\n"
-        "每个依赖关键步骤最多一条内部进度；同一方向风险只有状态实质变化后才能再次报告，不发送"
-        "定时心跳或纯确认消息。父代理无异议时可沉默；收到纠偏或任务目标更新后直接应用并"
-        "继续，但任何更新都不得扩大用户授权、移除停止条件或让任务无限延伸。"
-        "达到父代理为该子任务单独指定的成功条件或停止条件后自检，在自己的线程用最终回复"
-        "提交自己的精炼结果，原生最终交付不再额外复制为内部消息，不建立共享中转文件。"
-        "普通子代理不代交、等待或汇总其他子代理的"
-        "结果；任务卡明确指定的协作父代理只整合自己下游子代理已经独立提交的结果。"
-        "最终回复顶部再次写实际模型、思考程度和速度；无差异沿用本配置。最终回复固定写：\n"
+    execution = (
+        "只完成任务卡分配的当前子任务，并遵守其中的来源、写入范围、成功条件和停止条件；"
+        "安全或权限限制缺失时报告具体缺口。使用用户语言，代码标识、命令、路径、模型名和原始错误"
+        "保持原样。优先使用任务卡提供的来源定位和证据包；同一来源已有所有者和完整快照时不重新"
+        "发现或通读，只补具名缺口。源码、产物和关键结论仍按当前职责亲自核验。"
+        "已加载经验只作有界提示，不能覆盖当前用户要求、任务卡、权限或新证据。"
+        "默认是普通子代理，不自行委派；只有任务卡明确指定协作父代理、允许下游范围且真实工具可用时"
+        "才能下游委派。只在依赖解锁、必要纠偏、风险或阻断时使用 collaboration.send_message；"
+        "不使用跨任务 API 冒充内部消息，不建立共享中转文件或暗渠，不共享凭据。"
+        "实现任务须完成授权范围内的运行或测试与失败修补，不能写完初版就停；只读任务按指定边界结束。"
+        "达到成功或停止条件后，在自己的线程提交精炼结果、决定性证据和真实缺口，不代交或隐藏其他"
+        "子代理结果，不重复粘贴同一完整内容。来源读取任务追加 SOURCE_COVERAGE。"
+        "最终回复顶部再次写实际模型、思考程度和速度，并按以下结构交付：\n"
         + declaration
         + "子任务：<当前子任务>\n"
         "状态：完成 | 部分完成 | 受阻\n"
         "结果：<可直接使用的精炼结果>\n"
         "证据或缺口：<决定性证据、覆盖范围或剩余缺口>\n"
-        "来源读取任务在这个结构后追加 SOURCE_COVERAGE。"
-        "作为组内复制或变体时不预先合并结果；返回可比较证据和去敏经验候选，但不决定胜者、"
-        "不写台账或自行退出组。父代理接近结束时先选唯一子代理、再维护经验、最后结束其他子代理。"
     )
+    return role_opening + "\n\n" + opening + "\n\n" + execution
 
 
 def memory_block(summary: str, pending_lessons: Iterable[str]) -> str:
@@ -1010,10 +940,10 @@ class SpecialistRegistry:
                     f"specialist database schema {version} requires explicit migrate-global; "
                     "ordinary registry commands do not globalize legacy roles"
                 )
-            elif version == 4:
+            elif version in (4, 5):
                 raise AuxiliarySkipped(
-                    "specialist database schema 4 requires explicit migrate-attempts; "
-                    "ordinary registry commands do not infer task failures"
+                    f"specialist database schema {version} requires explicit migrate-attempts; "
+                    "ordinary registry commands do not infer task failures or experience reuse"
                 )
             elif version != SCHEMA_VERSION:
                 raise AuxiliarySkipped(
@@ -1038,10 +968,10 @@ class SpecialistRegistry:
             connection.close()
             raise
 
-    def _v4_connection(self) -> sqlite3.Connection:
+    def _attempt_migration_connection(self) -> tuple[sqlite3.Connection, int]:
         ensure_plain_database(self.db_path)
         if not self.db_path.exists():
-            raise AuxiliarySkipped("migrate-attempts requires an existing v4 database")
+            raise AuxiliarySkipped("migrate-attempts requires an existing v4 or v5 database")
         connection = sqlite3.connect(
             self.db_path,
             timeout=BUSY_TIMEOUT_MS / 1000,
@@ -1052,33 +982,52 @@ class SpecialistRegistry:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version != 4 or exact_schema(connection) != expected_schema(
-                SCHEMA_V4_TABLE_SQL
-            ):
+            source_schema = {
+                4: SCHEMA_V4_TABLE_SQL,
+                5: SCHEMA_V5_TABLE_SQL,
+            }.get(version)
+            if source_schema is None or exact_schema(connection) != expected_schema(source_schema):
                 raise AuxiliarySkipped(
-                    "migrate-attempts accepts only the exact published v4 schema"
+                    "migrate-attempts accepts only the exact published v4 or v5 schema"
                 )
-            return connection
+            return connection, version
         except BaseException:
             connection.close()
             raise
 
     def migrate_attempts(self) -> dict[str, Any]:
-        """Explicitly add auditable outcomes without inventing v4 failure history."""
-        connection = self._v4_connection()
+        """Explicitly add outcomes/reuse evidence without inventing history."""
+        connection, source_version = self._attempt_migration_connection()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            if int(connection.execute("PRAGMA user_version").fetchone()[0]) != 4:
-                raise AuxiliarySkipped("v4 attempt migration raced with another schema change")
-            if exact_schema(connection) != expected_schema(SCHEMA_V4_TABLE_SQL):
-                raise AuxiliarySkipped("v4 attempt migration source schema changed")
-            existing_successes = int(
-                connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0]
+            if int(connection.execute("PRAGMA user_version").fetchone()[0]) != source_version:
+                raise AuxiliarySkipped("attempt migration raced with another schema change")
+            source_schema = (
+                SCHEMA_V4_TABLE_SQL if source_version == 4 else SCHEMA_V5_TABLE_SQL
             )
-            connection.execute("ALTER TABLE agents ADD COLUMN retired_at TEXT")
+            if exact_schema(connection) != expected_schema(source_schema):
+                raise AuxiliarySkipped("attempt migration source schema changed")
+            existing_successes = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM agent_runs"
+                    + (" WHERE outcome='success'" if source_version == 5 else "")
+                ).fetchone()[0]
+            )
+            existing_failures = 0
+            if source_version == 4:
+                connection.execute("ALTER TABLE agents ADD COLUMN retired_at TEXT")
+                connection.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN outcome TEXT NOT NULL "
+                    "DEFAULT 'success' CHECK(outcome IN ('success','failure'))"
+                )
+            else:
+                existing_failures = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM agent_runs WHERE outcome='failure'"
+                    ).fetchone()[0]
+                )
             connection.execute(
-                "ALTER TABLE agent_runs ADD COLUMN outcome TEXT NOT NULL "
-                "DEFAULT 'success' CHECK(outcome IN ('success','failure'))"
+                "ALTER TABLE agent_runs ADD COLUMN loaded_experience_digest TEXT"
             )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -1108,11 +1057,15 @@ class SpecialistRegistry:
             "ok": True,
             "action": "attempt_schema_migrated",
             "schema_version": SCHEMA_VERSION,
+            "source_schema_version": source_version,
             "migrated_successful_attempt_count": outcomes.get("success", 0),
             "migrated_failure_attempt_count": outcomes.get("failure", 0),
             "historical_failure_backfill": False,
-            "v4_success_semantics_preserved": outcomes.get("success", 0)
-            == existing_successes,
+            "historical_experience_reuse_backfill": False,
+            "existing_outcome_semantics_preserved": (
+                outcomes.get("success", 0) == existing_successes
+                and outcomes.get("failure", 0) == existing_failures
+            ),
         }
 
     def _legacy_connection(self) -> tuple[sqlite3.Connection, int]:
@@ -1633,6 +1586,9 @@ class SpecialistRegistry:
                     "ALTER TABLE agent_runs ADD COLUMN outcome TEXT NOT NULL "
                     "DEFAULT 'success' CHECK(outcome IN ('success','failure'))"
                 )
+                connection.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN loaded_experience_digest TEXT"
+                )
             connection.execute("DROP TABLE agents")
             connection.execute(SCHEMA_TABLE_SQL["agents"])
             for item in prepared:
@@ -1801,6 +1757,83 @@ class SpecialistRegistry:
         return connection.execute(
             "SELECT * FROM experience_summaries WHERE agent_id = ?", (agent_id,)
         ).fetchone()
+
+    @staticmethod
+    def _experience_memory(payload: dict[str, Any]) -> str:
+        developer = payload.get("developer_instructions")
+        if not isinstance(developer, str) or developer.count(MEMORY_HEADER) != 1:
+            raise SpecialistError("agent memory boundary is invalid")
+        memory = developer.split(MEMORY_HEADER, 1)[1]
+        if len(memory.encode("utf-8")) > MAX_MEMORY_BYTES:
+            raise SpecialistError("agent memory exceeds the bounded recall window")
+        return memory
+
+    def _retention_state(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        counts = connection.execute(
+            "SELECT COUNT(*) AS attempt_count, "
+            "COUNT(*) FILTER (WHERE outcome='success') AS success_count, "
+            "COUNT(*) FILTER (WHERE outcome='failure') AS failure_count "
+            "FROM agent_runs WHERE agent_id = ?",
+            (row["agent_id"],),
+        ).fetchone()
+        active_experience_count = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM experience_events AS event WHERE event.agent_id = ? "
+                f"AND {ACTIVE_EXPERIENCE_EVENT_FILTER}",
+                (row["agent_id"],),
+            ).fetchone()[0]
+        )
+        memory = self._experience_memory(payload)
+        empty_memory = memory_block("", [])
+        if (active_experience_count == 0) != (memory == empty_memory):
+            raise SpecialistError("agent memory does not match active experience state")
+        experience_digest = (
+            sha256_bytes(memory.encode("utf-8")) if active_experience_count else None
+        )
+        experience_successes = 0
+        experience_failures = 0
+        if experience_digest is not None:
+            outcomes = connection.execute(
+                "SELECT COUNT(*) FILTER (WHERE outcome='success') AS success_count, "
+                "COUNT(*) FILTER (WHERE outcome='failure') AS failure_count "
+                "FROM agent_runs WHERE agent_id = ? AND loaded_experience_digest = ?",
+                (row["agent_id"], experience_digest),
+            ).fetchone()
+            experience_successes = int(outcomes["success_count"])
+            experience_failures = int(outcomes["failure_count"])
+        attempt_count = int(counts["attempt_count"])
+        success_count = int(counts["success_count"])
+        failure_count = int(counts["failure_count"])
+        survival_line = (
+            f"存活轮次：{success_count}（已记录任务 {attempt_count}，失败 {failure_count}）"
+        )
+        if experience_digest is None:
+            experience_line = "经验：未加载已保存经验"
+        elif experience_successes or experience_failures:
+            experience_line = (
+                f"经验：当前配置 {active_experience_count} 条；此版本关联的后续结果 "
+                f"{experience_successes} 成功、{experience_failures} 失败"
+            )
+        else:
+            experience_line = (
+                f"经验：当前配置 {active_experience_count} 条；此版本尚无关联的后续结果记录"
+            )
+        return {
+            "attempt_count": attempt_count,
+            "survival_rounds": success_count,
+            "failed_attempt_count": failure_count,
+            "active_experience_count": active_experience_count,
+            "experience_digest": experience_digest,
+            "experience_successful_attempt_count": experience_successes,
+            "experience_failed_attempt_count": experience_failures,
+            "opening_status": survival_line + "\n" + experience_line,
+        }
 
     def _pending_events(
         self,
@@ -2527,8 +2560,11 @@ class SpecialistRegistry:
         run_id: str,
         invocation_kind: str,
         outcome: str = "success",
+        loaded_experience_digest: str | None = None,
     ) -> dict[str, Any]:
         expected_sha256 = validate_sha256(expected_sha256)
+        if loaded_experience_digest is not None:
+            loaded_experience_digest = validate_sha256(loaded_experience_digest)
         if not UUID_RE.fullmatch(run_id):
             raise SpecialistError("run_id must be a UUID")
         if invocation_kind not in INVOCATION_KINDS:
@@ -2548,7 +2584,8 @@ class SpecialistRegistry:
             transaction_started = True
             existing = connection.execute(
                 "SELECT agent_runs.agent_id, agent_runs.invocation_kind, "
-                "agent_runs.completed_at, agent_runs.outcome, agents.name, "
+                "agent_runs.completed_at, agent_runs.outcome, "
+                "agent_runs.loaded_experience_digest, agents.name, "
                 "agents.expected_sha256, agents.retired_at "
                 "FROM agent_runs JOIN agents ON agents.agent_id = agent_runs.agent_id "
                 "WHERE agent_runs.run_id = ?",
@@ -2559,9 +2596,11 @@ class SpecialistRegistry:
                 or existing["expected_sha256"] != expected_sha256
                 or existing["invocation_kind"] != invocation_kind
                 or existing["outcome"] != outcome
+                or existing["loaded_experience_digest"] != loaded_experience_digest
             ):
                 raise SpecialistError(
-                    "run_id was replayed for a different specialist, invocation kind, or outcome"
+                    "run_id was replayed for a different specialist, invocation kind, "
+                    "outcome, or experience evidence"
                 )
             if existing is not None:
                 if existing["retired_at"] is None:
@@ -2579,17 +2618,36 @@ class SpecialistRegistry:
                 agent_id = existing["agent_id"]
                 active = existing["retired_at"] is None
             else:
-                row, path, data, _, _ = self._owned_agent(
+                row, path, data, payload, _ = self._owned_agent(
                     connection,
                     name=name,
                     expected_sha256=expected_sha256,
                 )
+                retention_state = self._retention_state(
+                    connection,
+                    row=row,
+                    payload=payload,
+                )
+                if loaded_experience_digest is not None and (
+                    retention_state["experience_digest"] != loaded_experience_digest
+                ):
+                    raise SpecialistError(
+                        "loaded experience digest does not match the verified current role memory"
+                    )
                 completed_at = utc_now()
                 agent_id = row["agent_id"]
                 connection.execute(
-                    "INSERT INTO agent_runs(run_id,agent_id,invocation_kind,completed_at,outcome) "
-                    "VALUES(?,?,?,?,?)",
-                    (run_id, agent_id, invocation_kind, completed_at, outcome),
+                    "INSERT INTO agent_runs("
+                    "run_id,agent_id,invocation_kind,completed_at,outcome,loaded_experience_digest"
+                    ") VALUES(?,?,?,?,?,?)",
+                    (
+                        run_id,
+                        agent_id,
+                        invocation_kind,
+                        completed_at,
+                        outcome,
+                        loaded_experience_digest,
+                    ),
                 )
                 action = (
                     "survival_round_recorded"
@@ -2607,6 +2665,17 @@ class SpecialistRegistry:
             attempt_count = int(counts["attempt_count"])
             survival_rounds = int(counts["success_count"] or 0)
             failure_count = int(counts["failure_count"] or 0)
+            experience_successes = 0
+            experience_failures = 0
+            if loaded_experience_digest is not None:
+                experience_counts = connection.execute(
+                    "SELECT COUNT(*) FILTER (WHERE outcome='success') AS success_count, "
+                    "COUNT(*) FILTER (WHERE outcome='failure') AS failure_count "
+                    "FROM agent_runs WHERE agent_id = ? AND loaded_experience_digest = ?",
+                    (agent_id, loaded_experience_digest),
+                ).fetchone()
+                experience_successes = int(experience_counts["success_count"])
+                experience_failures = int(experience_counts["failure_count"])
             removal_triggered = False
             if (
                 existing is None
@@ -2642,6 +2711,12 @@ class SpecialistRegistry:
                 "active": active,
                 "permanent_removal_triggered": removal_triggered,
                 "historical_backfill": False,
+                "loaded_experience_digest": loaded_experience_digest,
+                "experience_outcome_association_persisted": (
+                    loaded_experience_digest is not None and not removal_triggered
+                ),
+                "experience_successful_attempt_count": experience_successes,
+                "experience_failed_attempt_count": experience_failures,
             }
             if removal_triggered:
                 result.update(
@@ -2684,12 +2759,12 @@ class SpecialistRegistry:
             row, _, _, payload, _ = self._owned_agent(
                 connection, name=name, expected_sha256=expected_sha256,
             )
-            developer = payload["developer_instructions"]
-            if developer.count(MEMORY_HEADER) != 1:
-                raise SpecialistError("agent memory boundary is invalid")
-            memory = developer.split(MEMORY_HEADER, 1)[1]
-            if len(memory.encode("utf-8")) > MAX_MEMORY_BYTES:
-                raise SpecialistError("agent memory exceeds the bounded recall window")
+            memory = self._experience_memory(payload)
+            retention_state = self._retention_state(
+                connection,
+                row=row,
+                payload=payload,
+            )
             return {
                 "ok": True,
                 "action": "recall",
@@ -2702,6 +2777,8 @@ class SpecialistRegistry:
                 "authority": "write" if payload.get("sandbox_mode") == "workspace-write" else "read",
                 "sha256": row["expected_sha256"],
                 "experience": MEMORY_HEADER.lstrip() + memory,
+                "retention_state": retention_state,
+                "opening_status": retention_state["opening_status"],
             }
         finally:
             connection.close()
@@ -2740,6 +2817,11 @@ class SpecialistRegistry:
                 )
                 speed = speed_from_payload(payload)
                 contract = json.loads(row["global_contract"])
+                retention_state = self._retention_state(
+                    connection,
+                    row=row,
+                    payload=payload,
+                )
                 registered.append({
                     "name": row["name"],
                     "role_key": row["role_key"],
@@ -2754,6 +2836,8 @@ class SpecialistRegistry:
                     "successful_attempt_count": int(row["survival_rounds"]),
                     "failed_attempt_count": int(row["failed_attempt_count"]),
                     "experience_count": int(row["experience_count"]),
+                    "retention_state": retention_state,
+                    "opening_status": retention_state["opening_status"],
                     "scope": GLOBAL_SCOPE,
                     "global_contract_version": int(row["global_contract_version"]),
                     "global_domain_key": row["global_domain_key"],
@@ -3082,8 +3166,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "migrate-attempts",
         help=(
-            "explicitly migrate the exact v4 ledger; all existing runs remain successes "
-            "and no historical failures are inferred"
+            "explicitly migrate the exact v4 or v5 ledger without inferring historical "
+            "failures or experience reuse"
         ),
     )
 
@@ -3104,6 +3188,13 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(RUN_OUTCOMES),
         default="success",
         help="completed task outcome; omitted calls remain backward-compatible successes",
+    )
+    record_run.add_argument(
+        "--loaded-experience-digest",
+        help=(
+            "optional digest returned by recall for the verified experience snapshot used "
+            "by this invocation"
+        ),
     )
 
     status = subparsers.add_parser(
@@ -3204,6 +3295,7 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             run_id=arguments.run_id,
             invocation_kind=arguments.invocation_kind,
             outcome=arguments.outcome,
+            loaded_experience_digest=arguments.loaded_experience_digest,
         )
     if arguments.command == "status":
         return registry.status(
