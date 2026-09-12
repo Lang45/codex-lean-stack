@@ -1628,8 +1628,17 @@ class SkillContractTests(unittest.TestCase):
         compact_skill = re.sub(r"\s+", "", self.skill)
         for boundary in ("两个并行技能入口", "互不代证", "不是主任务精简执行器"):
             self.assertIn(re.sub(r"\s+", "", boundary), re.sub(r"\s+", "", combined))
+        shared_surface = "工具与 PowerShell 路径精简"
+        self.assertIn(re.sub(r"\s+", "", shared_surface), compact_skill)
+        self.assertIn(
+            re.sub(r"\s+", "", shared_surface),
+            re.sub(r"\s+", "", self.simplify_skill),
+        )
+        self.assertIn("共同遵守", self.skill + self.simplify_skill + self.readme)
+        self.assertIn(shared_surface, self.manifest["description"])
+        self.assertIn(shared_surface, self.manifest["interface"]["longDescription"])
+        self.assertIn("共同遵守", self.flowcharts + self.routing)
         for calling_surface in (
-            "工具和 PowerShell 路径精简",
             "调用判断与模型、成本、时间选配",
             "上下文、来源和结果复用",
             "内部交流与子代理结果收口",
