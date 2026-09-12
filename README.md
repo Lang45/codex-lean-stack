@@ -2,12 +2,13 @@
 
 插件标识：`codex-lean-stack`
 
-## 当前版本 4.3.0
+## 当前版本 4.3.1
 
 当前使用取向是主要由 Sol 担任父代理，并把高价的 `gpt-6-astra` 留作可调用的子代理专家；模型价差和父代理长上下文往返都是资源成本证据，具体任务仍按三项原则判断。
 
 1. 两个或更多子代理将修改文件或共享状态时，父代理在首次可写派发前记录 `WRITE_ROUTE`，明确写入者、范围、共同热点、隔离路线、撤销依据和受影响检查；范围不能隔离或撤销不能精确归因时，只允许一个候选直接写目标。
-2. 写入安全、用户否定、反 AI 过度工程、消融和条件性验证成为插件全局合同；项目交接只记录项目特有状态、例外、证据、缺口及权威入口，不再复制完整规则章节。
+2. 写入安全、用户否定、反 AI 过度工程、消融和条件性验证由插件自身的权威 reference 单一承载，不要求项目文档复制规则。
+3. 插件不再规定任何项目交接文件的存在、名称、创建、读取、更新或结构；这些只由当前用户要求和项目自身规则决定。
 
 ## 中文
 
@@ -19,7 +20,7 @@
 4. **复杂 PowerShell 及时落到脚本。** 多层引号、JSON/正则或多行逻辑使用任务专属 `.ps1`；确认转义失败后只修同一脚本，不反复改 one-liner。
 5. **三原则决定调用。** 固定按质量、成本、时间判断；墙钟时长不重复计入资源成本。质量达标后，低成本并行若仍在可接受成本带且明显缩短关键路径，可以增加少量子代理；明显增费而无质量收益时停止。
 6. **四模型联合选配。** 不设调用数量；父代理按任务类型与任务类型组复用保留子代理或定制新子代理，一次联合选择模型、思考程度和速度，并保留 `MODEL_ROUTE` 收据。Luna 处理清楚易验切片，Terra 处理有限语义歧义，Sol 承担复杂端到端工作；Astra 仅处理 GPT-5.6 仍有决定性差距或能降低整项资源成本的当前专家问题，最高 `xhigh`，普通视觉任务不触发。
-7. **上下文与交接按需。** 独立任务优先 `fork_turns="none"`；只传当前约束和证据。项目交接见[可执行项目交接](skills/lean-stack/references/project-handoff.md)。
+7. **上下文按需。** 独立任务优先 `fork_turns="none"`；只传当前约束和证据。
 
 ### 运行中
 
@@ -98,7 +99,7 @@ py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace <marke
 - [可写子代理并行 / Writable parallelism](skills/lean-stack/references/write-parallelism.md)
 - [反 AI 过度工程 / Anti-overengineering](skills/lean-stack/references/anti-overengineering.md)
 - [消融反馈循环 / Ablation loop](skills/lean-stack/references/ablation-loop.md)
-- [项目交接 / Project handoff](Jiao-Jie.md)
+- [本仓库交接记录 / Repository handoff](Jiao-Jie.md)
 - [版本说明 / Changelog](CHANGELOG.md)
 
 本仓库是唯一可编辑源码，安装缓存只用于核对。提交前运行当前改动真正影响的最窄约定一致性测试。

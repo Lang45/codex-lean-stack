@@ -49,9 +49,6 @@ class SkillContractTests(unittest.TestCase):
         cls.investigation = (REFERENCES / "investigation.md").read_text(encoding="utf-8")
         cls.review = (REFERENCES / "review.md").read_text(encoding="utf-8")
         cls.long_running = (REFERENCES / "long-running.md").read_text(encoding="utf-8")
-        cls.project_handoff = (REFERENCES / "project-handoff.md").read_text(
-            encoding="utf-8"
-        )
         cls.versioning = (REFERENCES / "versioning.md").read_text(encoding="utf-8")
         cls.openai_yaml = (SKILL_DIR / "agents" / "openai.yaml").read_text(
             encoding="utf-8"
@@ -73,8 +70,7 @@ class SkillContractTests(unittest.TestCase):
     def test_entry_and_verification_nodes_are_distinct_in_main_flow(self) -> None:
         main = self.flowcharts.split("```mermaid", 1)[1].split("```", 1)[0]
         labels = (
-            r"(\w+)\{新会话开始",
-            r"(\w+)\[父代理只读 Jiao-Jie\.md 当前要求和重要片段",
+            r"(\w+)\[收到新消息、继续指令",
             r"(\w+)\[修复真实发现并运行必要验证",
             r"(\w+)\{必要验证通过吗",
         )
@@ -568,7 +564,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(compact_required, compact_fresh_session)
             self.assertIn(compact_required, compact_entry)
         for forbidden in (
-            "本项目Jiao-Jie",
+            "源码项目的本地任务资料",
             "当前会话摘要",
             "源码候选文本",
             "人工摘录策略",
@@ -703,25 +699,21 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(re.sub(r"\s+", "", generated_boundary), compact_generated)
 
-    def test_context_reset_reads_only_handoff_requirements_and_one_skill_entry(self) -> None:
-        combined = self.skill + self.routing + self.handoff + self.project_handoff
-        compact_combined = re.sub(r"\s+", "", combined)
-        for boundary in (
-            "只读当前用户要求",
-            "会改变当前下一动作的重要片段",
-            "最新快照",
-            "最早活动项",
-            "最后可信状态",
-            "相关稳定决定",
-            "来源定位",
-            "授权范围",
-            "只读取一次本 `SKILL.md` 入口",
-            "实际调用子代理时不得再为“调用插件”重读一次",
-            "不重读已交付历史",
-            "只有重要片段标明缺口、冲突或来源变化时",
+    def test_plugin_does_not_own_project_handoff_lifecycle(self) -> None:
+        plugin_contract = self.skill + self.routing + self.long_running + self.flowcharts
+        self.assertFalse((REFERENCES / "project-handoff.md").exists())
+        for removed_global_requirement in (
+            "Jiao-Jie.md",
+            "新会话检查项目根",
+            "项目交接的新会话",
+            "可执行项目交接",
         ):
-            self.assertIn(re.sub(r"\s+", "", boundary), compact_combined)
-        self.assertNotIn("工作上下文重置后（包括压缩或切换上下文窗口）实际完整重读", combined)
+            self.assertNotIn(removed_global_requirement, plugin_contract)
+        self.assertIn("当前上层 `AGENTS.md`", self.handoff)
+        self.assertIn(
+            "插件不负责发现、创建、读取或更新项目交接",
+            re.sub(r"\s+", "", self.handoff),
+        )
 
     def test_runtime_capacity_replaces_plugin_numeric_caps(self) -> None:
         combined = self.skill + self.routing + self.delegation + self.readme
@@ -910,7 +902,7 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertNotIn("缺推理深度才提高档位，能力不足才换模型", self.cost)
 
-    def test_cross_project_reuse_discovery_and_handoff_receipt_are_actionable(self) -> None:
+    def test_cross_project_reuse_discovery_and_result_receipt_are_actionable(self) -> None:
         for content in (self.skill, self.memory):
             compact = re.sub(r"\s+", "", content)
             self.assertIn("status--for-routing", compact)
@@ -920,11 +912,6 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不例行遍历台账", self.skill)
         self.assertIn("临时调用不记作原保留身份的成功运行", self.memory)
         self.assertIn("不以“已调用”或过程记录代替结果", self.skill)
-        self.assertIn("只读当前用户要求", self.skill)
-        self.assertIn("插件规则只读取一次本 `SKILL.md` 入口", self.skill)
-        self.assertIn("实际调用子代理时不得再为“调用插件”重读一次", self.skill)
-        self.assertIn("不为补通知重复读取", self.skill)
-        self.assertNotIn("实际完整重读", self.skill)
 
     def test_retention_and_experience_are_default_nonblocking_side_chain(self) -> None:
         combined = (
@@ -1103,11 +1090,6 @@ class SkillContractTests(unittest.TestCase):
             "范围、热点或基线变化时更新同一条收据",
         ):
             self.assertIn(consumer, self.write_parallelism)
-        self.assertIn(
-            "可写并行与用户否定、反过度工程、消融和条件性验证属于插件全局能力",
-            self.project_handoff,
-        )
-
     def test_parent_parallelism_permissions_and_source_coverage_remain(self) -> None:
         combined = self.skill + self.delegation + self.write_parallelism + self.readme
         self.assertIn("父代理立即推进", combined)
@@ -1728,8 +1710,9 @@ class SkillContractTests(unittest.TestCase):
         for behavior_term in (
             "WRITE_ROUTE",
             "首次可写派发前",
-            "插件全局合同",
-            "项目交接只",
+            "插件自身的权威 reference",
+            "不要求项目文档复制",
+            "不再规定任何项目交接文件",
             "gpt-6-astra",
             "MODEL_ROUTE",
             "决定性",
@@ -1855,7 +1838,7 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertNotIn(stale_route, self.skill + self.routing + self.delegation + self.flowcharts + self.handoff)
 
-    def test_handoff_links_plugin_global_rules_without_copying_their_chapters(self) -> None:
+    def test_repository_handoff_links_plugin_rules_without_copying_their_chapters(self) -> None:
         for authority in (
             "skills/lean-stack/references/write-parallelism.md",
             "skills/lean-stack/references/delegation.md",
@@ -1877,10 +1860,6 @@ class SkillContractTests(unittest.TestCase):
             "迭代阶段先运行最窄、最相关的检查",
         ):
             self.assertNotIn(duplicated_detail, self.handoff)
-        self.assertIn(
-            "可写并行与用户否定、反过度工程、消融和条件性验证属于插件全局能力",
-            self.project_handoff,
-        )
         self.assertIn("在现有基础上优化", self.handoff)
         self.assertIn("当前快照与接手入口", headings)
         self.assertNotIn("schema仍为v3", self.handoff)
@@ -1904,7 +1883,16 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("普通后续轮次复用", self.handoff)
         self.assertIn("每轮项目迭代", self.handoff)
         self.assertIn("收口前更新本文件", self.handoff)
-        self.assertIn("Jiao-Jie.md", self.skill + self.readme + self.flowcharts)
+        self.assertNotIn(
+            "](skills/lean-stack/references/project-handoff.md)",
+            self.handoff,
+        )
+        self.assertNotIn("为详细入口", self.handoff)
+        self.assertNotIn(
+            "Jiao-Jie.md",
+            self.skill + self.routing + self.long_running + self.flowcharts,
+        )
+        self.assertIn("Jiao-Jie.md", self.readme)
         self.assertNotIn("PROJECT-HANDOFF", self.chinese_docs)
 
     def test_handoff_keeps_stable_rules_before_per_round_state(self) -> None:
@@ -1953,16 +1941,17 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(dynamic_subheadings.count(heading), 1)
         self.assertIn("以下部分是每轮都会变化的状态", self.handoff)
 
-    def test_subagent_acceleration_stays_in_the_plugin_not_global_agents(self) -> None:
-        combined = self.skill + self.readme
-        self.assertIn("详细子代理规则由本插件维护", self.skill)
+    def test_plugin_does_not_claim_global_user_file_edits(self) -> None:
         self.assertIn(
             "](skills/lean-stack/SKILL.md)",
             self.readme,
         )
         self.assertIn("Plain `codex plugin add` does not edit", self.readme)
         self.assertIn("普通 `codex plugin add` 不会修改", self.readme)
-        self.assertIn("未获用户当次明确同意不得修改", self.skill)
+        self.assertIn("只有明确要求默认调用时才运行", self.readme)
+        self.assertIn("没有用户当次授权时仍使用普通安装命令", self.versioning)
+        self.assertNotIn("AGENTS.md", self.skill)
+        self.assertNotIn("Jiao-Jie.md", self.skill)
 
     def test_readme_is_a_concrete_concise_agent_calling_guide(self) -> None:
         self.assertLessEqual(len(self.readme.splitlines()), 190)
