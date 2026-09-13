@@ -336,7 +336,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("交付直接可消费的结果和必要证据", first_paragraph)
         self.assertIn("保持只读", first_paragraph)
         opening = (
-            "我是QML 绑定诊断员。\n"
+            "角色名称：QML 绑定诊断员\n"
             "模型：gpt-5.6-terra\n"
             "思考程度：high\n"
         )
@@ -505,7 +505,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         instructions = payload["developer_instructions"]
         self.assertTrue(instructions.startswith("你是专门负责“快速来源核对员”的子代理"))
         opening = (
-            "我是快速来源核对员。\n"
+            "角色名称：快速来源核对员\n"
             "模型：gpt-5.6-terra\n"
             "思考程度：medium\n"
         )
@@ -858,7 +858,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("QML 根因核对员", payload["description"])
         instructions = payload["developer_instructions"]
         self.assertTrue(instructions.startswith("你是专门负责“QML 根因核对员”的子代理"))
-        self.assertLess(instructions.index("你是专门负责"), instructions.index("我是QML 根因核对员。"))
+        self.assertLess(instructions.index("你是专门负责"), instructions.index("角色名称：QML 根因核对员"))
         self.assertIn("实际依赖图", instructions)
         self.assertIn(lesson, instructions)
         self.assertIn("第一条可见 commentary 必须以以下三行开头", instructions)
@@ -1169,6 +1169,17 @@ class SpecialistRegistryTests(unittest.TestCase):
                         expected_sha256=first["sha256"],
                     )
                 self.assertEqual(path.read_bytes(), before)
+
+    def test_sol_subagent_accepts_max_reasoning_effort(self) -> None:
+        created = self.ensure(
+            role_key="sol-max-supported",
+            global_domain_key="sol-max-supported",
+            model="gpt-5.6-sol",
+            effort="max",
+        )
+        payload = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["model"], "gpt-5.6-sol")
+        self.assertEqual(payload["model_reasoning_effort"], "max")
 
     def test_configuration_evidence_boundary_survives_experience_rewrite(self) -> None:
         for speed in ("standard", "fast"):
@@ -2602,7 +2613,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("经验：当前配置 1 条", result["opening_status"])
         self.assertEqual(
             result["opening_declaration"],
-            "我是QML 绑定诊断员。\n"
+            "角色名称：QML 绑定诊断员\n"
             "模型：gpt-5.6-terra\n"
             "思考程度：high\n"
             + result["opening_status"],
@@ -2633,7 +2644,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(recalled["speed"], "fast")
         self.assertEqual(
             recalled["opening_declaration"],
-            "我是快速配置核对员。\n"
+            "角色名称：快速配置核对员\n"
             "模型：gpt-5.6-luna\n"
             "思考程度：medium\n"
             + recalled["opening_status"],

@@ -445,7 +445,7 @@ def opening_configuration_declaration(
     display_name = validate_display_name(display_name)
     model, effort = validate_subagent_model_effort(model, effort)
     return (
-        f"我是{display_name}。\n"
+        f"角色名称：{display_name}\n"
         f"模型：{model}\n"
         f"思考程度：{effort}\n"
     )

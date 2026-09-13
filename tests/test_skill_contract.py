@@ -167,6 +167,23 @@ class SkillContractTests(unittest.TestCase):
 
         self.assertIn("父代理侧", authority)
         self.assertIn("子代理不得复述", authority)
+        for boundary in (
+            "Sol `max` 可按任务复杂度、必要质量、父子完整路线总成本和",
+            "关键路径时间正常联合选择",
+            "不要求先证明 `xhigh` 不足",
+            "普通 UI、视觉和简单审计不得使用 Sol",
+            "只有高价值复杂边界可选择 Sol `ultra`",
+            "`xhigh` 与 `max` 都无法可靠处理",
+            "Astra 子代理仍最高 `xhigh`",
+            "唯一称为高成本专家",
+        ):
+            self.assertIn(re.sub(r"\s+", "", boundary), compact)
+        for shared_gate in (
+            "`max` / `ultra` 只用于",
+            "Sol 选择 `max` / `ultra` 时",
+            "Sol max 或 ultra 只有高价值复杂边界",
+        ):
+            self.assertNotIn(shared_gate, authority)
         self.assertNotIn("评分表", authority)
         self.assertNotIn("先失败", authority)
 
@@ -185,35 +202,47 @@ class SkillContractTests(unittest.TestCase):
 
         for required in (
             "新项目和新会话首次派发",
+            "任何层级、任何agent_type",
             "default",
             "explorer",
             "worker",
-            "原生spawn_agent",
-            "显式传入联合选定的model和reasoning_effort",
-            'fork_turns="none"',
-            "不得省略后继承父代理的SolUltra",
-            "普通UI、视觉和简单审计不使用Ultra",
-            "MODEL_ROUTE必须具体解释为何xhigh不足",
-            "已加载保留角色的固定组合若违反当前任务的模型或思考程度边界",
-            "不复用也不覆盖该TOML",
-            "稳定task_id",
-            "专家名称/模型/思考程度三行实际配置",
-            "存活轮次/经验两行状态",
-            "同一task_id已运行、完成或中断且输入未变化时不得重复派发",
+            "具名保留角色",
+            "每次原生collaboration.spawn_agent都显式传入",
+            "model和reasoning_effort",
+            "与已加载TOML完全一致",
+            'fork_turns="none"或有限正整数历史',
+            'fork_turns="all"因不能同时显式覆盖模型和思考程度而禁止使用',
+            "普通UI、视觉和简单审计不得使用Solultra",
+            "Solmax可按任务复杂度、质量、成本和时间正常联合选择",
+            "只有Solultra需要高价值复杂边界",
+            "xhigh与max为何都不足",
+            "Astra仍最高xhigh",
+            "只有Astra称为高成本专家路线",
+            "角色名称/模型/思考程度三行实际配置",
+            "followup_task没有选模参数",
+            "现有角色的真实模型和思考程度",
+            "parent→child→grandchild逐层递归",
+            "第一条可见commentary严格以这三行开头",
+            "紧接存活轮次与经验两行",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_entry)
 
         for required in (
-            "default、explorer或worker",
-            "原生spawn_agent显式传model和reasoning_effort",
-            "fork_turns=none或有限必要历史",
-            "禁止省略后继承父代理SolUltra",
-            "固定组合违反当前任务边界时不复用也不覆盖",
-            "普通UI、视觉和简单审计不得使用Ultra",
-            "MODEL_ROUTE解释xhigh不足",
-            "稳定task_id",
-            "专家名称/模型/思考程度三行配置",
-            "存活轮次与经验两行状态",
+            "任何层级和任何agent_type",
+            "default、explorer、worker、custom与具名保留角色",
+            "每次collaboration.spawn_agent都须显式传model和reasoning_effort",
+            "具名角色的值必须与已加载TOML一致",
+            "fork_turns=none或有限正整数历史",
+            "禁止fork_turns=all",
+            "普通UI、视觉和简单审计不得使用Solultra",
+            "Solmax可按复杂度、质量、成本和时间正常选择",
+            "xhigh和max为何不足",
+            "Astra最高xhigh",
+            "只有Astra称为高成本专家路线",
+            "角色名称/模型/思考程度三行配置",
+            "followup_task没有选模参数",
+            "规则递归到child和grandchild",
+            "第一条可见commentary严格以五行声明开头",
             "任务卡未提供、未揭露或继承父级占位",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_prompt)
@@ -221,14 +250,31 @@ class SkillContractTests(unittest.TestCase):
         combined = self.routing + self.delegation + self.collaboration
         compact_combined = re.sub(r"\s+", "", combined).replace("`", "")
         for required in (
-            "具名保留角色使用已加载TOML的固定组合",
+            "default、explorer、worker、其他custom",
+            "具名保留角色",
+            "下游子代理",
+            "每次原生collaboration.spawn_agent",
+            "显式传model、reasoning_effort",
+            "与已加载TOML完全一致",
+            "任何下游层级和任何agent_type",
+            '禁止fork_turns="all"',
             "普通UI、视觉或简单审计角色配置为SolUltra",
             "改选合规保留角色，或显式配置运行时角色",
             "缺任一项先补齐再调用",
+            "followup_task接口没有选模参数",
             "同一task_id正在运行、已经完成或已经中断",
             "输入实质变化后",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_combined)
+
+        for content in (entry, calling_prompt, self.routing, self.delegation, self.collaboration):
+            compact_content = re.sub(r"\s+", "", content)
+            for match in re.finditer(r'fork_turns="all"', compact_content):
+                surrounding = compact_content[max(0, match.start() - 35):match.end() + 55]
+                self.assertTrue(
+                    "禁止" in surrounding or "不得" in surrounding,
+                    f"fork_turns=all must only appear as a prohibition: {surrounding}",
+                )
 
         service_tier_boundary = (
             "具名 custom-agent TOML 的 `service_tier` 属于预配置层，不是 `spawn_agent` 参数，"
@@ -741,7 +787,7 @@ class SkillContractTests(unittest.TestCase):
             "最小上下文原则沿代理树逐层适用",
             "Astra 对这些上下文读取、传播、结果复用和增量补缺规则没有例外",
             "`fork_turns=\"none\"` 的合适 GPT-5.6",
-            "无法由有限摘录或来源快照保留",
+            "需要先前输入时，把决定性内容收窄为有限正整数历史或自包含来源快照",
             "长来源只筛选一次并沿代理树复用",
             "完整线程、完整工具输出、完整父历史或完整子树结果不得作为默认输入",
             "轻量结果收据",
@@ -1331,15 +1377,15 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertIn("只有中间结果会解锁下一动作时才报告一次并继续", self.readme)
 
-    def test_retained_self_reads_and_declares_while_parent_configures_new_or_variant(self) -> None:
+    def test_retained_toml_values_are_explicitly_passed_and_declared(self) -> None:
         combined = self.skill + self.delegation + self.readme + self.collaboration
         for required in (
             "父代理",
             "具体模型",
             "思考程度",
-            "开场声明",
-            "自己的配置",
-            "自行声明",
+            "第一条可见 commentary",
+            "与已加载 TOML 完全一致",
+            "显式传入",
             "定制运行时新子代理",
             "联合选择",
             "完整配置",
@@ -1351,7 +1397,11 @@ class SkillContractTests(unittest.TestCase):
         responsibility_docs = combined + self.cost
         self.assertIn("父代理不重复注入经验", self.delegation)
         self.assertIn("不强制重写已有配置", self.delegation)
-        self.assertIn("复用保留子代理及普通复制时沿用其已有具体配置", self.cost)
+        self.assertIn("从已加载 TOML 取得模型和思考程度", self.delegation)
+        self.assertIn("显式传入", self.delegation)
+        self.assertIn("写入任务卡", self.delegation)
+        self.assertIn("复用保留子代理及普通复制时，以其 TOML 中的已有具体配置作为选择值", self.cost)
+        self.assertIn("每次 `spawn_agent` 显式传入模型与思考程度", self.cost)
         self.assertIn("联合选择", self.cost)
         self.assertIn("完整配置", self.cost)
         for reversed_responsibility in (
@@ -1380,7 +1430,7 @@ class SkillContractTests(unittest.TestCase):
             "存活轮次",
             "经验",
             "最终回复顶部",
-            "实际专家名称、模型和思考程度",
+            "实际角色名称、模型和思考程度",
             "不占关键步骤",
             "第一条可见commentary必须以以下三行开头",
             "五行前不写计划、运行ID或其他说明",
@@ -1406,18 +1456,36 @@ class SkillContractTests(unittest.TestCase):
         compact_task_card = re.sub(r"\s+", "", task_card)
         for required in (
             "task_name",
-            "本地化名称",
+            "本地化角色名称",
             "技术标识",
             "不能保证原生卡片标题本地化",
             "把下文五行模板的实际值直接写进每个",
             "explorer",
             "worker",
+            "default",
+            "custom",
+            "具名保留角色",
             "不视为已经取得这份开场",
             "第一条可见commentary",
             "run_id",
             "不得回显",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_task_card)
+
+        expected_opening = "\n".join(
+            (
+                "角色名称：<本地化角色名称>",
+                "模型：<具体模型>",
+                "思考程度：<具体等级>",
+                "存活轮次：<recall 返回的客观状态；运行时子代理为 0（运行时子代理）>",
+                "经验：<recall 返回的客观状态；运行时子代理为未加载保留经验>",
+            )
+        )
+        self.assertIn(expected_opening, self.delegation)
+        self.assertIn("必须严格以上述三行配置开头，紧接", self.delegation)
+        self.assertIn("parent → child → grandchild", self.delegation + self.collaboration)
+        self.assertIn("followup_task` 接口没有选模参数", self.delegation)
+        self.assertNotIn("专家名称/模型/思考程度", self.skill + self.routing + self.delegation + self.collaboration)
 
         for boundary in (
             "send_message_to_thread",
