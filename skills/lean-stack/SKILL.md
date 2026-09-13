@@ -27,9 +27,9 @@ description: 按质量、成本与时间独立协调工具和子代理。用于�
 `default`、`explorer`、`worker` 与具名保留子代理，每次原生 `collaboration.spawn_agent` 都显式传入
 `model` 和 `reasoning_effort`。具名保留子代理传入的两个值必须与已加载 TOML 完全一致；不能省略为
 继承，也不能临时覆盖。新派发只用 `fork_turns="none"` 或有限正整数历史；`fork_turns="all"`
-因不能同时显式覆盖模型和思考程度而禁止使用。具名
-custom-agent TOML 的 `service_tier` 属于预配置层，不是 `spawn_agent` 参数，也不进入任务卡、
-`MODEL_ROUTE` 或可见声明；通用子代理继承会话全局 Fast mode 时不声称具体速度。
+因不能同时显式覆盖模型和思考程度而禁止使用。保留子代理 TOML 的其他宿主预配置只在进入配置
+或生命周期操作时，按[保留子代理经验](references/specialist-memory.md#保留子代理-toml-的宿主预配置)
+处理；不进入本次模型与思考程度选配、任务卡、`MODEL_ROUTE` 或可见声明。
 普通 UI、视觉和简单审计不得使用 Sol `ultra`。Sol `max` 可按任务复杂度、必要质量和相称思考深度正常
 联合选择；只有 Sol `ultra` 需要高价值复杂边界，且 `MODEL_ROUTE` 必须具体解释 `xhigh` 与 `max`
 为何都不足。Astra 仍最高 `xhigh`，且只有 Astra 称为高成本专家路线。已加载保留子代理的固定组合若违反当前任务的

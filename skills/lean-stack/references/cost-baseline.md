@@ -21,9 +21,8 @@ API 美元价格单独列出，不混用两种账单或把单价比例当作整�
 | gpt-5.6-luna | $0.20 | $0.02 | $0.25 | $1.20 |
 
 相同档位、上下文类别与 token 形状下，Sol 为 Astra 的 40%（单价降低 60%）；
-Terra 约为 20%–24%，Luna 约为 2%–2.4%。API Fast 当前表为 Standard 的两倍；Fast mode
-是会话或全局配置，Codex credits 的快速倍率按其自己的文档处理。Long context 的输入、缓存输入
-及缓存写入为短上下文两倍，输出为一点五倍；
+Terra 约为 20%–24%，Luna 约为 2%–2.4%。Long context 的输入、缓存输入及缓存写入为短上下文
+两倍，输出为一点五倍；
 不据此猜测当前任务计费类别、token 用量或账户实际结算。
 Sol 的促销价格官方注明至少持续到 2026-11-21，之后维护核对再更新。
 
@@ -49,7 +48,7 @@ Sol 的促销价格官方注明至少持续到 2026-11-21，之后维护核对�
 不临时覆盖保留 TOML，改用合规保留子代理或显式配置运行时子代理。定制运行时新子代理或变体时，
 父代理根据任务类型、工作价值、风险、证据形状和推理深度，联合选择模型与思考程度。
 
-OpenAI 官方当前每一百万令牌消耗的 credits（标准速度）：
+OpenAI 官方当前每一百万令牌消耗的 credits 基线：
 
 ```text
 模型             输入    缓存输入    输出
@@ -72,15 +71,9 @@ Luna：约为 Sol 的百分之五到百分之六
 重新计算令牌。
 
 GPT-6 单价较高；只有相对最强可行 GPT-5.6 存在决定性质量差距时选择 Astra。
-`ultra` 是本次 Codex 工具暴露的思考档，不是 Fast；未找到独立的 ultra/MAX 固定费率倍率，
+`ultra` 是本次 Codex 工具暴露的思考档；未找到独立的 ultra/MAX 固定费率倍率，
 不得把二点五倍写成 ultra 比 MAX 的任务总费用。官方 API 模型页与 Codex 工具暴露的档位
 可能不同，运行配置只请求当前运行环境明确支持的组合。本插件不修改用户选择的父代理档位。
-
-OpenAI 当前说明，Fast mode 在支持模型上约提高一点五倍速度；GPT-5.6 和 GPT-5.5 在
-ChatGPT 额度模式下消耗标准速度的二点五倍。Astra Fast 在可用时也为标准 credits 的
-二点五倍；不能把 5.6 的速度收益外推给 Astra，也不能把 API Priority 费率混入此表。
-Fast mode 是会话或全局配置。插件不为每次子代理派发选择或声明速度；具名 custom-agent TOML
-的既有 `service_tier` 预配置仍可保留。也不能把任务说明中的速度意图冒充已生效。
 
 ## 当前联合配置基线
 
@@ -113,12 +106,6 @@ Sol `max` 可按完整任务组合的实际需要选择；Sol `ultra` 只用于�
 路线失败后先查明未达标原因，再重新比较完整组合；补证据、换模型和调整思考程度可以
 同时发生，不把原因机械绑定到一个参数。只调整受影响子任务，不能把整批升级。
 高价值风险已明确时直接选足够配置，不必逐级试错。
-
-当前工具的实际限制：`spawn_agent` 只提供模型和思考程度参数，没有单次速度、
-`service_tier` 或 `priority` 参数。Fast mode 属于会话或全局配置。具名 custom-agent TOML
-可保留 `service_tier` 作为子代理预配置；它不是每次派发的参数，不进入模型与思考程度联合路由、
-`MODEL_ROUTE`、任务卡或三行声明。generic 子代理只继承会话全局 Fast mode，插件不声称其具体
-速度。配置与实测延迟或计费仍是不同证据。
 
 ## 调用前的快速使用方法
 
@@ -191,8 +178,6 @@ py -3 -X utf8 <插件技能目录>/scripts/cost_check.py record \
 
 - [OpenAI API 价格](https://developers.openai.com/api/docs/pricing)
 - [OpenAI Codex 费率](https://learn.chatgpt.com/docs/pricing)
-- [OpenAI Codex 速度](https://learn.chatgpt.com/docs/agent-configuration/speed)
 - [OpenAI Codex 子代理](https://learn.chatgpt.com/docs/agent-configuration/subagents?surface=app)
 - [OpenAI 模型比较](https://developers.openai.com/api/docs/models/compare)
 - [GPT-6 Astra 行为与提示指导](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-6-astra)
-- [Codex 配置项与速度映射](https://learn.chatgpt.com/docs/config-file/config-reference)

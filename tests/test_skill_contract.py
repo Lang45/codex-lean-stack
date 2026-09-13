@@ -286,23 +286,34 @@ class SkillContractTests(unittest.TestCase):
                     f"fork_turns=all must only appear as a prohibition: {surrounding}",
                 )
 
-        service_tier_boundary = (
-            "具名 custom-agent TOML 的 `service_tier` 属于预配置层，不是 `spawn_agent` 参数，"
-            "也不进入任务卡、`MODEL_ROUTE` 或可见声明；通用子代理继承会话全局 Fast mode 时"
-            "不声称具体速度。"
-        )
-        self.assertIn(
-            re.sub(r"\s+", "", service_tier_boundary).replace("`", ""),
-            compact_entry,
-        )
-        self.assertEqual(entry.count("service_tier"), 1)
+        self.assertIn("保留子代理TOML的其他宿主预配置", compact_entry)
+        compact_memory = re.sub(r"\s+", "", self.memory).replace("`", "")
+        for retained_boundary in (
+            "保留子代理 TOML 的宿主预配置",
+            "`--speed standard` 不写 `service_tier`",
+            "`--speed fast` 写入",
+            '`service_tier = "fast"`',
+            "创建、安全重配、旧台账迁移、经验刷新和摘要改写中保留并校验",
+            "`status --for-routing` 与 `recall` 可以返回实际预配置",
+            "模型与思考程度路线不能修改它",
+        ):
+            self.assertIn(
+                re.sub(r"\s+", "", retained_boundary).replace("`", ""),
+                compact_memory,
+            )
         hot_path = "\n".join(
             (entry, calling_prompt, self.routing, self.delegation, self.collaboration)
         )
+        for moved_detail in ("service_tier", "Fast mode", "--speed", "priority"):
+            self.assertNotIn(moved_detail, hot_path)
+        public_routing_docs = "\n".join(
+            (hot_path, self.readme, self.cost, self.flowcharts, self.write_parallelism)
+        )
+        for moved_detail in ("service_tier", "Fast mode", "--speed"):
+            self.assertNotIn(moved_detail, public_routing_docs)
         self.assertNotIn("速度：<", hot_path)
         self.assertNotIn("模型、思考程度和速度", hot_path)
         self.assertNotIn("speed intent", hot_path)
-        self.assertNotIn("priority", hot_path)
 
     def test_plugin_rule_is_mandatory_and_default_trigger_is_not_used(
         self,
@@ -919,7 +930,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("只升级或重做该子任务", self.cost)
         self.assertNotIn("父代理的默认比较基线", self.cost)
         self.assertNotIn("推理强度：max", self.cost)
-        self.assertIn("标准速度", self.cost)
+        self.assertNotIn("service_tier", self.cost)
+        self.assertNotIn("Fast mode", self.cost)
+        self.assertNotIn("--speed", self.cost)
 
     def test_low_cost_models_are_the_positive_route_for_ordinary_parallel_work(self) -> None:
         combined = (
@@ -939,7 +952,6 @@ class SkillContractTests(unittest.TestCase):
             "成本与任务相称",
             "实际加快父任务完成",
             "只升级",
-            "标准速度",
             "不是永久白名单",
         ):
             self.assertIn(boundary, combined)

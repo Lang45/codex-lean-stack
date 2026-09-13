@@ -85,6 +85,23 @@
 当前尝试与经验结果关联结构，不推断历史失败或历史经验复用。任何数据库、文件、结构、锁或运行环境可见性失败都返回
 `auxiliary_skipped`，不能拖延真实任务。
 
+## 保留子代理 TOML 的宿主预配置
+
+`agents.py ensure` 的 `--speed` 只配置插件拥有的保留 custom-agent TOML，并会影响宿主以后如何
+调用该具名子代理：`--speed standard` 不写 `service_tier`，`--speed fast` 写入
+`service_tier = "fast"`。这个字段必须在创建、安全重配、旧台账迁移、经验刷新和摘要改写中保留并
+校验，不能因为整理模型路由文档而删除或重置。
+
+当前 `spawn_agent` 接口只显式接收模型与思考程度，没有逐次速度、`service_tier` 或 `priority`
+参数。因此，保留 TOML 的该项宿主预配置不参与模型与思考程度联合选配，也不进入 `MODEL_ROUTE`、
+任务卡或五行开场；模型与思考程度路线不能修改它。`status --for-routing` 与 `recall` 可以返回实际
+预配置，供父代理复用已加载配置时保持事实一致，但返回值不是新的选配轴。通用子代理仅使用宿主
+会话已有配置，插件不声明未观察到的具体值。
+
+相关官方边界见 [Codex 速度](https://learn.chatgpt.com/docs/agent-configuration/speed)、
+[Codex 配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)和
+[Codex 子代理](https://learn.chatgpt.com/docs/agent-configuration/subagents?surface=app)。
+
 ## 在其他项目发现与复用
 
 优先按当前可见子代理的职责、输入形状和证据匹配；描述不足、可能遗漏复用时，才读取一次精简
@@ -154,9 +171,7 @@ py -3 -X utf8 .\skills\lean-stack\scripts\agents.py ensure `
 - 没有匹配任务类型：创建一个插件拥有的保留子代理配置，供未来新任务使用；
 - 配置完全相同：复用；
 - 配置不同：不写入，返回 `reconfiguration_required`；
-- `--speed standard` 不写快速配置；`--speed fast` 在具名 custom-agent TOML 中保留官方
-  `service_tier = "fast"` 预配置；它不是 `spawn_agent`
-  参数，不进入模型与思考程度联合路由、`MODEL_ROUTE`、任务卡或三行声明，既有 fast 子代理无需迁移；
+- `--speed` 按“保留子代理 TOML 的宿主预配置”小节处理，既有配置无需迁移；
 - 已验证胜出配置：使用返回的 `--expected-sha256 <当前哈希>` 再执行同一命令；
 - 安全重配保留子代理身份、路径、所有权令牌、原始经验和压缩摘要，并返回
   `host_visibility=requires_new_task`；
