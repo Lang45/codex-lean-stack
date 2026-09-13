@@ -878,7 +878,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                 name=created["name"],
                 expected_sha256=current_sha256,
                 event_id=str(uuid.uuid4()),
-                lesson=f"适用情境：旧角色输入 {index}；做法：保留证据；证据：测试；例外：无。",
+                lesson=f"适用情境：旧子代理输入 {index}；做法：保留证据；证据：测试；例外：无。",
             )
             current_sha256 = recorded["sha256"]
             compaction = recorded["compaction"]
@@ -886,7 +886,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         summarized = self.improve_with_summary(
             name=created["name"],
             expected_sha256=current_sha256,
-            summary="旧角色的可复用摘要。",
+            summary="旧子代理的可复用摘要。",
             covered_through=compaction["covered_through"],
             source_digest=compaction["source_digest"],
         )
@@ -962,7 +962,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             agents.global_contract_instruction(self.contract()),
             payload["developer_instructions"],
         )
-        self.assertIn("旧角色的可复用摘要", payload["developer_instructions"])
+        self.assertIn("旧子代理的可复用摘要", payload["developer_instructions"])
 
         after = self.registry_rows()
         self.assertEqual(after["agent_runs"], before["agent_runs"])
@@ -982,7 +982,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         recalled = self.registry.recall(
             name=created["name"], expected_sha256=refreshed["sha256"]
         )
-        self.assertIn("旧角色的可复用摘要", recalled["experience"])
+        self.assertIn("旧子代理的可复用摘要", recalled["experience"])
         self.assertEqual(recalled["retention_state"]["survival_rounds"], 1)
         self.assertEqual(self.registry.status()["registered_count"], 1)
         self.assertEqual(self.registry.status(for_dashboard=True)["retained_agent_count"], 1)
@@ -1285,7 +1285,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             self.improve_with_lesson(
                 name=created["name"],
                 expected_sha256=invalid_sha256,
-                lesson="启用自动技能目录的窄角色不能继续写入经验。",
+                lesson="启用自动技能目录的窄子代理不能继续写入经验。",
                 event_id=str(uuid.uuid4()),
             )
 
@@ -1622,6 +1622,156 @@ class SpecialistRegistryTests(unittest.TestCase):
                 covered_through=compaction["covered_through"] - 1,
                 source_digest=compaction["source_digest"],
             )
+
+    def test_complete_run_atomically_records_result_and_derived_experience(self) -> None:
+        created = self.ensure()
+        reused = self.ensure()
+        self.assertEqual(reused["action"], "reused")
+        run_id = str(uuid.uuid4())
+        lesson = "适用情境：完成已采用任务；做法：同事务记录结果和经验；证据：原子重放测试。"
+
+        completed = agents.dispatch(
+            agents.build_parser().parse_args(
+                [
+                    "--codex-home", str(self.codex_home), "complete-run",
+                    "--name", created["name"],
+                    "--expected-sha256", created["sha256"],
+                    "--run-id", run_id,
+                    "--invocation-kind", "spawn_agent",
+                    "--outcome", "success",
+                    "--lesson", lesson,
+                    "--origin-term", "当前任务来源",
+                ]
+            )
+        )
+        replay = self.registry.complete_run(
+            name=created["name"],
+            expected_sha256=created["sha256"],
+            run_id=run_id,
+            invocation_kind="spawn_agent",
+            outcome="success",
+            lesson=lesson,
+            origin_terms=("当前任务来源",),
+        )
+
+        expected_event_id = str(
+            uuid.uuid5(
+                uuid.UUID(run_id),
+                f"retained-completion:{created['sha256']}",
+            )
+        )
+        self.assertEqual(completed["action"], "completion_recorded")
+        self.assertEqual(completed["run_action"], "survival_round_recorded")
+        self.assertEqual(completed["experience_action"], "experience_recorded")
+        self.assertEqual(completed["experience_event_id"], expected_event_id)
+        self.assertEqual(replay["action"], "completion_already_recorded")
+        self.assertEqual(replay["run_action"], "survival_round_already_recorded")
+        self.assertEqual(replay["experience_action"], "experience_already_recorded")
+        self.assertEqual(replay["sha256"], completed["sha256"])
+        self.assertIn(lesson, Path(created["path"]).read_text(encoding="utf-8"))
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
+                1,
+            )
+
+    def test_complete_run_prevalidates_identifiers_and_rejects_failure_experience(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        before = path.read_bytes()
+        before_rows = self.registry_rows()
+
+        with self.assertRaisesRegex(agents.SpecialistError, "run_id must be a UUID"):
+            self.registry.complete_run(
+                name=created["name"], expected_sha256=created["sha256"],
+                run_id="not-a-uuid", invocation_kind="spawn_agent", outcome="success",
+                lesson="有效经验正文。", origin_terms=("当前任务来源",),
+            )
+        with self.assertRaisesRegex(agents.SpecialistError, "retracts_event_id must be a UUID"):
+            self.registry.complete_run(
+                name=created["name"], expected_sha256=created["sha256"],
+                run_id=str(uuid.uuid4()), invocation_kind="spawn_agent", outcome="success",
+                lesson="有效经验正文。", retracts_event_id="not-a-uuid",
+                origin_terms=("当前任务来源",),
+            )
+        with self.assertRaisesRegex(agents.SpecialistError, "adopted successful result"):
+            self.registry.complete_run(
+                name=created["name"], expected_sha256=created["sha256"],
+                run_id=str(uuid.uuid4()), invocation_kind="spawn_agent", outcome="failure",
+                lesson="失败结果不能直接写入经验。", origin_terms=("当前任务来源",),
+            )
+
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.registry_rows(), before_rows)
+
+    def test_complete_run_accepts_unused_origin_terms_without_experience(self) -> None:
+        created = self.ensure()
+        completed = self.registry.complete_run(
+            name=created["name"],
+            expected_sha256=created["sha256"],
+            run_id=str(uuid.uuid4()),
+            invocation_kind="spawn_agent",
+            outcome="success",
+            origin_terms=("当前任务来源",),
+        )
+
+        self.assertEqual(completed["action"], "completion_recorded")
+        self.assertEqual(completed["experience_action"], "not_requested")
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
+                0,
+            )
+
+    def test_complete_run_event_and_commit_failures_restore_exact_state(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        before = path.read_bytes()
+        before_rows = self.registry_rows()
+        arguments = {
+            "name": created["name"],
+            "expected_sha256": created["sha256"],
+            "run_id": str(uuid.uuid4()),
+            "invocation_kind": "spawn_agent",
+            "outcome": "success",
+            "lesson": "适用情境：故障恢复；做法：整体回滚；证据：注入失败。",
+            "origin_terms": ("当前任务来源",),
+        }
+
+        with mock.patch.object(
+            self.registry,
+            "_append_experience_event",
+            side_effect=agents.SpecialistError("forced experience failure"),
+        ):
+            with self.assertRaisesRegex(agents.SpecialistError, "forced experience failure"):
+                self.registry.complete_run(**arguments)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.registry_rows(), before_rows)
+
+        real_connection = self.registry.connect()
+
+        class FailingCommitConnection:
+            def execute(self, sql, parameters=()):
+                if sql == "COMMIT":
+                    raise sqlite3.OperationalError("forced completion commit failure")
+                return real_connection.execute(sql, parameters)
+
+            def close(self):
+                real_connection.close()
+
+        with mock.patch.object(
+            self.registry,
+            "connect",
+            return_value=FailingCommitConnection(),
+        ):
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, "forced completion commit failure"
+            ):
+                self.registry.complete_run(**arguments)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.registry_rows(), before_rows)
 
     def test_survival_rounds_are_idempotent_auditable_and_reported_by_status(self) -> None:
         created = self.ensure()
@@ -2048,7 +2198,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         improved = self.improve_with_lesson(
             name=created["name"],
             expected_sha256=created["sha256"],
-            lesson="已记录经验的角色不能进入待删目录。",
+            lesson="已记录经验的子代理不能进入待删目录。",
             event_id=str(uuid.uuid4()),
         )
 

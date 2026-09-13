@@ -2335,16 +2335,14 @@ class SpecialistRegistry:
         )
         return digest, rewritten
 
-    def improve_with_lesson(
-        self,
+    @staticmethod
+    def _prepare_experience_event(
         *,
-        name: str,
-        expected_sha256: str,
         lesson: str,
         event_id: str | None,
-        retracts_event_id: str | None = None,
-        origin_terms: Iterable[str] = (),
-    ) -> dict[str, Any]:
+        retracts_event_id: str | None,
+        origin_terms: Iterable[str],
+    ) -> tuple[str, str, str | None, str]:
         lesson = validate_lesson(lesson)
         terms = normalize_origin_terms(origin_terms)
         reject_origin_terms(lesson, terms, field="experience")
@@ -2366,6 +2364,138 @@ class SpecialistRegistry:
             ).encode("utf-8")
         )
         event_digest = sha256_bytes(digest_input)
+        return lesson, event_id, retracts_event_id, event_digest
+
+    def _append_experience_event(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        path: Path,
+        original: bytes,
+        payload: dict[str, Any],
+        lesson: str,
+        event_id: str,
+        retracts_event_id: str | None,
+        event_digest: str,
+        require_new: bool = False,
+    ) -> tuple[dict[str, Any], bytes]:
+        existing = connection.execute(
+            "SELECT event_digest, retracts_event_id FROM experience_events "
+            "WHERE agent_id = ? AND event_id = ?",
+            (row["agent_id"], event_id),
+        ).fetchone()
+        if existing is not None and existing["event_digest"] != event_digest:
+            raise SpecialistError("event_id was replayed with different experience")
+        if existing is not None and existing["retracts_event_id"] != retracts_event_id:
+            raise SpecialistError("event_id was replayed with a different correction target")
+        if require_new and existing is not None:
+            raise SpecialistError("completion event_id already belongs to an earlier operation")
+        target: sqlite3.Row | None = None
+        if retracts_event_id is not None:
+            target = connection.execute(
+                "SELECT sequence, retracts_event_id FROM experience_events "
+                "WHERE agent_id = ? AND event_id = ?",
+                (row["agent_id"], retracts_event_id),
+            ).fetchone()
+            if target is None:
+                raise SpecialistError("correction target is not an experience of this specialist")
+            if target["retracts_event_id"] is not None:
+                raise SpecialistError("a correction event cannot itself be retracted")
+            prior = connection.execute(
+                "SELECT event_id FROM experience_events "
+                "WHERE agent_id = ? AND retracts_event_id = ?",
+                (row["agent_id"], retracts_event_id),
+            ).fetchone()
+            if prior is not None and prior["event_id"] != event_id:
+                raise SpecialistError("experience already has a different correction event")
+        if existing is None:
+            connection.execute(
+                "INSERT INTO experience_events("
+                "agent_id,event_id,event_digest,lesson,retracts_event_id,created_at"
+                ") VALUES(?,?,?,?,?,?)",
+                (
+                    row["agent_id"],
+                    event_id,
+                    event_digest,
+                    lesson,
+                    retracts_event_id,
+                    utc_now(),
+                ),
+            )
+        summary_row = self._summary_row(connection, row["agent_id"])
+        summary = summary_row["summary"] if summary_row is not None else ""
+        covered = int(summary_row["covered_through_sequence"]) if summary_row is not None else 0
+        summary_reset = False
+        if (
+            existing is None
+            and target is not None
+            and int(target["sequence"]) <= covered
+        ):
+            connection.execute(
+                "DELETE FROM experience_summaries WHERE agent_id = ?",
+                (row["agent_id"],),
+            )
+            summary = ""
+            covered = 0
+            summary_reset = True
+        pending = self._pending_events(connection, row["agent_id"], covered)
+        new_hash, rewritten = self._rewrite_memory(
+            connection,
+            row=row,
+            path=path,
+            original=original,
+            payload=payload,
+            summary=summary,
+            pending=pending,
+        )
+        compaction = self._compression_batch(summary, pending)
+        total = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM experience_events WHERE agent_id = ?",
+                (row["agent_id"],),
+            ).fetchone()[0]
+        )
+        if retracts_event_id is not None:
+            action = (
+                "experience_correction_already_recorded"
+                if existing is not None
+                else "experience_corrected"
+            )
+        else:
+            action = (
+                "experience_already_recorded"
+                if existing is not None
+                else "experience_recorded"
+            )
+        return ({
+            "ok": True,
+            "action": action,
+            "event_id": event_id,
+            "retracts_event_id": retracts_event_id,
+            "summary_reset": summary_reset,
+            "raw_experience_preserved": True,
+            "experience_count": total,
+            "sha256": new_hash,
+            "compaction": compaction or {"needed": False},
+        }, rewritten)
+
+    def improve_with_lesson(
+        self,
+        *,
+        name: str,
+        expected_sha256: str,
+        lesson: str,
+        event_id: str | None,
+        retracts_event_id: str | None = None,
+        origin_terms: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        lesson, event_id, retracts_event_id, event_digest = self._prepare_experience_event(
+            lesson=lesson,
+            event_id=event_id,
+            retracts_event_id=retracts_event_id,
+            origin_terms=origin_terms,
+        )
         connection = self.connect()
         path: Path | None = None
         original: bytes | None = None
@@ -2375,104 +2505,19 @@ class SpecialistRegistry:
             row, path, original, payload, _ = self._owned_agent(
                 connection, name=name, expected_sha256=expected_sha256
             )
-            existing = connection.execute(
-                "SELECT event_digest, retracts_event_id FROM experience_events "
-                "WHERE agent_id = ? AND event_id = ?",
-                (row["agent_id"], event_id),
-            ).fetchone()
-            if existing is not None and existing["event_digest"] != event_digest:
-                raise SpecialistError("event_id was replayed with different experience")
-            if existing is not None and existing["retracts_event_id"] != retracts_event_id:
-                raise SpecialistError("event_id was replayed with a different correction target")
-            target: sqlite3.Row | None = None
-            if retracts_event_id is not None:
-                target = connection.execute(
-                    "SELECT sequence, retracts_event_id FROM experience_events "
-                    "WHERE agent_id = ? AND event_id = ?",
-                    (row["agent_id"], retracts_event_id),
-                ).fetchone()
-                if target is None:
-                    raise SpecialistError("correction target is not an experience of this specialist")
-                if target["retracts_event_id"] is not None:
-                    raise SpecialistError("a correction event cannot itself be retracted")
-                prior = connection.execute(
-                    "SELECT event_id FROM experience_events "
-                    "WHERE agent_id = ? AND retracts_event_id = ?",
-                    (row["agent_id"], retracts_event_id),
-                ).fetchone()
-                if prior is not None and prior["event_id"] != event_id:
-                    raise SpecialistError("experience already has a different correction event")
-            if existing is None:
-                connection.execute(
-                    "INSERT INTO experience_events("
-                    "agent_id,event_id,event_digest,lesson,retracts_event_id,created_at"
-                    ") VALUES(?,?,?,?,?,?)",
-                    (
-                        row["agent_id"],
-                        event_id,
-                        event_digest,
-                        lesson,
-                        retracts_event_id,
-                        utc_now(),
-                    ),
-                )
-            summary_row = self._summary_row(connection, row["agent_id"])
-            summary = summary_row["summary"] if summary_row is not None else ""
-            covered = int(summary_row["covered_through_sequence"]) if summary_row is not None else 0
-            summary_reset = False
-            if (
-                existing is None
-                and target is not None
-                and int(target["sequence"]) <= covered
-            ):
-                connection.execute(
-                    "DELETE FROM experience_summaries WHERE agent_id = ?",
-                    (row["agent_id"],),
-                )
-                summary = ""
-                covered = 0
-                summary_reset = True
-            pending = self._pending_events(connection, row["agent_id"], covered)
-            new_hash, rewritten = self._rewrite_memory(
+            result, rewritten = self._append_experience_event(
                 connection,
                 row=row,
                 path=path,
                 original=original,
                 payload=payload,
-                summary=summary,
-                pending=pending,
-            )
-            compaction = self._compression_batch(summary, pending)
-            total = int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM experience_events WHERE agent_id = ?",
-                    (row["agent_id"],),
-                ).fetchone()[0]
+                lesson=lesson,
+                event_id=event_id,
+                retracts_event_id=retracts_event_id,
+                event_digest=event_digest,
             )
             connection.execute("COMMIT")
-            if retracts_event_id is not None:
-                action = (
-                    "experience_correction_already_recorded"
-                    if existing is not None
-                    else "experience_corrected"
-                )
-            else:
-                action = (
-                    "experience_already_recorded"
-                    if existing is not None
-                    else "experience_recorded"
-                )
-            return {
-                "ok": True,
-                "action": action,
-                "event_id": event_id,
-                "retracts_event_id": retracts_event_id,
-                "summary_reset": summary_reset,
-                "raw_experience_preserved": True,
-                "experience_count": total,
-                "sha256": new_hash,
-                "compaction": compaction or {"needed": False},
-            }
+            return result
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 connection.execute("ROLLBACK")
@@ -2620,6 +2665,75 @@ class SpecialistRegistry:
         outcome: str = "success",
         loaded_experience_digest: str | None = None,
     ) -> dict[str, Any]:
+        return self._record_run(
+            name=name,
+            expected_sha256=expected_sha256,
+            run_id=run_id,
+            invocation_kind=invocation_kind,
+            outcome=outcome,
+            loaded_experience_digest=loaded_experience_digest,
+        )
+
+    def complete_run(
+        self,
+        *,
+        name: str,
+        expected_sha256: str,
+        run_id: str,
+        invocation_kind: str,
+        outcome: str,
+        loaded_experience_digest: str | None = None,
+        lesson: str | None = None,
+        retracts_event_id: str | None = None,
+        origin_terms: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        expected_sha256 = validate_sha256(expected_sha256)
+        if not UUID_RE.fullmatch(run_id):
+            raise SpecialistError("run_id must be a UUID")
+        if outcome not in RUN_OUTCOMES:
+            raise SpecialistError(f"outcome must be one of {sorted(RUN_OUTCOMES)}")
+        if lesson is None:
+            if retracts_event_id is not None:
+                raise SpecialistError("--retracts-event-id requires --lesson")
+            experience_event = None
+        else:
+            if outcome != "success":
+                raise SpecialistError("experience can only accompany an adopted successful result")
+            # Bind the event to both the run id and the caller's CAS snapshot.  This
+            # removes a second caller-generated UUID from the completion path while
+            # preserving exact-request replay after the role file gains the lesson.
+            event_id = str(
+                uuid.uuid5(uuid.UUID(run_id), f"retained-completion:{expected_sha256}")
+            )
+            experience_event = self._prepare_experience_event(
+                lesson=lesson,
+                event_id=event_id,
+                retracts_event_id=retracts_event_id,
+                origin_terms=origin_terms,
+            )
+        return self._record_run(
+            name=name,
+            expected_sha256=expected_sha256,
+            run_id=run_id,
+            invocation_kind=invocation_kind,
+            outcome=outcome,
+            loaded_experience_digest=loaded_experience_digest,
+            experience_event=experience_event,
+            completion=True,
+        )
+
+    def _record_run(
+        self,
+        *,
+        name: str,
+        expected_sha256: str,
+        run_id: str,
+        invocation_kind: str,
+        outcome: str = "success",
+        loaded_experience_digest: str | None = None,
+        experience_event: tuple[str, str, str | None, str] | None = None,
+        completion: bool = False,
+    ) -> dict[str, Any]:
         expected_sha256 = validate_sha256(expected_sha256)
         if loaded_experience_digest is not None:
             loaded_experience_digest = validate_sha256(loaded_experience_digest)
@@ -2634,6 +2748,7 @@ class SpecialistRegistry:
         connection = self.connect()
         path: Path | None = None
         data: bytes | None = None
+        rewritten: bytes | None = None
         removed_file = False
         committed = False
         transaction_started = False
@@ -2649,9 +2764,31 @@ class SpecialistRegistry:
                 "WHERE agent_runs.run_id = ?",
                 (run_id,),
             ).fetchone()
+            experience_replay = None
+            if existing is not None and experience_event is not None:
+                _, event_id, retracts_event_id, event_digest = experience_event
+                experience_replay = connection.execute(
+                    "SELECT event_digest,retracts_event_id FROM experience_events "
+                    "WHERE agent_id=? AND event_id=?",
+                    (existing["agent_id"], event_id),
+                ).fetchone()
+                if experience_replay is None:
+                    raise SpecialistError(
+                        "run_id completion replay is missing its bound experience event"
+                    )
+                if (
+                    experience_replay["event_digest"] != event_digest
+                    or experience_replay["retracts_event_id"] != retracts_event_id
+                ):
+                    raise SpecialistError(
+                        "run_id completion replay has different experience"
+                    )
             if existing is not None and (
                 existing["name"] != name
-                or existing["expected_sha256"] != expected_sha256
+                or (
+                    existing["expected_sha256"] != expected_sha256
+                    and experience_replay is None
+                )
                 or existing["invocation_kind"] != invocation_kind
                 or existing["outcome"] != outcome
                 or existing["loaded_experience_digest"] != loaded_experience_digest
@@ -2662,10 +2799,12 @@ class SpecialistRegistry:
                 )
             if existing is not None:
                 if existing["retired_at"] is None:
-                    self._owned_agent(
+                    row, path, data, payload, _ = self._owned_agent(
                         connection,
                         name=name,
-                        expected_sha256=expected_sha256,
+                        expected_sha256=(
+                            None if experience_replay is not None else expected_sha256
+                        ),
                     )
                 completed_at = existing["completed_at"]
                 action = (
@@ -2675,6 +2814,39 @@ class SpecialistRegistry:
                 )
                 agent_id = existing["agent_id"]
                 active = existing["retired_at"] is None
+                if experience_event is not None:
+                    assert row is not None and path is not None and data is not None
+                    summary_row = self._summary_row(connection, agent_id)
+                    summary = summary_row["summary"] if summary_row is not None else ""
+                    covered = (
+                        int(summary_row["covered_through_sequence"])
+                        if summary_row is not None
+                        else 0
+                    )
+                    pending = self._pending_events(connection, agent_id, covered)
+                    _, event_id, retracts_event_id, _ = experience_event
+                    experience_result = {
+                        "action": (
+                            "experience_correction_already_recorded"
+                            if retracts_event_id is not None
+                            else "experience_already_recorded"
+                        ),
+                        "event_id": event_id,
+                        "retracts_event_id": retracts_event_id,
+                        "summary_reset": False,
+                        "raw_experience_preserved": True,
+                        "experience_count": int(
+                            connection.execute(
+                                "SELECT COUNT(*) FROM experience_events WHERE agent_id=?",
+                                (agent_id,),
+                            ).fetchone()[0]
+                        ),
+                        "sha256": row["expected_sha256"],
+                        "compaction": self._compression_batch(summary, pending)
+                        or {"needed": False},
+                    }
+                else:
+                    experience_result = None
             else:
                 row, path, data, payload, _ = self._owned_agent(
                     connection,
@@ -2713,6 +2885,22 @@ class SpecialistRegistry:
                     else "task_failure_recorded"
                 )
                 active = True
+                if experience_event is not None:
+                    lesson, event_id, retracts_event_id, event_digest = experience_event
+                    experience_result, rewritten = self._append_experience_event(
+                        connection,
+                        row=row,
+                        path=path,
+                        original=data,
+                        payload=payload,
+                        lesson=lesson,
+                        event_id=event_id,
+                        retracts_event_id=retracts_event_id,
+                        event_digest=event_digest,
+                        require_new=True,
+                    )
+                else:
+                    experience_result = None
             counts = connection.execute(
                 "SELECT COUNT(*) AS attempt_count, "
                 "SUM(CASE WHEN outcome='success' THEN 1 ELSE 0 END) AS success_count, "
@@ -2750,6 +2938,13 @@ class SpecialistRegistry:
                 active = False
                 removal_triggered = True
                 action = "task_failure_recorded_and_permanently_removed"
+            run_action = action
+            if completion and not removal_triggered:
+                action = (
+                    "completion_already_recorded"
+                    if existing is not None
+                    else "completion_recorded"
+                )
             connection.execute("COMMIT")
             committed = True
             transaction_started = False
@@ -2776,6 +2971,37 @@ class SpecialistRegistry:
                 "experience_successful_attempt_count": experience_successes,
                 "experience_failed_attempt_count": experience_failures,
             }
+            if completion:
+                result.update(
+                    {
+                        "run_action": run_action,
+                        "experience_action": (
+                            experience_result["action"]
+                            if experience_result is not None
+                            else "not_requested"
+                        ),
+                        "experience_event_id": (
+                            experience_result["event_id"]
+                            if experience_result is not None
+                            else None
+                        ),
+                        "sha256": (
+                            experience_result["sha256"]
+                            if experience_result is not None
+                            else (row["expected_sha256"] if active else None)
+                        ),
+                    }
+                )
+                if experience_result is not None:
+                    result.update(
+                        {
+                            "retracts_event_id": experience_result["retracts_event_id"],
+                            "summary_reset": experience_result["summary_reset"],
+                            "raw_experience_preserved": True,
+                            "experience_count": experience_result["experience_count"],
+                            "compaction": experience_result["compaction"],
+                        }
+                    )
             if removal_triggered:
                 result.update(
                     {
@@ -2798,9 +3024,25 @@ class SpecialistRegistry:
             if removed_file and path is not None and data is not None:
                 file_rollback_error = self._rollback_deleted_agent_file(path=path, data=data)
                 rollback_error = rollback_error or file_rollback_error
+            if (
+                rewritten is not None
+                and path is not None
+                and data is not None
+                and rewritten != data
+            ):
+                try:
+                    if path.read_bytes() != rewritten:
+                        raise SpecialistError(
+                            "agent changed before completion rollback"
+                        )
+                    replace_exact_file(path, expected=rewritten, replacement=data)
+                except (OSError, SpecialistError) as file_exc:
+                    rollback_error = rollback_error or (
+                        f"agent file rollback failed: {file_exc}"
+                    )
             if rollback_error is not None:
                 raise SpecialistError(
-                    "attempt recording failed and exact recovery was not completed: "
+                    "completion recording failed and exact recovery was not completed: "
                     f"{rollback_error}"
                 ) from exc
             raise
@@ -3273,6 +3515,40 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    complete_run = subparsers.add_parser(
+        "complete-run",
+        help=(
+            "atomically record one explicitly judged result and its optional "
+            "sanitized experience"
+        ),
+    )
+    complete_run.add_argument("--name", required=True)
+    complete_run.add_argument("--expected-sha256", required=True)
+    complete_run.add_argument("--run-id", required=True)
+    complete_run.add_argument(
+        "--invocation-kind",
+        required=True,
+        choices=sorted(INVOCATION_KINDS),
+    )
+    complete_run.add_argument(
+        "--outcome",
+        required=True,
+        choices=sorted(RUN_OUTCOMES),
+        help="explicit completed task outcome",
+    )
+    complete_run.add_argument("--loaded-experience-digest")
+    complete_run.add_argument(
+        "--lesson",
+        help=(
+            "optional adopted experience; its UUID is derived from run-id and the CAS snapshot"
+        ),
+    )
+    complete_run.add_argument(
+        "--retracts-event-id",
+        help="optional prior event corrected by the adopted experience",
+    )
+    complete_run.add_argument("--origin-term", action="append", default=[])
+
     status = subparsers.add_parser(
         "status",
         help="report registered specialists, survival rounds, and unregistered lean files",
@@ -3372,6 +3648,18 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
             invocation_kind=arguments.invocation_kind,
             outcome=arguments.outcome,
             loaded_experience_digest=arguments.loaded_experience_digest,
+        )
+    if arguments.command == "complete-run":
+        return registry.complete_run(
+            name=arguments.name,
+            expected_sha256=arguments.expected_sha256,
+            run_id=arguments.run_id,
+            invocation_kind=arguments.invocation_kind,
+            outcome=arguments.outcome,
+            loaded_experience_digest=arguments.loaded_experience_digest,
+            lesson=arguments.lesson,
+            retracts_event_id=arguments.retracts_event_id,
+            origin_terms=arguments.origin_term,
         )
     if arguments.command == "status":
         return registry.status(

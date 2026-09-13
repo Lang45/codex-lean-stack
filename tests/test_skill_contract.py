@@ -88,18 +88,14 @@ class SkillContractTests(unittest.TestCase):
         self.assertEqual(len(nodes), len(set(nodes)), "entry and validation nodes must not merge")
 
     def test_quality_cost_time_priority_and_safety_remain(self) -> None:
-        self.assertIn("高价值工作质量优先", self.skill)
         for content in (self.skill, self.routing, self.flowcharts):
-            self.assertIn("资源成本", content)
-        for readme_term in ("质量、成本、时间", "可接受成本带", "关键路径"):
+            for principle in ("质量", "成本", "时间"):
+                self.assertIn(principle, content)
+        for readme_term in ("模型与思考程度", "成本相称", "实际加快父任务完成"):
             self.assertIn(readme_term, self.readme)
         for floor in ("安全", "权限", "数据完整性", "诚实证据"):
             self.assertIn(floor, self.skill + self.readme)
-        for principle in (
-            "高价值工作质量优先",
-            "质量达标后总成本优先",
-            "成本闸门通过后再比时间",
-        ):
+        for principle in ("1. **质量。**", "2. **成本。**", "3. **时间。**"):
             self.assertIn(principle, self.skill)
         self.assertNotIn("普通工作速度优先", self.skill)
 
@@ -110,37 +106,34 @@ class SkillContractTests(unittest.TestCase):
             "调用数量只描述委派拓扑和并发形状",
             "本身不构成成本错误",
             "每个新增调用",
-            "替代的父代理工作",
-            "必要质量或关键路径收益",
-            "完整增量成本",
-            "多个分别通过三项原则的低成本调用可以是更优路线",
-            "不按调用总数机械压缩",
+            "模型与思考程度联合达到必要质量",
+            "质量充分的组合中选择成本相称",
+            "对父任务实际完成速度有正贡献",
+            "多个分别通过三项原则的调用可以同时成立",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact)
         for invalid_shortcut in (
             "调用数量多就是成本错误",
             "超过三个子代理就是成本错误",
             "按调用总数判断成本",
+            "上下文、交流、整合、验证及返工形成的完整增量成本",
+            "上下文、启动、通信、整合、验证或返工汇总为",
         ):
             self.assertNotIn(invalid_shortcut, combined)
 
     def test_quality_cost_time_order_allows_bounded_cheap_parallelism(self) -> None:
-        for content in (self.skill, self.routing, self.readme, self.flowcharts):
-            self.assertIn("资源成本", content)
-        self.assertIn("质量 → 成本 → 时间", self.routing)
-        self.assertIn("质量达标后：先比较", self.routing)
-        self.assertIn("可接受成本带", self.routing)
+        self.assertIn("质量 → 成本 → 时间", self.skill)
         compact_routing = re.sub(r"\s+", "", self.routing)
-        self.assertIn("增加少量低成本子代理", compact_routing)
-        self.assertIn("换取明显更短的关键路径", compact_routing)
-        self.assertIn("没有显著增加", self.routing)
-        self.assertIn("父代理仍核对关键差异、接口和安全限制", self.routing)
+        self.assertIn("模型与思考程度联合达到该切片的必要质量", compact_routing)
+        self.assertIn("质量充分的模型与思考程度组合中选择与任务相称的成本", compact_routing)
+        self.assertIn("该委派对父任务实际完成速度有正贡献", compact_routing)
+        self.assertIn("多个调用只要分别通过三项原则就可同时成立", compact_routing)
         self.assertIn("用户要求全文或必要核验不受精简限制", self.delegation)
         main = self.flowcharts.split("```mermaid", 1)[1].split("```", 1)[0]
-        decision = re.search(r"H\{([^}]+)\}", main)
+        decision = re.search(r"BP\{([^}]+)\}", main)
         self.assertIsNotNone(decision)
-        self.assertIn("预计达到必要质量且能替代父代理实际工作的", decision.group(1))
-        self.assertIn("低成本 GPT-5.6 模型任务", decision.group(1))
+        self.assertIn("模型与思考程度联合达到必要质量", decision.group(1))
+        self.assertIn("实际加快父任务完成", decision.group(1))
         combined = self.skill + self.routing + self.readme + self.flowcharts
         for stale_priority in (
             "普通工作速度优先",
@@ -165,7 +158,7 @@ class SkillContractTests(unittest.TestCase):
             "跨来源或跨模块因果",
             "gpt-6-astra",
             "当前未决专家问题",
-            "降低整项资源成本",
+            "会改变决定的额外质量",
             "普通视觉任务",
             "不触发Astra",
             "不要求较低模型实际失败",
@@ -177,20 +170,16 @@ class SkillContractTests(unittest.TestCase):
         for receipt_field in (
             "MODEL_ROUTE",
             "selected:",
-            "quality_floor:",
-            "cheaper_alternative:",
-            "alternative_gap:",
-            "resource_cost:",
-            "critical_path:",
-            "replaced_parent_work:",
+            "quality:",
+            "cost:",
+            "parent_speedup:",
         ):
             self.assertIn(receipt_field, authority)
 
         self.assertIn("父代理侧", authority)
         self.assertIn("子代理不得复述", authority)
         for boundary in (
-            "Sol `max` 可按任务复杂度、必要质量、父子完整路线总成本和",
-            "关键路径时间正常联合选择",
+            "Sol `max` 可按任务复杂度和必要质量正常联合选择",
             "不要求先证明 `xhigh` 不足",
             "普通 UI、视觉和简单审计不得使用 Sol",
             "只有高价值复杂边界可选择 Sol `ultra`",
@@ -234,7 +223,7 @@ class SkillContractTests(unittest.TestCase):
             'fork_turns="none"或有限正整数历史',
             'fork_turns="all"因不能同时显式覆盖模型和思考程度而禁止使用',
             "普通UI、视觉和简单审计不得使用Solultra",
-            "Solmax可按任务复杂度、质量、成本和时间正常联合选择",
+            "Solmax可按任务复杂度、必要质量和相称思考深度正常联合选择",
             "只有Solultra需要高价值复杂边界",
             "xhigh与max为何都不足",
             "Astra仍最高xhigh",
@@ -272,15 +261,15 @@ class SkillContractTests(unittest.TestCase):
         compact_combined = re.sub(r"\s+", "", combined).replace("`", "")
         for required in (
             "default、explorer、worker、其他custom",
-            "具名保留角色",
+            "具名保留子代理",
             "下游子代理",
             "每次原生collaboration.spawn_agent",
             "显式传model、reasoning_effort",
             "与已加载TOML完全一致",
             "任何下游层级和任何agent_type",
             '禁止fork_turns="all"',
-            "普通UI、视觉或简单审计角色配置为SolUltra",
-            "改选合规保留角色，或显式配置运行时角色",
+            "普通UI、视觉或简单审计子代理配置为SolUltra",
+            "改选合规保留子代理，或显式配置运行时子代理",
             "缺任一项先补齐再调用",
             "followup_task接口没有选模参数",
             "同一task_id正在运行、已经完成或已经中断",
@@ -387,6 +376,47 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(
                 re.sub(r"\s+", "", unauthorized_opening_expansion), compact
             )
+
+    def test_optional_preparation_triggers_one_shortest_path_prompt(self) -> None:
+        """Keep the detailed trigger in lean-simplify, with behavior-facing guards."""
+        section = re.search(
+            r"(?ms)^## 可选准备动作的及时精简触发\r?\n(.*?)(?=^## |\Z)",
+            self.simplify_skill,
+        )
+        self.assertIsNotNone(section)
+        assert section is not None
+        contract = section.group(1)
+        compact = re.sub(r"\s+", "", contract)
+
+        for required in (
+            "已经理解当前目标",
+            "不能直接产生可验证主任务结果",
+            "不能解除已命名阻断",
+            "及时调用一次 `$lean-simplify`",
+            "现有代码、已有证据和当前授权内，哪条最短路径能产生第一个可验证主任务结果",
+            "立刻执行其中第一项实际动作",
+            "新会话额外预读或前言",
+            "目标与验收未定前的批量编辑",
+            "决定性验收通过后追加同类复验",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact)
+
+        for exclusion in (
+            "正在运行的必要工具",
+            "唯一权威读取",
+            "权限或安全检查",
+            "解除已命名阻断的动作",
+        ):
+            self.assertIn(re.sub(r"\s+", "", exclusion), compact)
+
+        for forbidden_mechanism in (
+            "不计时",
+            "不增加步骤数",
+            "不进行后台观察",
+            "不建立持久状态、Hook、脚本或新子代理",
+            "不得阻断或延后 `$lean-stack`",
+        ):
+            self.assertIn(re.sub(r"\s+", "", forbidden_mechanism), compact)
 
     def test_main_flow_is_primary_and_locates_every_auxiliary_entry(self) -> None:
         main = self.flowcharts.split("## 一、主任务链路", 1)[1].split(
@@ -532,13 +562,13 @@ class SkillContractTests(unittest.TestCase):
         compact_authority = re.sub(r"\s+", "", detailed_authority)
         for required in (
             "持续多工作流任务",
-            "能替代父代理实际研究、实现或验收",
-            "当前有收益且互不冲突的 GPT-5.6 切片分别编写任务卡并尽早派发",
-            "调用数量随真实工作流、边际收益与运行容量变化",
+            "能推进实际研究、实现或验收",
+            "分别通过三项原则且互不冲突的 GPT-5.6 切片编写任务卡并尽早派发",
+            "调用数量随真实工作流和容量变化",
             "不设最低数量",
-            "依据维护后的模型价差及完整父子反事实路线",
-            "可接受的低成本资源",
-            "明显缩短关键路径",
+            "模型与思考程度联合达到必要质量",
+            "成本与任务相称",
+            "对父任务实际完成速度有正贡献",
             "只在后期增加一次复核不能替代前面的实际工作",
             "新要求改变工作流时立即重新判断",
         ):
@@ -549,7 +579,7 @@ class SkillContractTests(unittest.TestCase):
             "多个互不依赖、已就绪",
             "严格依赖",
             "写入冲突无法隔离",
-            "显著增费且没有必要质量收益",
+            "不能实际加快父任务完成",
         ):
             self.assertIn(re.sub(r"\s+", "", exception), compact_authority)
 
@@ -563,15 +593,11 @@ class SkillContractTests(unittest.TestCase):
             self.assertNotIn(rejected_quota, detailed_authority)
 
     def test_routing_rechecks_changed_work_and_requires_adoptable_results(self) -> None:
-        """Keep re-routing, cost, expert escalation, and closeout behavior coupled."""
+        """Keep re-routing, three-principle selection, and closeout behavior coupled."""
         routing_decision = self.routing.split("## 四、", 1)[0]
         early_dispatch = self.delegation.split("### 持续多工作流任务的早期派发", 1)[1].split(
             "###", 1
         )[0]
-        direct_parent_cost = routing_decision.split("判断“不派发”时", 1)[1].split(
-            "收益只需", 1
-        )[0]
-        total_cost = self.routing.split("总成本包含", 1)[1].split("\n\n", 1)[0]
         closeout = self.delegation.split("每个子代理达到成功条件", 1)[1].split(
             "最终回复使用：", 1
         )[0]
@@ -583,18 +609,14 @@ class SkillContractTests(unittest.TestCase):
             "新要求改变工作流时立即重新判断",
             re.sub(r"\s+", "", early_dispatch),
         )
-        self.assertIn("全部当前有收益且互不冲突", early_dispatch)
-
-        # Total cost includes the expensive parent's continued independent work,
-        # rather than treating only child startup or a parent-token reduction as cost.
-        compact_direct_parent_cost = re.sub(r"\s+", "", direct_parent_cost)
-        for cost_part in ("父代理接下来独立承担", "上下文", "生成", "调试", "验证", "总成本"):
-            self.assertIn(cost_part, compact_direct_parent_cost)
-        for cost_part in ("token", "服务费用", "返工"):
-            self.assertIn(cost_part, total_cost)
-        self.assertIn("关键路径时间另行比较", total_cost)
-        self.assertNotIn("等待", total_cost)
-        self.assertNotIn("只算子代理启动成本", total_cost)
+        self.assertIn("分别通过三项原则且互不冲突", early_dispatch)
+        for principle in (
+            "模型与思考程度联合达到该切片的必要质量",
+            "质量充分的模型与思考程度组合中选择与任务相称的成本",
+            "该委派对父任务实际完成速度有正贡献",
+        ):
+            self.assertIn(re.sub(r"\s+", "", principle), re.sub(r"\s+", "", routing_decision))
+        self.assertNotIn("总成本包含", routing_decision)
 
         # Progress commentary is not an adoptable result: adoption comes from a
         # child's final result/receipt, with one bounded retry per named gap.
@@ -611,7 +633,7 @@ class SkillContractTests(unittest.TestCase):
 
         # Dispatch remains shaped by benefit and capacity, never by a preset count,
         # elapsed-time gate, or indiscriminate "send everything" rule.
-        self.assertIn("调用数量随真实工作流、边际收益与运行容量变化", early_dispatch)
+        self.assertIn("调用数量随真实工作流和容量变化，并由三项原则决定", early_dispatch)
         self.assertIn(
             "不按固定时间、文件数量或轮次机械重判",
             re.sub(r"\s+", "", early_dispatch),
@@ -620,33 +642,24 @@ class SkillContractTests(unittest.TestCase):
             self.assertNotIn(mechanical_rule, self.skill + self.routing + self.delegation)
 
     def test_expensive_parent_defaults_to_low_cost_ready_slice_dispatch(self) -> None:
-        """Use maintained price evidence to dispatch a qualified low-cost slice."""
+        """Dispatch ready slices through the three direct principles."""
         routing_decision = self.routing.split("## 四、", 1)[0]
         early_dispatch = self.delegation.split("### 持续多工作流任务的早期派发", 1)[1].split(
             "###", 1
         )[0]
         compact_decision = re.sub(r"\s+", "", routing_decision)
 
-        # A low-cost GPT-5.6 slice that replaces expensive parent reasoning has a
-        # positive benefit determination from the maintained price baseline and
-        # both counterfactual routes.
         for required in (
-            "昂贵父代理",
-            "低成本GPT-5.6",
             "已就绪",
             "范围明确",
             "可安全独立",
             "持续模型判断",
-            "替代父代理实际阅读、实现、诊断或验收",
-            "维护后的模型价格/收益基线",
-            "明显价差",
-            "完整反事实路线",
-            "正向收益判定",
-            "可接受成本带",
-            "关键路径",
+            "模型与思考程度联合达到质量",
+            "成本相称",
+            "委派对父任务完成速度有正贡献",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_decision)
-        self.assertNotIn("收益不确定", routing_decision)
+        self.assertNotIn("完整反事实路线", routing_decision)
 
         # A new independent slice must be considered before the parent resumes
         # large work, while deterministic short tools and quotas remain excluded.
@@ -658,8 +671,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不设最低数量", early_dispatch)
         self.assertIn("确定性短工具", early_dispatch)
 
-    def test_direct_parent_route_needs_concrete_blockers_and_two_full_cost_routes(self) -> None:
-        """Keep direct handling evidence-based and compare both counterfactual routes."""
+    def test_direct_parent_route_needs_concrete_blockers_and_three_principles(self) -> None:
+        """Keep direct handling evidence-based and avoid a second cost checklist."""
         routing_decision = self.routing.split("## 四、", 1)[0]
         compact_decision = re.sub(r"\s+", "", routing_decision)
 
@@ -671,30 +684,22 @@ class SkillContractTests(unittest.TestCase):
             "重复",
             "写入冲突无法隔离",
             "能力或权限缺失",
-            "交接加增量核验明显超过切片",
+            "运行环境容量不足",
+            "没有质量充分且成本相称的模型与思考程度组合",
+            "委派对父任务完成速度没有正贡献",
         ):
             self.assertIn(re.sub(r"\s+", "", blocker), compact_decision)
         self.assertNotIn("只在明确质量、速度或总成本有收益时", compact_decision)
         self.assertNotIn("首次用户可见", routing_decision)
-
-        # The authoritative cost paragraph compares both resource routes while
-        # keeping wall-clock time in a separate critical-path field.
-        total_cost = self.routing.split("总成本包含", 1)[1].split("\n\n", 1)[0]
-        compact_cost = re.sub(r"\s+", "", total_cost)
-        for cost_part in (
-            "父代理独立路线",
-            "子代理路线",
-            "输入/输出token",
-            "服务费用",
-            "整合",
-            "必要验证",
-            "预计返工资源",
-            "不能只计子代理新增成本",
-            "关键路径时间另行比较",
+        for forbidden in (
+            "完整增量成本",
+            "resource_cost:",
+            "critical_path:",
+            "replaced_parent_work:",
         ):
-            self.assertIn(re.sub(r"\s+", "", cost_part), compact_cost)
-        self.assertIn("模型价差", compact_decision)
-        self.assertIn("replaced_parent_work:", self.routing)
+            self.assertNotIn(forbidden, routing_decision)
+        for field in ("quality:", "cost:", "parent_speedup:"):
+            self.assertIn(field, self.routing)
 
     def test_fresh_session_claim_requires_installed_isolated_behavioral_acceptance(self) -> None:
         """A hand-loaded candidate in this task is not evidence of a fresh session."""
@@ -852,12 +857,12 @@ class SkillContractTests(unittest.TestCase):
             "调查、诊断、实现、修复、测试或验收",
             "项目、框架、动作动词、交付名称",
             "工具、写入权限、安全风险和决定性证据形状",
-            "只读角色",
+            "只读子代理",
             "范围放宽",
         ):
             self.assertIn(re.sub(r"\s+", "", boundary), compact)
         for rejected_narrowing in (
-            "不同项目必须新建角色",
+            "不同项目必须新建子代理",
             "每个动作动词建立一个任务类型组",
             "成功条件不同就建立不同组",
         ):
@@ -865,7 +870,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("可复用专长标识", self.agents_source)
         for parent_owned_boundary in (
             "项目、框架、动作动词、交付名称",
-            "范围放宽不授予只读角色写权限",
+            "范围放宽不授予只读子代理写权限",
         ):
             self.assertNotIn(parent_owned_boundary, self.agents_source)
 
@@ -905,7 +910,10 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("外部维护任务", combined)
         self.assertIn("每个任务", self.skill)
         self.assertIn("不逐任务联网查价", self.skill)
-        self.assertIn("不要求父代理在运行时重新计算令牌", self.cost)
+        self.assertIn(
+            "不要求父代理在运行时重新计算令牌",
+            re.sub(r"\s+", "", self.cost),
+        )
         for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"):
             self.assertIn(model, self.cost)
         self.assertIn("只升级或重做该子任务", self.cost)
@@ -926,12 +934,12 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(model, combined)
         for boundary in (
             "范围清楚",
-            "多个独立普通子任务",
-            "更倾向",
-            "第二个及后续调用",
+            "多个互不依赖",
+            "必要质量",
+            "成本与任务相称",
+            "实际加快父任务完成",
             "只升级",
             "标准速度",
-            "关键路径",
             "不是永久白名单",
         ):
             self.assertIn(boundary, combined)
@@ -998,7 +1006,10 @@ class SkillContractTests(unittest.TestCase):
             compact_delegation,
         )
         self.assertIn("可以同时变化", self.delegation)
-        self.assertIn("单轴变化只在明确需要识别因果时", self.delegation)
+        self.assertIn(
+            "单轴变化只在明确需要识别因果时",
+            re.sub(r"\s+", "", self.delegation),
+        )
         self.assertNotIn("不能一次改变多个轴", self.delegation)
         self.assertIn("在自己的线程用最终回复提交自己的精炼结果", combined)
         self.assertIn("不由子代理预先合并", combined)
@@ -1041,13 +1052,14 @@ class SkillContractTests(unittest.TestCase):
                 self.assertIn("任务类型", content)
 
         combined = "\n".join(selection_consumers.values())
+        compact_combined = re.sub(r"\s+", "", combined)
         for required in (
             "完整配置",
             "互相制约的联合配置",
             "可以同时变化",
             "单轴变化只在明确需要识别因果时",
         ):
-            self.assertIn(required, combined)
+            self.assertIn(re.sub(r"\s+", "", required), compact_combined)
         for removed_hard_rule in (
             "父代理只选择一个改变轴",
             "父代理才选择一个改变轴形成变体",
@@ -1088,9 +1100,9 @@ class SkillContractTests(unittest.TestCase):
         compact = re.sub(r"\s+", "", combined)
         for boundary in (
             "结果通过必要核验并被父代理采用",
-            "默认各尝试一次 `ensure` 和 `improve`",
+            "一次 `ensure` 和一次 `complete-run`",
             "不要求主任务接近结束",
-            "稳定的 UUID `event_id`",
+            "稳定 `run_id`",
             "只有明确排除项",
             "摘要压缩仍只在能与真实工作并行且不争用时执行",
             "保存回执",
@@ -1139,13 +1151,13 @@ class SkillContractTests(unittest.TestCase):
         for summary in (self.skill, self.flowcharts, self.readme):
             self.assertIn("全局领域", summary)
         combined = self.skill + self.memory + self.delegation + self.routing
-        self.assertIn("默认只尝试一次 `improve`", combined)
-        self.assertIn("稳定的 UUID `event_id`", combined)
+        self.assertIn("一次 `complete-run`", combined)
+        self.assertIn("稳定`run_id`", re.sub(r"\s+", "", combined))
         self.assertIn("UUID idempotency key", self.agents_source)
         self.assertIn("omit for a new random UUID", self.agents_source)
         self.assertIn("保存回执", combined)
         self.assertNotIn("只有主任务已经大致完成、接近结束", combined)
-        self.assertNotIn("角色可泛化且有未来用途", combined)
+        self.assertNotIn("子代理可泛化且有未来用途", combined)
 
     def test_copy_variant_winner_and_transfer_drive_sqlite_without_candidate_state(self) -> None:
         combined = self.skill + self.memory + self.delegation
@@ -1283,7 +1295,7 @@ class SkillContractTests(unittest.TestCase):
             "协作父代理",
             "整合父代理",
             "有限下游范围",
-            "协作角色: 协作父代理",
+            "协作身份: 协作父代理",
             "允许下游委派: 是",
             "有限下游范围",
             "任务类型与任务类型组",
@@ -1324,7 +1336,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(concrete_config_boundary, combined)
 
         self.assertIn(
-            "只有新父代理任务能带来必要质量或质量达标后的总成本收益时才调用 `create_thread`",
+            "只有用户明确要求建立新的 Codex 任务时才调用 `create_thread`",
             self.collaboration,
         )
         self.assertIn("只有任务卡明确指定协作父代理", self.agents_source)
@@ -1487,7 +1499,7 @@ class SkillContractTests(unittest.TestCase):
             "worker",
             "default",
             "custom",
-            "具名保留角色",
+            "具名保留子代理",
             "不视为已经取得这份开场",
             "第一条可见commentary",
             "run_id",
@@ -1579,9 +1591,9 @@ class SkillContractTests(unittest.TestCase):
         budget_contract = re.sub(r"\s+", "", self.memory + self.skill)
         for boundary in (
             "UTF-8 字节数",
-            "完整提示和完整角色文件不设置 KiB 上限",
+            "完整提示和完整子代理文件不设置 KiB 上限",
             "经验窗口最多 4 KiB",
-            "完整角色文件不设置 KiB 上限",
+            "完整子代理文件不设置 KiB 上限",
             "不是用户要求或官方限制",
             "单条经验最多 4096 个字符",
             "事件总数量没有上限",
@@ -1610,6 +1622,7 @@ class SkillContractTests(unittest.TestCase):
                 "recall",
                 "ensure",
                 "record-run",
+                "complete-run",
                 "improve",
                 "delete",
                 "migrate-global",
