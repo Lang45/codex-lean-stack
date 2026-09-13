@@ -1,4 +1,4 @@
 interface:
   display_name: "子代理调用"
   short_description: "按质量、成本、时间选择工具、四模型子代理与思考程度。"
-  default_prompt: "直接使用 $lean-stack 独立完成工具与四模型子代理调用判断，无需先加载或完成 $lean-simplify；派发任务卡须写入子代理首条可见回复的四行配置、存活轮次与经验状态。"
+  default_prompt: "新项目或新会话从已加载技能目录识别 $lean-simplify 与 $lean-stack 两个按需入口，只读取当前动作命中的入口，不能开头通读两份或为插件增加第二段初始化前言；识别后立即开始，不得用无关记忆、完整细则、委派解释或版本解释阻塞；首条说明后不再发第二段启动说明，互不依赖的必要读取和第一个确定性命令放进同一次工具调用。直接使用 $lean-stack 独立完成工具与四模型子代理调用判断，无需先加载或完成 $lean-simplify；新项目调用通用 default、explorer 或 worker 时须用原生 spawn_agent 显式传 model 和 reasoning_effort，并用 fork_turns=none 或有限必要历史，禁止省略后继承父代理 Sol Ultra；具名保留角色只用已加载 TOML，固定组合违反当前任务边界时不复用也不覆盖。普通 UI、视觉和简单审计不得使用 Ultra；Sol max 或 ultra 只有高价值复杂边界且 MODEL_ROUTE 解释 xhigh 不足时才允许。每次 spawn_agent 或 followup_task 前须补齐稳定 task_id、专家名称/模型/思考程度三行配置、存活轮次与经验两行状态和 MODEL_ROUTE，禁止用任务卡未提供、未揭露或继承父级占位。"

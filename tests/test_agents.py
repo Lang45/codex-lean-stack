@@ -78,6 +78,72 @@ class SpecialistRegistryTests(unittest.TestCase):
         connection.row_factory = sqlite3.Row
         return connection
 
+    def remove_canonical_contract_instruction(self, created: dict[str, object]) -> str:
+        path = Path(str(created["path"]))
+        instruction = agents.global_contract_instruction(self.contract()).encode("utf-8")
+        current = path.read_bytes()
+        self.assertEqual(current.count(instruction), 1)
+        legacy = current.replace(instruction, b"", 1)
+        legacy_sha256 = agents.sha256_bytes(legacy)
+        path.write_bytes(legacy)
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE agents SET expected_sha256=? WHERE agent_id=?",
+                (legacy_sha256, created["agent_id"]),
+            )
+            connection.commit()
+        return legacy_sha256
+
+    def add_legacy_visible_speed_declaration(self, created: dict[str, object]) -> str:
+        path = Path(str(created["path"]))
+        current = path.read_bytes()
+        payload = tomllib.loads(current.decode("utf-8"))
+        header = agents.parse_header(current.decode("utf-8"))
+        developer = payload["developer_instructions"]
+        effort_line = f"思考程度：{payload['model_reasoning_effort']}\n"
+        self.assertEqual(developer.count(effort_line), 2)
+        legacy_developer = developer.replace(
+            effort_line,
+            effort_line + "速度：快速\n",
+        )
+        display_name, short_description = payload["description"].split("：", 1)
+        legacy = agents.build_agent_bytes(
+            agent_id=header["agent_id"],
+            role_key=header["role_key"],
+            owner_token=header["owner_token"],
+            name=payload["name"],
+            display_name=display_name,
+            description=short_description,
+            model=payload["model"],
+            effort=payload["model_reasoning_effort"],
+            authority=(
+                "write" if payload["sandbox_mode"] == "workspace-write" else "read"
+            ),
+            instruction_base=legacy_developer,
+            memory=self.registry._experience_memory(payload),
+            speed="fast",
+            global_domain_key=header["global_domain_key"],
+            global_contract_digest=header["global_contract_digest"],
+        )
+        legacy_sha256 = agents.sha256_bytes(legacy)
+        path.write_bytes(legacy)
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE agents SET expected_sha256=? WHERE agent_id=?",
+                (legacy_sha256, created["agent_id"]),
+            )
+            connection.commit()
+        return legacy_sha256
+
+    def registry_rows(self) -> dict[str, list[tuple[object, ...]]]:
+        with contextlib.closing(self.db()) as connection:
+            return {
+                table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
+                for table in (
+                    "agents", "agent_runs", "experience_events", "experience_summaries"
+                )
+            }
+
     def improve_with_lesson(self, **kwargs):
         kwargs.setdefault("origin_terms", ("当前任务来源",))
         return self.registry.improve_with_lesson(**kwargs)
@@ -273,15 +339,14 @@ class SpecialistRegistryTests(unittest.TestCase):
             "我是QML 绑定诊断员。\n"
             "模型：gpt-5.6-terra\n"
             "思考程度：high\n"
-            "速度：标准\n"
         )
         self.assertIn(opening, instructions)
         role = instructions.index(role_paragraph)
-        communication = instructions.index("第一条可见 commentary 必须以以下四行开头", role)
+        communication = instructions.index("第一条可见 commentary 必须以以下三行开头", role)
         declaration = instructions.index(opening, communication)
         status = instructions.index("紧接着逐字显示任务卡提供的“存活轮次”和“经验”两行", declaration)
         execution = instructions.index("只完成任务卡分配的当前子任务", status)
-        final_result = instructions.index("最终回复顶部再次写实际模型", execution)
+        final_result = instructions.index("最终回复顶部再次写上述三行配置", execution)
         final_declaration = instructions.index(opening, final_result)
         final_task = instructions.index("子任务：<当前子任务>", final_declaration)
         self.assertEqual(instructions.count(opening), 2)
@@ -292,7 +357,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(final_result, final_declaration)
         self.assertLess(final_declaration, final_task)
         for child_contract in (
-            "第一条可见 commentary 必须以以下四行开头",
+            "第一条可见 commentary 必须以以下三行开头",
             "运行时子代理显示 0 轮和未加载保留经验",
             "不得声明经验适用性",
             "run_id 即使出现在输入中也不得回显",
@@ -309,7 +374,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         ):
             self.assertIn(child_contract, instructions)
         self.assertLess(
-            instructions.index("第一条可见 commentary 必须以以下四行开头"),
+            instructions.index("第一条可见 commentary 必须以以下三行开头"),
             instructions.index(opening),
         )
         self.assertNotIn("你的第一动作必须", instructions)
@@ -443,16 +508,15 @@ class SpecialistRegistryTests(unittest.TestCase):
             "我是快速来源核对员。\n"
             "模型：gpt-5.6-terra\n"
             "思考程度：medium\n"
-            "速度：快速\n"
         )
         self.assertEqual(instructions.count(opening), 2)
         self.assertLess(instructions.index("你是专门负责"), instructions.index(opening))
         self.assertLess(
-            instructions.index("第一条可见 commentary 必须以以下四行开头"),
+            instructions.index("第一条可见 commentary 必须以以下三行开头"),
             instructions.index("只完成任务卡分配的当前子任务"),
         )
         self.assertLess(
-            instructions.index("最终回复顶部再次写实际模型"),
+            instructions.index("最终回复顶部再次写上述三行配置"),
             instructions.rindex(opening),
         )
 
@@ -483,9 +547,9 @@ class SpecialistRegistryTests(unittest.TestCase):
             Path(explicit_standard["path"]).read_text(encoding="utf-8")
         )
         self.assertNotIn("service_tier", luna_payload)
-        self.assertIn("速度：标准", luna_payload["developer_instructions"])
+        self.assertNotIn("速度：", luna_payload["developer_instructions"])
         self.assertNotIn("service_tier", terra_payload)
-        self.assertIn("速度：标准", terra_payload["developer_instructions"])
+        self.assertNotIn("速度：", terra_payload["developer_instructions"])
         self.assertNotIn("service_tier", standard_payload)
 
     def test_omitted_standard_does_not_overwrite_explicit_fast_without_cas(self) -> None:
@@ -797,12 +861,256 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(instructions.index("你是专门负责"), instructions.index("我是QML 根因核对员。"))
         self.assertIn("实际依赖图", instructions)
         self.assertIn(lesson, instructions)
-        self.assertIn("第一条可见 commentary 必须以以下四行开头", instructions)
+        self.assertIn("第一条可见 commentary 必须以以下三行开头", instructions)
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
                 1,
             )
+
+    def test_v6_missing_contract_instruction_requires_cas_refresh_and_preserves_state(self) -> None:
+        created = self.ensure(speed="fast")
+        current_sha256 = created["sha256"]
+        compaction = None
+        for index in range(8):
+            recorded = self.improve_with_lesson(
+                name=created["name"],
+                expected_sha256=current_sha256,
+                event_id=str(uuid.uuid4()),
+                lesson=f"适用情境：旧角色输入 {index}；做法：保留证据；证据：测试；例外：无。",
+            )
+            current_sha256 = recorded["sha256"]
+            compaction = recorded["compaction"]
+        self.assertTrue(compaction["needed"])
+        summarized = self.improve_with_summary(
+            name=created["name"],
+            expected_sha256=current_sha256,
+            summary="旧角色的可复用摘要。",
+            covered_through=compaction["covered_through"],
+            source_digest=compaction["source_digest"],
+        )
+        current_sha256 = summarized["sha256"]
+        self.registry.record_run(
+            name=created["name"],
+            expected_sha256=current_sha256,
+            run_id=str(uuid.uuid4()),
+            invocation_kind="spawn_agent",
+            outcome="success",
+        )
+        legacy_sha256 = self.remove_canonical_contract_instruction(created)
+        path = Path(created["path"])
+        legacy_bytes = path.read_bytes()
+        before = self.registry_rows()
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+
+        for operation in (
+            lambda: self.registry.recall(name=created["name"]),
+            lambda: self.registry.status(),
+            lambda: self.registry.status(for_routing=True),
+            lambda: self.registry.status(for_dashboard=True),
+        ):
+            with self.subTest(operation=operation), self.assertRaisesRegex(
+                agents.SpecialistError, "canonical global contract"
+            ):
+                operation()
+
+        ensure_cli = [
+            "--codex-home", str(self.codex_home), "ensure",
+            "--role-key", "qml-binding-diagnostics",
+            "--display-name", "QML 绑定诊断员",
+            "--description", "重复完成一个范围清晰、可复核的专门工作。",
+            "--instructions", "交付直接可消费的结果和必要证据。",
+            "--model", "gpt-5.6-terra",
+            "--reasoning-effort", "high",
+            "--speed", "fast",
+            "--authority", "read",
+            "--global-domain-key", "interface-binding-diagnostics",
+            "--global-contract", json.dumps(self.contract(), ensure_ascii=False),
+            "--origin-term", "当前任务来源",
+        ]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(agents.main(ensure_cli), 0)
+        preview = json.loads(output.getvalue())
+        self.assertEqual(preview["action"], "global_contract_refresh_required")
+        self.assertFalse(preview["compatible"])
+        self.assertTrue(preview["contract_refresh_required"])
+        self.assertEqual(preview["retry_with_expected_sha256"], legacy_sha256)
+        self.assertEqual(path.read_bytes(), legacy_bytes)
+        self.assertEqual(self.registry_rows(), before)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(
+                agents.main([*ensure_cli, "--expected-sha256", legacy_sha256]),
+                0,
+            )
+        refreshed = json.loads(output.getvalue())
+        self.assertEqual(refreshed["action"], "global_contract_refreshed")
+        self.assertTrue(refreshed["compatible"])
+        self.assertTrue(refreshed["experience_preserved"])
+        self.assertFalse(refreshed["contract_refresh_required"])
+        self.assertEqual(refreshed["agent_id"], created["agent_id"])
+        self.assertEqual(refreshed["owner_token"], created["owner_token"])
+        self.assertEqual(refreshed["path"], created["path"])
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["service_tier"], "fast")
+        self.assertNotIn("速度：", payload["developer_instructions"])
+        self.assertIn(
+            agents.global_contract_instruction(self.contract()),
+            payload["developer_instructions"],
+        )
+        self.assertIn("旧角色的可复用摘要", payload["developer_instructions"])
+
+        after = self.registry_rows()
+        self.assertEqual(after["agent_runs"], before["agent_runs"])
+        self.assertEqual(after["experience_events"], before["experience_events"])
+        self.assertEqual(after["experience_summaries"], before["experience_summaries"])
+        agent_columns = (
+            "agent_id", "name", "role_key", "path", "owner_token", "created_at",
+            "global_contract_version", "global_domain_key", "global_contract",
+            "global_contract_digest", "retired_at",
+        )
+        with contextlib.closing(self.db()) as connection:
+            restored = connection.execute("SELECT * FROM agents").fetchone()
+            self.assertEqual(
+                tuple(restored[column] for column in agent_columns),
+                tuple(dict(zip(restored.keys(), before["agents"][0]))[column] for column in agent_columns),
+            )
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=refreshed["sha256"]
+        )
+        self.assertIn("旧角色的可复用摘要", recalled["experience"])
+        self.assertEqual(recalled["retention_state"]["survival_rounds"], 1)
+        self.assertEqual(self.registry.status()["registered_count"], 1)
+        self.assertEqual(self.registry.status(for_dashboard=True)["retained_agent_count"], 1)
+        self.assertEqual(self.ensure(speed="fast")["action"], "reused")
+
+    def test_legacy_visible_speed_declaration_refresh_preserves_fast_configuration(self) -> None:
+        created = self.ensure(
+            role_key="legacy-fast-opening",
+            global_domain_key="legacy-fast-opening",
+            display_name="快速配置核对员",
+            model="gpt-5.6-luna",
+            effort="medium",
+            speed="fast",
+        )
+        improved = self.improve_with_lesson(
+            name=created["name"],
+            expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()),
+            lesson="迁移可见声明时保留真实会话配置和既有经验。",
+        )
+        legacy_sha256 = self.add_legacy_visible_speed_declaration(created)
+        path = Path(created["path"])
+        before = path.read_bytes()
+
+        with self.assertRaisesRegex(
+            agents.SpecialistError, "legacy visible speed declaration"
+        ):
+            self.registry.recall(name=created["name"])
+        with self.assertRaisesRegex(
+            agents.SpecialistError, "legacy visible speed declaration"
+        ):
+            self.registry.status(for_routing=True)
+
+        preview = self.ensure(
+            role_key="legacy-fast-opening",
+            global_domain_key="legacy-fast-opening",
+            display_name="快速配置核对员",
+            model="gpt-5.6-luna",
+            effort="medium",
+            speed="fast",
+        )
+        self.assertEqual(preview["action"], "reconfiguration_required")
+        self.assertFalse(preview["contract_refresh_required"])
+        self.assertTrue(preview["visible_declaration_refresh_required"])
+        self.assertEqual(preview["retry_with_expected_sha256"], legacy_sha256)
+        self.assertEqual(path.read_bytes(), before)
+
+        refreshed = self.ensure(
+            role_key="legacy-fast-opening",
+            global_domain_key="legacy-fast-opening",
+            display_name="快速配置核对员",
+            model="gpt-5.6-luna",
+            effort="medium",
+            speed="fast",
+            expected_sha256=legacy_sha256,
+        )
+        self.assertEqual(refreshed["action"], "reconfigured")
+        self.assertFalse(refreshed["visible_declaration_refresh_required"])
+        self.assertEqual(refreshed["agent_id"], created["agent_id"])
+        self.assertEqual(refreshed["owner_token"], created["owner_token"])
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["service_tier"], "fast")
+        self.assertNotIn("速度：", payload["developer_instructions"])
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=refreshed["sha256"]
+        )
+        self.assertEqual(recalled["speed"], "fast")
+        self.assertNotIn("速度：", recalled["opening_declaration"])
+        self.assertIn("既有经验", recalled["experience"])
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM experience_events WHERE agent_id=?",
+                    (created["agent_id"],),
+                ).fetchone()[0],
+                1,
+            )
+
+    def test_v6_contract_refresh_wrong_cas_busy_commit_failure_and_drift_are_zero_write(self) -> None:
+        created = self.ensure()
+        legacy_sha256 = self.remove_canonical_contract_instruction(created)
+        path = Path(created["path"])
+        legacy_bytes = path.read_bytes()
+        before = self.registry_rows()
+
+        with self.assertRaisesRegex(agents.SpecialistError, "expected SHA-256"):
+            self.ensure(expected_sha256="0" * 64)
+        self.assertEqual(path.read_bytes(), legacy_bytes)
+        self.assertEqual(self.registry_rows(), before)
+
+        blocker = sqlite3.connect(self.registry.db_path, isolation_level=None)
+        try:
+            blocker.execute("BEGIN IMMEDIATE")
+            with self.assertRaises(sqlite3.OperationalError):
+                self.ensure(expected_sha256=legacy_sha256)
+        finally:
+            blocker.close()
+        self.assertEqual(path.read_bytes(), legacy_bytes)
+        self.assertEqual(self.registry_rows(), before)
+
+        real_connection = self.registry.connect()
+
+        class FailingCommitConnection:
+            def execute(self, sql, parameters=()):
+                if sql == "COMMIT":
+                    raise sqlite3.OperationalError("forced contract refresh commit failure")
+                return real_connection.execute(sql, parameters)
+
+            def close(self):
+                real_connection.close()
+
+        with mock.patch.object(
+            self.registry,
+            "connect",
+            return_value=FailingCommitConnection(),
+        ):
+            with self.assertRaisesRegex(
+                sqlite3.OperationalError, "forced contract refresh commit failure"
+            ):
+                self.ensure(expected_sha256=legacy_sha256)
+        self.assertEqual(path.read_bytes(), legacy_bytes)
+        self.assertEqual(self.registry_rows(), before)
+
+        drifted = legacy_bytes + b"\n"
+        path.write_bytes(drifted)
+        with self.assertRaisesRegex(agents.SpecialistError, "content drifted"):
+            self.ensure(expected_sha256=legacy_sha256)
+        self.assertEqual(path.read_bytes(), drifted)
+        self.assertEqual(self.registry_rows(), before)
 
     def test_ensure_reconfiguration_rejects_stale_cas_without_mutation(self) -> None:
         created = self.ensure()
@@ -903,7 +1211,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertNotIn("features", payload)
         self.assertNotIn("agents", payload)
         self.assertIs(payload["skills"]["include_instructions"], False)
-        self.assertIn("速度：快速", payload["developer_instructions"])
+        self.assertNotIn("速度：", payload["developer_instructions"])
         self.assertEqual(improved["action"], "experience_recorded")
 
     def test_experience_rewrite_rejects_inconsistent_speed_configuration(self) -> None:
@@ -2266,6 +2574,8 @@ class SpecialistRegistryTests(unittest.TestCase):
         other_path = Path(unrelated["path"])
         other_path.write_bytes(other_path.read_bytes() + b"\n")
         selected_path = Path(selected["path"])
+        selected_payload = tomllib.loads(selected_path.read_text(encoding="utf-8"))
+        self.assertNotIn("service_tier", selected_payload)
         before = (self.registry.db_path.read_bytes(), selected_path.read_bytes(), other_path.read_bytes())
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -2278,7 +2588,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(set(result), {
             "ok", "action", "name", "global_domain_key", "global_contract", "model",
             "reasoning_effort", "speed", "authority", "sha256", "experience",
-            "retention_state", "opening_status",
+            "retention_state", "opening_status", "opening_declaration",
         })
         self.assertEqual(result["global_contract"], self.contract())
         self.assertIn("一种输入", result["experience"])
@@ -2290,9 +2600,47 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
         self.assertIn("存活轮次：0", result["opening_status"])
         self.assertIn("经验：当前配置 1 条", result["opening_status"])
+        self.assertEqual(
+            result["opening_declaration"],
+            "我是QML 绑定诊断员。\n"
+            "模型：gpt-5.6-terra\n"
+            "思考程度：high\n"
+            + result["opening_status"],
+        )
+        self.assertEqual(len(result["opening_declaration"].splitlines()), 5)
+        self.assertNotIn("速度：", result["opening_declaration"])
+        self.assertNotIn("priority", result["opening_declaration"].casefold())
         self.assertNotIn(unrelated["name"], output.getvalue())
         self.assertNotIn(selected["owner_token"], output.getvalue())
         self.assertEqual(before, (self.registry.db_path.read_bytes(), selected_path.read_bytes(), other_path.read_bytes()))
+
+    def test_recall_opening_declaration_uses_fast_toml_service_tier(self) -> None:
+        selected = self.ensure(
+            role_key="fast-opening-declaration",
+            global_domain_key="fast-opening-declaration",
+            display_name="快速配置核对员",
+            model="gpt-5.6-luna",
+            effort="medium",
+            speed="fast",
+        )
+        payload = tomllib.loads(Path(selected["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["service_tier"], "fast")
+
+        recalled = self.registry.recall(
+            name=selected["name"], expected_sha256=selected["sha256"]
+        )
+
+        self.assertEqual(recalled["speed"], "fast")
+        self.assertEqual(
+            recalled["opening_declaration"],
+            "我是快速配置核对员。\n"
+            "模型：gpt-5.6-luna\n"
+            "思考程度：medium\n"
+            + recalled["opening_status"],
+        )
+        self.assertEqual(len(recalled["opening_declaration"].splitlines()), 5)
+        self.assertNotIn("速度：", recalled["opening_declaration"])
+        self.assertNotIn("priority", recalled["opening_declaration"].casefold())
 
     def test_recall_rejects_unknown_name_stale_snapshot_and_owned_file_drift(self) -> None:
         selected = self.ensure()

@@ -438,6 +438,26 @@ def speed_from_payload(payload: dict[str, Any]) -> str:
     raise SpecialistError("agent speed configuration is incomplete or inconsistent")
 
 
+def opening_configuration_declaration(
+    *, display_name: str, model: str, effort: str
+) -> str:
+    """Render the three public configuration lines from validated role data."""
+    display_name = validate_display_name(display_name)
+    model, effort = validate_subagent_model_effort(model, effort)
+    return (
+        f"我是{display_name}。\n"
+        f"模型：{model}\n"
+        f"思考程度：{effort}\n"
+    )
+
+
+def has_legacy_visible_speed_declaration(developer_instructions: str) -> bool:
+    return any(
+        line in {"速度：标准", "速度：快速"}
+        for line in developer_instructions.splitlines()
+    )
+
+
 def validate_sha256(value: str) -> str:
     if not SHA256_RE.fullmatch(value):
         raise SpecialistError("expected_sha256 must be a lowercase SHA-256")
@@ -622,7 +642,6 @@ def base_instructions(
 ) -> str:
     """Build the retained specialist's own contract, not the parent's router."""
     speed = validate_speed(speed)
-    speed_label = "快速" if speed == "fast" else "标准"
     write_rule = (
         "获得写入权限时，只修改父代理明确交给你的文件，并保留其他并发改动。"
         if authority == "write"
@@ -639,20 +658,19 @@ def base_instructions(
         "从任务卡、已加载经验和指定证据开始；交接、选路、发布、角色与经验维护属于父代理。"
         "不通读交接、技能、缓存、TOML或台账；只按职责和具名缺口有限读取。"
     )
-    declaration = (
-        f"我是{display_name}。\n"
-        f"模型：{model}\n"
-        f"思考程度：{effort}\n"
-        f"速度：{speed_label}\n"
+    declaration = opening_configuration_declaration(
+        display_name=display_name,
+        model=model,
+        effort=effort,
     )
     opening = (
-        "spawn_agent 或 followup_task 启动新子任务后，第一条可见 commentary 必须以以下四行开头，"
-        "四行前不写计划、运行 ID 或其他说明：\n"
+        "spawn_agent 或 followup_task 启动新子任务后，第一条可见 commentary 必须以以下三行开头，"
+        "三行前不写计划、运行 ID 或其他说明：\n"
         + declaration
         + "紧接着逐字显示任务卡提供的“存活轮次”和“经验”两行。保留子代理只采用父代理从 recall "
         "取得的状态；运行时子代理显示 0 轮和未加载保留经验。不得声明经验适用性，也不得把保存、"
-        "注入或摘要称作学习。状态缺失时如实报告缺口，不猜测。四行配置和两行状态只在开场显示一次；"
-        "最终回复重复四行配置即可。run_id 即使出现在输入中也不得回显。"
+        "注入或摘要称作学习。状态缺失时如实报告缺口，不猜测。三行配置和两行状态只在开场显示一次；"
+        "最终回复重复三行配置即可。run_id 即使出现在输入中也不得回显。"
     )
     execution = (
         "只完成任务卡分配的当前子任务，并遵守其中的来源、写入范围、成功条件和停止条件；"
@@ -666,7 +684,7 @@ def base_instructions(
         "实现任务须完成授权范围内的运行或测试与失败修补，不能写完初版就停；只读任务按指定边界结束。"
         "达到成功或停止条件后，在自己的线程提交精炼结果、决定性证据和真实缺口，不代交或隐藏其他"
         "子代理结果，不重复粘贴同一完整内容。来源读取任务追加 SOURCE_COVERAGE。"
-        "最终回复顶部再次写实际模型、思考程度和速度，并按以下结构交付：\n"
+        "最终回复顶部再次写上述三行配置，并按以下结构交付：\n"
         + declaration
         + "子任务：<当前子任务>\n"
         "状态：完成 | 部分完成 | 受阻\n"
@@ -1709,6 +1727,8 @@ class SpecialistRegistry:
         name: str,
         expected_sha256: str | None = None,
         owner_token: str | None = None,
+        allow_missing_contract_instruction: bool = False,
+        allow_legacy_visible_speed_declaration: bool = False,
     ) -> tuple[sqlite3.Row, Path, bytes, dict[str, Any], dict[str, str]]:
         row = connection.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
         if row is None:
@@ -1749,8 +1769,20 @@ class SpecialistRegistry:
         if payload.get("name") != name or path.stem != name or not NAME_RE.fullmatch(name):
             raise SpecialistError("agent name/path identity is invalid")
         developer = payload.get("developer_instructions")
-        if not isinstance(developer, str) or global_contract_instruction(contract) not in developer:
+        if not isinstance(developer, str):
+            raise SpecialistError("agent developer_instructions is invalid")
+        if (
+            global_contract_instruction(contract) not in developer
+            and not allow_missing_contract_instruction
+        ):
             raise SpecialistError("agent duties do not contain the canonical global contract")
+        if (
+            has_legacy_visible_speed_declaration(developer)
+            and not allow_legacy_visible_speed_declaration
+        ):
+            raise SpecialistError(
+                "agent duties contain a legacy visible speed declaration"
+            )
         return row, path, data, payload, header
 
     def _summary_row(self, connection: sqlite3.Connection, agent_id: str) -> sqlite3.Row | None:
@@ -2017,10 +2049,22 @@ class SpecialistRegistry:
                     raise SpecialistError(
                         "legacy retired identity must be explicitly purged before reuse"
                     )
-                row, path, original, _, header = self._owned_agent(
+                row, path, original, payload, header = self._owned_agent(
                     connection,
                     name=existing["name"],
                     expected_sha256=expected_sha256,
+                    allow_missing_contract_instruction=True,
+                    allow_legacy_visible_speed_declaration=True,
+                )
+                stored_contract = json.loads(row["global_contract"])
+                contract_refresh_required = (
+                    global_contract_instruction(stored_contract)
+                    not in payload["developer_instructions"]
+                )
+                visible_declaration_refresh_required = (
+                    has_legacy_visible_speed_declaration(
+                        payload["developer_instructions"]
+                    )
                 )
                 summary_row = self._summary_row(connection, row["agent_id"])
                 summary = summary_row["summary"] if summary_row is not None else ""
@@ -2082,7 +2126,11 @@ class SpecialistRegistry:
                     connection.execute("COMMIT")
                     return {
                         "ok": True,
-                        "action": "reconfiguration_required",
+                        "action": (
+                            "global_contract_refresh_required"
+                            if contract_refresh_required
+                            else "reconfiguration_required"
+                        ),
                         "compatible": False,
                         "agent_id": row["agent_id"],
                         "name": row["name"],
@@ -2090,6 +2138,10 @@ class SpecialistRegistry:
                         "sha256": row["expected_sha256"],
                         "owner_token": row["owner_token"],
                         "retry_with_expected_sha256": row["expected_sha256"],
+                        "contract_refresh_required": contract_refresh_required,
+                        "visible_declaration_refresh_required": (
+                            visible_declaration_refresh_required
+                        ),
                         "host_visibility": "use_current_spawn_surface_as_authority",
                         "internal_message_runtime_route": INTERNAL_MESSAGE_RUNTIME_ROUTE,
                     }
@@ -2116,7 +2168,11 @@ class SpecialistRegistry:
                 connection.execute("COMMIT")
                 return {
                     "ok": True,
-                    "action": "reconfigured",
+                    "action": (
+                        "global_contract_refreshed"
+                        if contract_refresh_required
+                        else "reconfigured"
+                    ),
                     "compatible": True,
                     "agent_id": row["agent_id"],
                     "name": row["name"],
@@ -2124,6 +2180,8 @@ class SpecialistRegistry:
                     "sha256": digest,
                     "owner_token": row["owner_token"],
                     "experience_preserved": True,
+                    "contract_refresh_required": False,
+                    "visible_declaration_refresh_required": False,
                     "host_visibility": "requires_new_task",
                     "internal_message_runtime_route": INTERNAL_MESSAGE_RUNTIME_ROUTE,
                 }
@@ -2765,20 +2823,35 @@ class SpecialistRegistry:
                 row=row,
                 payload=payload,
             )
+            description = payload.get("description")
+            if not isinstance(description, str) or "：" not in description:
+                raise SpecialistError("agent description is invalid")
+            display_name = description.split("：", 1)[0]
+            speed = speed_from_payload(payload)
+            model = payload.get("model")
+            effort = payload.get("model_reasoning_effort")
+            if not isinstance(model, str) or not isinstance(effort, str):
+                raise SpecialistError("agent model configuration is invalid")
+            opening_declaration = opening_configuration_declaration(
+                display_name=display_name,
+                model=model,
+                effort=effort,
+            ) + retention_state["opening_status"]
             return {
                 "ok": True,
                 "action": "recall",
                 "name": row["name"],
                 "global_domain_key": row["global_domain_key"],
                 "global_contract": json.loads(row["global_contract"]),
-                "model": payload.get("model"),
-                "reasoning_effort": payload.get("model_reasoning_effort"),
-                "speed": speed_from_payload(payload),
+                "model": model,
+                "reasoning_effort": effort,
+                "speed": speed,
                 "authority": "write" if payload.get("sandbox_mode") == "workspace-write" else "read",
                 "sha256": row["expected_sha256"],
                 "experience": MEMORY_HEADER.lstrip() + memory,
                 "retention_state": retention_state,
                 "opening_status": retention_state["opening_status"],
+                "opening_declaration": opening_declaration,
             }
         finally:
             connection.close()
