@@ -103,6 +103,27 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(principle, self.skill)
         self.assertNotIn("普通工作速度优先", self.skill)
 
+    def test_call_count_is_not_a_cost_error_without_marginal_route_evidence(self) -> None:
+        combined = self.skill + self.routing + self.cost + self.readme
+        compact = re.sub(r"\s+", "", combined)
+        for required in (
+            "调用数量只描述委派拓扑和并发形状",
+            "本身不构成成本错误",
+            "每个新增调用",
+            "替代的父代理工作",
+            "必要质量或关键路径收益",
+            "完整增量成本",
+            "多个分别通过三项原则的低成本调用可以是更优路线",
+            "不按调用总数机械压缩",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact)
+        for invalid_shortcut in (
+            "调用数量多就是成本错误",
+            "超过三个子代理就是成本错误",
+            "按调用总数判断成本",
+        ):
+            self.assertNotIn(invalid_shortcut, combined)
+
     def test_quality_cost_time_order_allows_bounded_cheap_parallelism(self) -> None:
         for content in (self.skill, self.routing, self.readme, self.flowcharts):
             self.assertIn("资源成本", content)
@@ -206,7 +227,7 @@ class SkillContractTests(unittest.TestCase):
             "default",
             "explorer",
             "worker",
-            "具名保留角色",
+            "具名保留子代理",
             "每次原生collaboration.spawn_agent都显式传入",
             "model和reasoning_effort",
             "与已加载TOML完全一致",
@@ -218,9 +239,9 @@ class SkillContractTests(unittest.TestCase):
             "xhigh与max为何都不足",
             "Astra仍最高xhigh",
             "只有Astra称为高成本专家路线",
-            "角色名称/模型/思考程度三行实际配置",
+            "子代理名称/模型/思考程度三行实际配置",
             "followup_task没有选模参数",
-            "现有角色的真实模型和思考程度",
+            "现有子代理的真实模型和思考程度",
             "parent→child→grandchild逐层递归",
             "第一条可见commentary严格以这三行开头",
             "紧接存活轮次与经验两行",
@@ -229,9 +250,9 @@ class SkillContractTests(unittest.TestCase):
 
         for required in (
             "任何层级和任何agent_type",
-            "default、explorer、worker、custom与具名保留角色",
+            "default、explorer、worker、custom与具名保留子代理",
             "每次collaboration.spawn_agent都须显式传model和reasoning_effort",
-            "具名角色的值必须与已加载TOML一致",
+            "具名子代理的值必须与已加载TOML一致",
             "fork_turns=none或有限正整数历史",
             "禁止fork_turns=all",
             "普通UI、视觉和简单审计不得使用Solultra",
@@ -239,7 +260,7 @@ class SkillContractTests(unittest.TestCase):
             "xhigh和max为何不足",
             "Astra最高xhigh",
             "只有Astra称为高成本专家路线",
-            "角色名称/模型/思考程度三行配置",
+            "子代理名称/模型/思考程度三行配置",
             "followup_task没有选模参数",
             "规则递归到child和grandchild",
             "第一条可见commentary严格以五行声明开头",
@@ -1069,7 +1090,7 @@ class SkillContractTests(unittest.TestCase):
             "结果通过必要核验并被父代理采用",
             "默认各尝试一次 `ensure` 和 `improve`",
             "不要求主任务接近结束",
-            "稳定 `event_id`",
+            "稳定的 UUID `event_id`",
             "只有明确排除项",
             "摘要压缩仍只在能与真实工作并行且不争用时执行",
             "保存回执",
@@ -1119,7 +1140,9 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("全局领域", summary)
         combined = self.skill + self.memory + self.delegation + self.routing
         self.assertIn("默认只尝试一次 `improve`", combined)
-        self.assertIn("稳定 `event_id`", combined)
+        self.assertIn("稳定的 UUID `event_id`", combined)
+        self.assertIn("UUID idempotency key", self.agents_source)
+        self.assertIn("omit for a new random UUID", self.agents_source)
         self.assertIn("保存回执", combined)
         self.assertNotIn("只有主任务已经大致完成、接近结束", combined)
         self.assertNotIn("角色可泛化且有未来用途", combined)
@@ -1430,7 +1453,7 @@ class SkillContractTests(unittest.TestCase):
             "存活轮次",
             "经验",
             "最终回复顶部",
-            "实际角色名称、模型和思考程度",
+            "实际子代理名称、模型和思考程度",
             "不占关键步骤",
             "第一条可见commentary必须以以下三行开头",
             "五行前不写计划、运行ID或其他说明",
@@ -1456,7 +1479,7 @@ class SkillContractTests(unittest.TestCase):
         compact_task_card = re.sub(r"\s+", "", task_card)
         for required in (
             "task_name",
-            "本地化角色名称",
+            "本地化子代理名称",
             "技术标识",
             "不能保证原生卡片标题本地化",
             "把下文五行模板的实际值直接写进每个",
@@ -1474,7 +1497,7 @@ class SkillContractTests(unittest.TestCase):
 
         expected_opening = "\n".join(
             (
-                "角色名称：<本地化角色名称>",
+                "子代理名称：<本地化子代理名称>",
                 "模型：<具体模型>",
                 "思考程度：<具体等级>",
                 "存活轮次：<recall 返回的客观状态；运行时子代理为 0（运行时子代理）>",
@@ -1778,7 +1801,7 @@ class SkillContractTests(unittest.TestCase):
             "调用判断与模型、成本、时间选配",
             "上下文、来源和结果复用",
             "内部交流与子代理结果收口",
-            "角色、经验和生命周期表面精简",
+            "子代理、经验和生命周期表面精简",
             "迭代测试链",
         ):
             self.assertIn(re.sub(r"\s+", "", calling_surface), compact_skill)
@@ -1829,7 +1852,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("迭代测试的工具/子代理调用路线属于 `$lean-stack`", self.routing)
         self.assertIn("属于 `$lean-simplify` 主任务精简", self.routing)
         self.assertIn("精确删除与否定重做", compact_simplify)
-        self.assertIn("完整属于子代理任务类型组与保留角色清理", self.skill)
+        self.assertIn("完整属于子代理任务类型组与保留子代理清理", self.skill)
         self.assertIn("历史删减边界", self.anti_overengineering)
         for removed_surface in (
             "多层数值评分与逐级否决路由",

@@ -445,7 +445,7 @@ def opening_configuration_declaration(
     display_name = validate_display_name(display_name)
     model, effort = validate_subagent_model_effort(model, effort)
     return (
-        f"角色名称：{display_name}\n"
+        f"子代理名称：{display_name}\n"
         f"模型：{model}\n"
         f"思考程度：{effort}\n"
     )
@@ -590,7 +590,7 @@ def global_contract_instruction(contract: dict[str, Any]) -> str:
         f"全局领域规则：领域={contract['domain']}；输入形状={joined('input_shapes')}；"
         f"通用职责={joined('responsibilities')}；交付={joined('deliverables')}；"
         f"硬性限制={joined('hard_boundaries')}。该职责跨任务、跨项目、跨会话复用；"
-        "每次调用中的项目名称、仓库路径和一次性事实只能放在任务卡，不得写回角色或经验。"
+        "每次调用中的项目名称、仓库路径和一次性事实只能放在任务卡，不得写回子代理或经验。"
     )
 
 
@@ -655,7 +655,7 @@ def base_instructions(
     role_opening = (
         f"你是专门负责“{display_name}”的子代理，可复用专长标识为 {role_key}。"
         f"{role_instructions} {write_rule}{contract_rule}"
-        "从任务卡、已加载经验和指定证据开始；交接、选路、发布、角色与经验维护属于父代理。"
+        "从任务卡、已加载经验和指定证据开始；交接、选路、发布、子代理与经验维护属于父代理。"
         "不通读交接、技能、缓存、TOML或台账；只按职责和具名缺口有限读取。"
     )
     declaration = opening_configuration_declaration(
@@ -3221,10 +3221,13 @@ def build_parser() -> argparse.ArgumentParser:
     mode = improve.add_mutually_exclusive_group(required=True)
     mode.add_argument("--lesson")
     mode.add_argument("--summary")
-    improve.add_argument("--event-id")
+    improve.add_argument(
+        "--event-id",
+        help="UUID idempotency key; omit for a new random UUID and reuse the exact UUID on retry",
+    )
     improve.add_argument(
         "--retracts-event-id",
-        help="append a correction that removes one prior event from active memory",
+        help="UUID of the prior event removed from active memory by this correction",
     )
     improve.add_argument("--covered-through", type=int)
     improve.add_argument("--source-digest")

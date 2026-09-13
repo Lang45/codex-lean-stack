@@ -336,11 +336,12 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("交付直接可消费的结果和必要证据", first_paragraph)
         self.assertIn("保持只读", first_paragraph)
         opening = (
-            "角色名称：QML 绑定诊断员\n"
+            "子代理名称：QML 绑定诊断员\n"
             "模型：gpt-5.6-terra\n"
             "思考程度：high\n"
         )
         self.assertIn(opening, instructions)
+        self.assertNotIn("角色名称：", instructions)
         role = instructions.index(role_paragraph)
         communication = instructions.index("第一条可见 commentary 必须以以下三行开头", role)
         declaration = instructions.index(opening, communication)
@@ -505,7 +506,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         instructions = payload["developer_instructions"]
         self.assertTrue(instructions.startswith("你是专门负责“快速来源核对员”的子代理"))
         opening = (
-            "角色名称：快速来源核对员\n"
+            "子代理名称：快速来源核对员\n"
             "模型：gpt-5.6-terra\n"
             "思考程度：medium\n"
         )
@@ -858,7 +859,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("QML 根因核对员", payload["description"])
         instructions = payload["developer_instructions"]
         self.assertTrue(instructions.startswith("你是专门负责“QML 根因核对员”的子代理"))
-        self.assertLess(instructions.index("你是专门负责"), instructions.index("角色名称：QML 根因核对员"))
+        self.assertLess(instructions.index("你是专门负责"), instructions.index("子代理名称：QML 根因核对员"))
         self.assertIn("实际依赖图", instructions)
         self.assertIn(lesson, instructions)
         self.assertIn("第一条可见 commentary 必须以以下三行开头", instructions)
@@ -2613,7 +2614,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("经验：当前配置 1 条", result["opening_status"])
         self.assertEqual(
             result["opening_declaration"],
-            "角色名称：QML 绑定诊断员\n"
+            "子代理名称：QML 绑定诊断员\n"
             "模型：gpt-5.6-terra\n"
             "思考程度：high\n"
             + result["opening_status"],
@@ -2644,7 +2645,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(recalled["speed"], "fast")
         self.assertEqual(
             recalled["opening_declaration"],
-            "角色名称：快速配置核对员\n"
+            "子代理名称：快速配置核对员\n"
             "模型：gpt-5.6-luna\n"
             "思考程度：medium\n"
             + recalled["opening_status"],
