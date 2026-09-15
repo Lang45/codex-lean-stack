@@ -664,13 +664,15 @@ def base_instructions(
         effort=effort,
     )
     opening = (
-        "spawn_agent 或 followup_task 启动新子任务后，第一条可见 commentary 必须以以下三行开头，"
-        "三行前不写计划、运行 ID 或其他说明：\n"
+        "spawn_agent 或 followup_task 只能在任务卡完整提供子代理名称、模型、思考程度、存活轮次和经验"
+        "五行实际值后启动。第一条可见 commentary 必须原样输出任务卡开头五行，五行前不写计划、"
+        "运行 ID 或其他说明。直接复用当前保留身份时，任务卡前三行必须与以下配置一致：\n"
         + declaration
-        + "紧接着逐字显示任务卡提供的“存活轮次”和“经验”两行。保留子代理只采用父代理从 recall "
-        "取得的状态；运行时子代理显示 0 轮和未加载保留经验。不得声明经验适用性，也不得把保存、"
-        "注入或摘要称作学习。状态缺失时如实报告缺口，不猜测。三行配置和两行状态只在开场显示一次；"
-        "最终回复重复三行配置即可。run_id 即使出现在输入中也不得回显。"
+        + "任务卡后两行必须提供存活轮次和经验的实际值。保留子代理只采用父代理从 recall 取得的状态；"
+        "运行时子代理显示 0 轮和未加载保留经验。不得声明经验适用性，也不得把保存、注入或摘要称作"
+        "学习。缺少任一行时父代理不得启动该子任务，子代理不能用缺口说明代替实际值。五行只在开场"
+        "显示一次。该固定配置只约束当前保留身份，不得覆盖当前子任务派出的下游任务卡；下游子代理按"
+        "自己任务卡的五行开场，最终回复也重复自己任务卡前三行。run_id 即使出现在输入中也不得回显。"
     )
     execution = (
         "只完成任务卡分配的当前子任务，并遵守其中的来源、写入范围、成功条件和停止条件；"
@@ -684,9 +686,9 @@ def base_instructions(
         "实现任务须完成授权范围内的运行或测试与失败修补，不能写完初版就停；只读任务按指定边界结束。"
         "达到成功或停止条件后，在自己的线程提交精炼结果、决定性证据和真实缺口，不代交或隐藏其他"
         "子代理结果，不重复粘贴同一完整内容。来源读取任务追加 SOURCE_COVERAGE。"
-        "最终回复顶部再次写上述三行配置，并按以下结构交付：\n"
-        + declaration
-        + "子任务：<当前子任务>\n"
+        "最终回复顶部原样写当前任务卡前三行实际值；继承到下游的上级保留身份固定配置不得覆盖"
+        "下游任务卡。随后按以下结构交付：\n"
+        "子任务：<当前子任务>\n"
         "状态：完成 | 部分完成 | 受阻\n"
         "结果：<可直接使用的精炼结果>\n"
         "证据或缺口：<决定性证据、覆盖范围或剩余缺口>\n"
@@ -3103,7 +3105,7 @@ class SpecialistRegistry:
     ) -> dict[str, Any]:
         if for_routing and for_dashboard:
             raise SpecialistError("status modes are mutually exclusive")
-        connection = self.connect(read_only=for_dashboard)
+        connection = self.connect(read_only=(for_routing or for_dashboard))
         try:
             rows = list(
                 connection.execute(
@@ -3166,11 +3168,8 @@ class SpecialistRegistry:
                     routing_catalog.append({
                         "name": row["name"],
                         "description": description,
-                        "global_domain_key": row["global_domain_key"],
-                        "global_contract": contract,
                         "model": payload.get("model"),
                         "reasoning_effort": payload.get("model_reasoning_effort"),
-                        "speed": speed,
                         "authority": authority,
                     })
             if for_dashboard:
@@ -3592,7 +3591,8 @@ def dispatch(arguments: argparse.Namespace) -> dict[str, Any]:
         if not 1 <= arguments.watch_seconds <= 3600:
             raise SpecialistError("--watch-seconds must be between 1 and 3600")
     read_only_command = arguments.command == "recall" or (
-        arguments.command == "status" and arguments.for_dashboard
+        arguments.command == "status"
+        and (arguments.for_routing or arguments.for_dashboard)
     )
     registry = SpecialistRegistry(arguments.codex_home, create=not read_only_command)
     if arguments.command == "ensure":

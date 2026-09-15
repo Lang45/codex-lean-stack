@@ -20,11 +20,15 @@ from typing import Any, Callable, Iterator
 
 PLUGIN_NAME = "codex-lean-stack"
 DEFAULT_INVOCATION_LINE = (
-    "默认调用已安装的 `codex-lean-stack` 插件：`$lean-simplify` 与 `$lean-stack` "
-    "按各自职责独立适用，子代理调用不以主任务精简为前置。"
+    "所有模型和思考程度的父代理必须使用已安装的 `codex-lean-stack`；两个入口按需读取，已加载且未变化"
+    "的规则直接复用，选配与协作细节由插件维护。"
 )
 USER_GLOBAL_INVOCATION_LINE = "必须调用已安装的 `codex-lean-stack` 插件。"
-USER_GLOBAL_INVOCATION_PREFIX = USER_GLOBAL_INVOCATION_LINE.removesuffix("。")
+USER_GLOBAL_INVOCATION_PREFIXES = (
+    USER_GLOBAL_INVOCATION_LINE.removesuffix("。"),
+    "所有模型和思考程度的父代理必须使用已安装的 `codex-lean-stack`",
+    "所有模型和思考程度的父代理必须都使用已安装的 `codex-lean-stack`",
+)
 INVOCATION_SEPARATOR_PUNCTUATION = frozenset("，。；：！？、,.;:!?")
 MAX_MANIFEST_BYTES = 1024 * 1024
 MAX_MARKETPLACE_BYTES = 4 * 1024 * 1024
@@ -233,11 +237,12 @@ def _has_default_invocation(text: str) -> bool:
     for line in text.splitlines():
         if line == DEFAULT_INVOCATION_LINE:
             return True
-        if not line.startswith(USER_GLOBAL_INVOCATION_PREFIX):
-            continue
-        remainder = line[len(USER_GLOBAL_INVOCATION_PREFIX) :]
-        if not remainder or remainder[0] in INVOCATION_SEPARATOR_PUNCTUATION:
-            return True
+        for prefix in USER_GLOBAL_INVOCATION_PREFIXES:
+            if not line.startswith(prefix):
+                continue
+            remainder = line[len(prefix) :]
+            if not remainder or remainder[0] in INVOCATION_SEPARATOR_PUNCTUATION:
+                return True
     return False
 
 

@@ -197,10 +197,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("评分表", authority)
         self.assertNotIn("先失败", authority)
 
-    def test_new_project_dispatch_uses_explicit_native_configuration_and_stable_task_id(
+    def test_new_project_dispatch_reads_entry_and_uses_explicit_native_configuration(
         self,
     ) -> None:
         entry = self.skill.split("## 两个并行功能的边界", 1)[0]
+        frontmatter = self.skill.split("---", 2)[1]
         calling_match = re.search(
             r'^\s*default_prompt:\s*"([^"]+)"', self.openai_yaml, re.MULTILINE
         )
@@ -210,9 +211,23 @@ class SkillContractTests(unittest.TestCase):
         compact_entry = re.sub(r"\s+", "", entry).replace("`", "")
         compact_prompt = re.sub(r"\s+", "", calling_prompt).replace("`", "")
 
+        self.assertTrue(
+            calling_prompt.startswith("派发硬门："),
+            "the public prompt must put the native call gate before startup prose",
+        )
+
+        self.assertIn(
+            "每次collaboration.spawn_agent或启动新子任务的followup_task前必须读取并应用",
+            re.sub(r"\s+", "", frontmatter),
+        )
+
         for required in (
             "新项目和新会话首次派发",
+            "必须先实际读取已加载技能目录中的本入口",
+            "只识别技能名称、口头声明已经采用、读取项目交接或猜测技能路径都不算调用",
             "任何层级、任何agent_type",
+            "安装本插件的项目和新会话不得临时关闭主动委派",
+            "为提高父任务完成速度，可以在实际并发容量内同时派发多个子代理",
             "default",
             "explorer",
             "worker",
@@ -228,16 +243,33 @@ class SkillContractTests(unittest.TestCase):
             "xhigh与max为何都不足",
             "Astra仍最高xhigh",
             "只有Astra称为高成本专家路线",
-            "子代理名称/模型/思考程度三行实际配置",
+            "任务卡必须以子代理名称、模型、思考程度、存活轮次、经验五行实际值开头",
+            "中文会话使用中文名称，不能照抄只供工具调用的技术task_name",
             "followup_task没有选模参数",
-            "现有子代理的真实模型和思考程度",
+            "现有子代理的真实模型、思考程度、五行开场",
             "parent→child→grandchild逐层递归",
-            "第一条可见commentary严格以这三行开头",
-            "紧接存活轮次与经验两行",
+            "第一条可见commentary严格复现任务卡开头五行",
+            "派发硬门在每次原生调用前重新生效",
+            "缺少任一字段、使用任何“继承”占位",
+            "不能发出工具调用",
+            "此前读取过入口不能替代这个调用时检查",
+            "普通派发只完整读取本入口一次",
+            "不统计行数、分段重读本入口",
+            "不在派发前通读references/delegation.md、references/execution-routing.md或references/specialist-memory.md",
+            "子代理接到新子任务后不输出该启动句，直接以五行声明开场",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_entry)
 
+        self.assertIn(
+            "无回执的静默省略属于收口失败",
+            re.sub(r"\s+", "", self.skill),
+        )
+
         for required in (
+            "首次准备调用collaboration.spawn_agent或用followup_task启动新当前子任务时",
+            "所有项目和新会话不得临时关闭主动委派",
+            "必须先实际读取已加载技能目录中的$lean-stack入口",
+            "只识别技能名称或口头声明不算调用",
             "任何层级和任何agent_type",
             "default、explorer、worker、custom与具名保留子代理",
             "每次collaboration.spawn_agent都须显式传model和reasoning_effort",
@@ -254,6 +286,18 @@ class SkillContractTests(unittest.TestCase):
             "规则递归到child和grandchild",
             "第一条可见commentary严格以五行声明开头",
             "任务卡未提供、未揭露或继承父级占位",
+            "派发硬门",
+            "缺字段、任何“继承”占位或给普通UI、视觉、简单审计选择Solultra时不得调用",
+            "明确要求子代理第一条可见commentary原样先输出这五行",
+            "中文会话使用中文名称，不能照抄技术task_name",
+            "面向用户主任务的交接启动句不适用于子代理",
+            "普通派发若启动热路径已读且入口未变化就直接复用，否则完整读取一次",
+            "新运行时组的结果被采用后执行首次ensure",
+            "仅对reconfiguration_required或global_contract_refresh_required响应",
+            "作一次CAS确认",
+            "已复用保留子代理直接complete-run",
+            "命中明确排除项时给出跳过原因",
+            "status--for-routing只提供轻量语义目录，命中候选后才recall完整合同",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_prompt)
 
@@ -272,10 +316,11 @@ class SkillContractTests(unittest.TestCase):
             "改选合规保留子代理，或显式配置运行时子代理",
             "缺任一项先补齐再调用",
             "followup_task接口没有选模参数",
-            "同一task_id正在运行、已经完成或已经中断",
-            "输入实质变化后",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_combined)
+
+        self.assertNotIn("当前会话稳定task_id", compact_entry + compact_prompt)
+        self.assertNotIn("同一task_id", compact_combined)
 
         for content in (entry, calling_prompt, self.routing, self.delegation, self.collaboration):
             compact_content = re.sub(r"\s+", "", content)
@@ -435,8 +480,8 @@ class SkillContractTests(unittest.TestCase):
         )[0]
         group_close = main.index("本组当前已就绪结果已核验")
         unique = main.index("竞争并选出", group_close)
-        retention = main.index("默认只尝试一次 ensure", unique)
-        experience = main.index("一次 improve 合并追加一条经验", retention)
+        retention = main.index("第一次成功执行首次 ensure", unique)
+        experience = main.index("一次 complete-run --lesson", retention)
         removal = main.index("其他子代理移出组、结束", experience)
         completion = main.index("当前活动要求达到", removal)
         self.assertLess(group_close, unique)
@@ -484,7 +529,8 @@ class SkillContractTests(unittest.TestCase):
             "休眠",
             "进入 Done",
             "不持续调用模型",
-            "只尝试一次",
+            "首次 `ensure`",
+            "一次 CAS 确认",
             "父代理同时继续测试",
             "测试失败或用户否定",
             "丢弃候选",
@@ -497,7 +543,7 @@ class SkillContractTests(unittest.TestCase):
             "## 五、任务类型组、复制、变体与保留子代理链路", 1
         )[1].split("## 六、调查、实现与独立精简链路", 1)[0]
         final_reply = group_flow.index("最终回复顶部再次写实际配置")
-        persisted = group_flow.index("默认只尝试一次 ensure", final_reply)
+        persisted = group_flow.index("第一次成功执行首次 ensure", final_reply)
         done = group_flow.index("运行线程结束并进入 Done", persisted)
         self.assertLess(final_reply, persisted)
         self.assertLess(persisted, done)
@@ -576,7 +622,8 @@ class SkillContractTests(unittest.TestCase):
             "能推进实际研究、实现或验收",
             "分别通过三项原则且互不冲突的 GPT-5.6 切片编写任务卡并尽早派发",
             "调用数量随真实工作流和容量变化",
-            "不设最低数量",
+            "为提高父任务完成速度",
+            "可以同时派发多个子代理",
             "模型与思考程度联合达到必要质量",
             "成本与任务相称",
             "对父任务实际完成速度有正贡献",
@@ -599,7 +646,7 @@ class SkillContractTests(unittest.TestCase):
             "至少两个互不依赖",
             "早期至少启动两个",
             "所有任务至少派发两个子代理",
-            "不顾成本和安全凑足两个",
+            "无条件强制固定两个",
         ):
             self.assertNotIn(rejected_quota, detailed_authority)
 
@@ -679,7 +726,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("继续大规模读取、实现或长链诊断前", compact_decision)
         self.assertIn("多个互不依赖", early_dispatch)
         self.assertIn("尽早派发", early_dispatch)
-        self.assertIn("不设最低数量", early_dispatch)
+        self.assertIn("为提高父任务完成速度", early_dispatch)
+        self.assertIn("可以同时派发多个子代理", early_dispatch)
         self.assertIn("确定性短工具", early_dispatch)
 
     def test_direct_parent_route_needs_concrete_blockers_and_three_principles(self) -> None:
@@ -769,6 +817,9 @@ class SkillContractTests(unittest.TestCase):
             "调用收据",
             "实际模型",
             "思考程度",
+            "原生调用记录与子线程调用收据必须证明参数实际包含model、reasoning_effort和非全量fork_turns",
+            "子线程第一条可见commentary必须以任务卡五行实际值开头",
+            "缺少任一证据都把调用验收记为失败",
             "命中后立即停止",
             "不等待或要求子代理完整做题",
             "硬阻断使测试未完成",
@@ -783,7 +834,10 @@ class SkillContractTests(unittest.TestCase):
             "全新项目目录创建独立父代理任务",
             "自动加载的全局入口和正式安装缓存",
             "真实subAgentActivity",
-            "调用收据核对预期启动事件、实际模型与思考程度就停止",
+            "原生调用记录核对实际存在的model、reasoning_effort、非全量fork_turns",
+            "实际模型符合当前任务的Solultra边界",
+            "子线程第一条可见commentary以任务卡五行实际值开头",
+            "缺一项即判定调用验收失败",
             "不等待或要求子代理完整做题",
             "行为验收记为未完成",
             "不能用阻断说明",
@@ -898,12 +952,11 @@ class SkillContractTests(unittest.TestCase):
 
     def test_runtime_capacity_replaces_plugin_numeric_caps(self) -> None:
         combined = self.skill + self.routing + self.delegation + self.readme
-        self.assertIn("不另外设置插件调用次数限制", self.skill)
+        self.assertIn("插件不另外设置调用次数限制", self.skill)
         self.assertIn("不设置同时调用数字", self.routing)
         self.assertIn("不设置主任务累计调用数字", combined)
-        self.assertIn("容量是上限，不是调用目标", combined)
-        self.assertIn("实际可用的全部并发槽位", combined)
-        self.assertIn("容量不是调用目标", combined)
+        self.assertIn("实际可用的并发槽位", combined)
+        self.assertIn("为提高父任务完成速度可以多派子代理", combined)
         self.assertIn("agents.max_concurrent_threads_per_session", combined)
         for removed in ("零至三个", "0 至 3", "0–3", "一至三个", "1 至 3"):
             self.assertNotIn(removed, combined)
@@ -1215,7 +1268,7 @@ class SkillContractTests(unittest.TestCase):
     def test_no_numeric_scoring_or_fixed_lifecycle_contract(self) -> None:
         combined = self.skill + self.delegation + self.memory + self.readme
         self.assertIn("不做评分表", self.skill)
-        self.assertIn("不是固定顺序、固定数量或固定生命周期", self.memory)
+        self.assertIn("不构成固定后台生命周期", self.memory)
         for removed in (
             "reputation_score",
             "penalty_points",
@@ -1479,7 +1532,7 @@ class SkillContractTests(unittest.TestCase):
             "最终回复顶部",
             "实际子代理名称、模型和思考程度",
             "不占关键步骤",
-            "第一条可见commentary必须以以下三行开头",
+            "第一条可见commentary必须原样输出任务卡开头五行",
             "五行前不写计划、运行ID或其他说明",
             "run_id即使出现在输入中也不得回显",
             "不得声明经验适用性",
@@ -1529,8 +1582,10 @@ class SkillContractTests(unittest.TestCase):
             )
         )
         self.assertIn(expected_opening, self.delegation)
-        self.assertIn("必须严格以上述三行配置开头，紧接", self.delegation)
+        self.assertIn("必须原样输出任务卡开头五行", self.delegation)
         self.assertIn("parent → child → grandchild", self.delegation + self.collaboration)
+        self.assertIn("固定配置只约束该保留身份本身", self.delegation)
+        self.assertIn("不得覆盖下游自己的任务卡五行", self.collaboration)
         self.assertIn("followup_task` 接口没有选模参数", self.delegation)
         self.assertNotIn("专家名称/模型/思考程度", self.skill + self.routing + self.delegation + self.collaboration)
 
@@ -1681,7 +1736,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertFalse((SKILL_DIR / "scripts" / "manage_agents.py").exists())
         self.assertFalse((ROOT / "tests" / "test_manage_agents.py").exists())
         self.assertIn("按需能力", self.memory)
-        self.assertIn("全部不使用", self.memory)
+        self.assertIn("必须用", self.memory)
+        self.assertIn("complete-run", self.memory)
+        self.assertIn("improve` 不能代替本次完成收据", self.memory)
 
     def test_playbooks_keep_real_task_and_permission_boundaries(self) -> None:
         self.assertIn("证明根因", self.bug_fix)
@@ -2071,19 +2128,29 @@ class SkillContractTests(unittest.TestCase):
             "lean-simplify",
             "lean-stack",
             "两个按需入口",
-            "只读取并应用当前实际动作命中的入口",
-            "不能在开头通读两份",
+            "同一次启动热路径",
+            "快速实际读取",
+            "只读两份 `SKILL.md`",
+            "不预读它们链接的完整参考细则",
             "第二段初始化前言",
-            "识别后立即开始",
+            "立即开始当前实际动作",
             "不能在第一个实际任务操作前再发第二段启动说明",
             "互不依赖的必要读取与第一个确定性命令放进同一次工具调用",
             "无关记忆",
-            "完整细则",
             "委派",
             "版本解释",
-            "同一会话后续轮次复用",
+            "同一会话入口未变化时后续轮次直接复用",
+            "独立触发",
+            "并行触发",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact)
+
+        for rejected in (
+            "只读取并应用当前实际动作命中的入口",
+            "当前动作命中哪个才读哪个",
+            "不能在开头通读两份",
+        ):
+            self.assertNotIn(re.sub(r"\s+", "", rejected), compact)
 
     def test_runtime_acceptance_stops_after_one_decisive_recheck(self) -> None:
         compact = re.sub(r"\s+", "", self.simplify_skill)

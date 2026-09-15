@@ -101,7 +101,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         header = agents.parse_header(current.decode("utf-8"))
         developer = payload["developer_instructions"]
         effort_line = f"思考程度：{payload['model_reasoning_effort']}\n"
-        self.assertEqual(developer.count(effort_line), 2)
+        self.assertEqual(developer.count(effort_line), 1)
         legacy_developer = developer.replace(
             effort_line,
             effort_line + "速度：快速\n",
@@ -343,22 +343,23 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn(opening, instructions)
         self.assertNotIn("角色名称：", instructions)
         role = instructions.index(role_paragraph)
-        communication = instructions.index("第一条可见 commentary 必须以以下三行开头", role)
+        communication = instructions.index("第一条可见 commentary 必须原样输出任务卡开头五行", role)
         declaration = instructions.index(opening, communication)
-        status = instructions.index("紧接着逐字显示任务卡提供的“存活轮次”和“经验”两行", declaration)
+        status = instructions.index("任务卡后两行必须提供存活轮次和经验的实际值", declaration)
         execution = instructions.index("只完成任务卡分配的当前子任务", status)
-        final_result = instructions.index("最终回复顶部再次写上述三行配置", execution)
-        final_declaration = instructions.index(opening, final_result)
-        final_task = instructions.index("子任务：<当前子任务>", final_declaration)
-        self.assertEqual(instructions.count(opening), 2)
+        final_result = instructions.index("最终回复顶部原样写当前任务卡前三行实际值", execution)
+        final_task = instructions.index("子任务：<当前子任务>", final_result)
+        self.assertEqual(instructions.count(opening), 1)
         self.assertLess(role, communication)
         self.assertLess(communication, declaration)
         self.assertLess(declaration, status)
         self.assertLess(status, execution)
-        self.assertLess(final_result, final_declaration)
-        self.assertLess(final_declaration, final_task)
+        self.assertLess(final_result, final_task)
         for child_contract in (
-            "第一条可见 commentary 必须以以下三行开头",
+            "第一条可见 commentary 必须原样输出任务卡开头五行",
+            "该固定配置只约束当前保留身份",
+            "下游子代理按自己任务卡的五行开场",
+            "继承到下游的上级保留身份固定配置不得覆盖下游任务卡",
             "运行时子代理显示 0 轮和未加载保留经验",
             "不得声明经验适用性",
             "run_id 即使出现在输入中也不得回显",
@@ -375,7 +376,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         ):
             self.assertIn(child_contract, instructions)
         self.assertLess(
-            instructions.index("第一条可见 commentary 必须以以下三行开头"),
+            instructions.index("第一条可见 commentary 必须原样输出任务卡开头五行"),
             instructions.index(opening),
         )
         self.assertNotIn("你的第一动作必须", instructions)
@@ -510,15 +511,15 @@ class SpecialistRegistryTests(unittest.TestCase):
             "模型：gpt-5.6-terra\n"
             "思考程度：medium\n"
         )
-        self.assertEqual(instructions.count(opening), 2)
+        self.assertEqual(instructions.count(opening), 1)
         self.assertLess(instructions.index("你是专门负责"), instructions.index(opening))
         self.assertLess(
-            instructions.index("第一条可见 commentary 必须以以下三行开头"),
+            instructions.index("第一条可见 commentary 必须原样输出任务卡开头五行"),
             instructions.index("只完成任务卡分配的当前子任务"),
         )
         self.assertLess(
-            instructions.index("最终回复顶部再次写上述三行配置"),
-            instructions.rindex(opening),
+            instructions.index("最终回复顶部原样写当前任务卡前三行实际值"),
+            instructions.index("子任务：<当前子任务>"),
         )
 
     def test_ensure_omitted_speed_defaults_all_models_to_standard(self) -> None:
@@ -862,7 +863,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(instructions.index("你是专门负责"), instructions.index("子代理名称：QML 根因核对员"))
         self.assertIn("实际依赖图", instructions)
         self.assertIn(lesson, instructions)
-        self.assertIn("第一条可见 commentary 必须以以下三行开头", instructions)
+        self.assertIn("第一条可见 commentary 必须原样输出任务卡开头五行", instructions)
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
@@ -1201,7 +1202,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                     instructions = payload["developer_instructions"]
                     self.assertIn("模型：gpt-5.6-terra", instructions)
                     self.assertIn("思考程度：high", instructions)
-                    self.assertIn("状态缺失时如实报告缺口，不猜测", instructions)
+                    self.assertIn("缺少任一行时父代理不得启动该子任务", instructions)
                     self.assertNotIn("MODEL_ROUTE", instructions)
                     self.assertNotIn("可接受成本带", instructions)
                 self.assertEqual(before.get("service_tier"), after.get("service_tier"))
@@ -2502,7 +2503,12 @@ class SpecialistRegistryTests(unittest.TestCase):
             effort="medium",
         )
 
-        catalog = self.registry.status(for_routing=True)
+        with mock.patch.object(
+            self.registry, "connect", wraps=self.registry.connect
+        ) as connect:
+            catalog = self.registry.status(for_routing=True)
+
+        connect.assert_called_once_with(read_only=True)
 
         self.assertEqual(
             set(catalog),
@@ -2512,18 +2518,21 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(catalog["registered_count"], 2)
         items = catalog["registered_agents"]
         self.assertEqual(
-            [item["global_domain_key"] for item in items],
-            ["alpha-source-review", "zeta-lifecycle-review"],
+            [item["name"] for item in items],
+            sorted(item["name"] for item in items),
         )
         self.assertEqual(
             set(items[0]),
             {
-                "name", "description", "global_domain_key", "global_contract",
-                "model", "reasoning_effort", "speed", "authority",
+                "name", "description",
+                "model", "reasoning_effort", "authority",
             },
         )
         self.assertEqual(items[0]["description"], "来源复核员：复核来源覆盖和证据范围。")
-        self.assertEqual(items[0]["speed"], "standard")
+        self.assertNotIn("global_domain_key", items[0])
+        self.assertNotIn("global_contract", items[0])
+        self.assertNotIn("speed", items[0])
+        self.assertLess(len(json.dumps(catalog, ensure_ascii=False)), 4096)
         self.assertEqual(items[1]["authority"], "write")
 
         path = Path(later["path"])
@@ -2551,8 +2560,8 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(
             set(catalog["registered_agents"][0]),
             {
-                "name", "description", "global_domain_key", "global_contract",
-                "model", "reasoning_effort", "speed", "authority",
+                "name", "description",
+                "model", "reasoning_effort", "authority",
             },
         )
 
@@ -2671,6 +2680,18 @@ class SpecialistRegistryTests(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             exit_code = agents.main(
                 ["--codex-home", str(missing_home), "status", "--for-dashboard"]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertFalse(missing_home.exists())
+        self.assertFalse(json.loads(output.getvalue())["ok"])
+
+    def test_status_for_routing_does_not_initialize_missing_state(self) -> None:
+        missing_home = Path(self.temporary.name) / "missing-routing-home"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = agents.main(
+                ["--codex-home", str(missing_home), "status", "--for-routing"]
             )
 
         self.assertEqual(exit_code, 2)

@@ -68,6 +68,16 @@ class PluginInstallTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_default_invocation_activates_plugin_without_copying_plugin_policy(self) -> None:
+        line = install_plugin.DEFAULT_INVOCATION_LINE
+        self.assertIn("必须使用已安装的 `codex-lean-stack`", line)
+        self.assertIn("两个入口按需读取", line)
+        self.assertIn("选配与协作细节由插件维护", line)
+        for duplicated_policy in (
+            "spawn_agent", "reasoning_effort", "fork_turns", "五行", "task_name"
+        ):
+            self.assertNotIn(duplicated_policy, line)
+
     def test_default_line_is_added_once_and_preserves_crlf_and_bom(self) -> None:
         original = codecs.BOM_UTF8 + "保留第一行\r\n\r\n# 其他规则\r\n".encode("utf-8")
         self.agents.write_bytes(original)
@@ -117,6 +127,36 @@ class PluginInstallTests(unittest.TestCase):
 
         self.assertEqual(preflight["action"], "agents_default_present")
         self.assertFalse(result["agents"]["modified"])
+        self.assertEqual(self.agents.read_bytes(), original)
+
+    def test_expanded_parent_global_invocation_is_not_duplicated(self) -> None:
+        self.agents.write_text(
+            "所有模型和思考程度的父代理必须使用已安装的 `codex-lean-stack`："
+            "每次派发显式提交模型与思考程度。\n",
+            encoding="utf-8",
+        )
+
+        first = install_plugin.ensure_default_invocation(self.codex_home)
+        second = install_plugin.ensure_default_invocation(self.codex_home)
+
+        self.assertFalse(first["modified"])
+        self.assertFalse(second["modified"])
+        text = self.agents.read_text(encoding="utf-8")
+        self.assertNotIn(install_plugin.DEFAULT_INVOCATION_LINE, text)
+
+    def test_expanded_parent_global_invocation_with_emphasis_is_not_duplicated(self) -> None:
+        original = (
+            "本AGENTS.md 修改前每次都需用户明确同意。\n"
+            "所有模型和思考程度的父代理必须都使用已安装的 `codex-lean-stack`："
+            "会话开头快速实际读取两个按需入口。\n"
+        ).encode("utf-8")
+        self.agents.write_bytes(original)
+
+        preflight = install_plugin.preflight_default_invocation(self.codex_home)
+        ensured = install_plugin.ensure_default_invocation(self.codex_home)
+
+        self.assertEqual(preflight["action"], "agents_default_present")
+        self.assertFalse(ensured["modified"])
         self.assertEqual(self.agents.read_bytes(), original)
 
     def test_line_starting_with_user_plugin_requirement_is_preserved_after_install(self) -> None:
