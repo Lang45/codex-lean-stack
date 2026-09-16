@@ -1,0 +1,39 @@
+name: Full-chain audit
+
+on:
+  push:
+    branches:
+      - audit/full-chain-5.2.13-20260917
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Baseline (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Unit and contract tests
+        run: python -X utf8 -B -m unittest discover -s tests -v
+      - name: Archive exact audited source
+        if: always() && runner.os == 'Linux'
+        run: git archive --format=tar --output=audit-source.tar HEAD
+      - name: Retain source snapshot for reproducible review
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: audit-source-${{ github.sha }}
+          path: audit-source.tar
+          retention-days: 7
+          if-no-files-found: error
