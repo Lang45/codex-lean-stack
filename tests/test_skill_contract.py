@@ -265,39 +265,23 @@ class SkillContractTests(unittest.TestCase):
             re.sub(r"\s+", "", self.skill),
         )
 
+        self.assertLessEqual(
+            len(calling_prompt),
+            520,
+            "the pre-read prompt must stay small enough for the startup hot path",
+        )
         for required in (
-            "首次准备调用collaboration.spawn_agent或用followup_task启动新当前子任务时",
-            "所有项目和新会话不得临时关闭主动委派",
-            "必须先实际读取已加载技能目录中的$lean-stack入口",
-            "只识别技能名称或口头声明不算调用",
-            "任何层级和任何agent_type",
-            "default、explorer、worker、custom与具名保留子代理",
-            "每次collaboration.spawn_agent都须显式传model和reasoning_effort",
-            "具名子代理的值必须与已加载TOML一致",
-            "fork_turns=none或有限正整数历史",
-            "禁止fork_turns=all",
-            "普通UI、视觉和简单审计不得使用Solultra",
-            "Solmax可按复杂度、质量、成本和时间正常选择",
-            "xhigh和max为何不足",
-            "Astra最高xhigh",
-            "只有Astra称为高成本专家路线",
-            "子代理名称/模型/思考程度三行配置",
-            "followup_task没有选模参数",
-            "规则递归到child和grandchild",
-            "第一条可见commentary严格以五行声明开头",
-            "任务卡未提供、未揭露或继承父级占位",
-            "派发硬门",
-            "缺字段、任何“继承”占位或给普通UI、视觉、简单审计选择Solultra时不得调用",
-            "明确要求子代理第一条可见commentary原样先输出这五行",
-            "中文会话使用中文名称，不能照抄技术task_name",
-            "面向用户主任务的交接启动句不适用于子代理",
-            "普通派发若启动热路径已读且入口未变化就直接复用，否则完整读取一次",
-            "新运行时组的结果被采用后执行首次ensure",
-            "仅对reconfiguration_required或global_contract_refresh_required响应",
-            "作一次CAS确认",
-            "已复用保留子代理直接complete-run",
-            "命中明确排除项时给出跳过原因",
-            "status--for-routing只提供轻量语义目录，命中候选后才recall完整合同",
+            "首次准备派发前实际读取$lean-stack",
+            "每次collaboration.spawn_agent显式传model、reasoning_effort和非全量fork_turns",
+            "任务卡与子代理首条可见commentary均以子代理名称、模型、思考程度、存活轮次、经验五行实际值开头",
+            "按质量、成本、时间选择并及时并行",
+            "普通UI、视觉和简单审计不用Solultra",
+            "复用走complete-run",
+            "新运行时组走ensure→complete-run或说明明确跳过",
+            "两份独立输出提供足够的外层结果预算",
+            "不与交接或源码串成一个shell输出",
+            "无明确截断不重读，明确截断只补缺段",
+            "$lean-stack不等待或阻断$lean-simplify",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_prompt)
 
@@ -612,6 +596,37 @@ class SkillContractTests(unittest.TestCase):
         self.assertLess(first_gate, script)
         self.assertLess(first_gate, same_script)
         self.assertLess(script, escape_failure)
+
+    def test_windows_exec_robustness_is_plugin_owned_and_shared(self) -> None:
+        robustness_block = """<!-- codex-exec-robustness:begin -->
+Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 Shell。
+复杂或跨语言代码优先用文件工具落盘，再调用脚本文件，避免层层内联转义。
+分离可执行文件、参数和数据，不拼接命令后用 Invoke-Expression 执行。
+按各层语法处理引用；路径优先使用变量及 LiteralPath，避免反引号续行。
+复杂 PowerShell 脚本执行前做语法预检，执行后检查实际结果与退出码。
+转义错误优先减少解析层，不连续盲试引号。
+复用已知环境，定向读取；完整日志留本地，回传关键错误，不为省 token 跳过验证。
+<!-- codex-exec-robustness:end -->"""
+        self.assertIn(robustness_block, self.routing)
+        self.assertEqual(self.routing.count("codex-exec-robustness:begin"), 1)
+        self.assertEqual(self.routing.count("codex-exec-robustness:end"), 1)
+        for entry in (self.skill, self.simplify_skill):
+            self.assertIn("Windows exec 稳健性契约", entry)
+            self.assertIn("execution-routing.md", entry)
+        for required in (
+            "Parser.ParseFile",
+            "& $exe @argList",
+            "Start-Process -ArgumentList",
+            "$PSNativeCommandArgumentPassing",
+            "param()",
+            "-LiteralPath",
+            "实际内容、结果和外部程序退出码",
+            "完整日志留在本地",
+            "定向读取",
+            "不连续增加反斜杠、引号、Base64",
+        ):
+            self.assertIn(required, self.routing)
+        self.assertNotIn("AGENTS.md", self.skill + self.simplify_skill)
 
     def test_sustained_multi_workflow_work_dispatches_all_qualifying_slices_early(self) -> None:
         """Protect qualitative early routing without introducing a mechanical quota."""
@@ -2046,11 +2061,11 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(entry_prompt, self.manifest["interface"]["defaultPrompt"])
         for entry_term in (
             "$lean-stack",
-            "无需先加载或完成 $lean-simplify",
+            "不等待或阻断 $lean-simplify",
             "任务卡",
-            "三行配置",
+            "思考程度",
             "存活轮次",
-            "经验两行状态",
+            "经验五行实际值",
         ):
             self.assertIn(entry_term, calling_prompt)
         for entry_term in (
@@ -2123,7 +2138,20 @@ class SkillContractTests(unittest.TestCase):
 
     def test_new_session_startup_is_short_and_does_not_block_the_first_action(self) -> None:
         combined = self.skill + self.simplify_skill + self.openai_yaml + self.simplify_openai_yaml
-        compact = re.sub(r"\s+", "", combined)
+        compact = re.sub(r"\s+", "", combined).replace("`", "")
+        calling_prompt = re.search(
+            r'^\s*default_prompt:\s*"([^"]+)"', self.openai_yaml, re.MULTILINE
+        ).group(1)
+        simplify_prompt = re.search(
+            r'^\s*default_prompt:\s*"([^"]+)"',
+            self.simplify_openai_yaml,
+            re.MULTILINE,
+        ).group(1)
+        self.assertLessEqual(
+            len(calling_prompt) + len(simplify_prompt),
+            800,
+            "startup prompts must route to the skills instead of duplicating their manuals",
+        )
         for required in (
             "lean-simplify",
             "lean-stack",
@@ -2136,6 +2164,12 @@ class SkillContractTests(unittest.TestCase):
             "立即开始当前实际动作",
             "不能在第一个实际任务操作前再发第二段启动说明",
             "互不依赖的必要读取与第一个确定性命令放进同一次工具调用",
+            "各用一个独立的完整输出",
+            "外层工具结果预算",
+            "不能把两个入口、交接和源码串成同一段shell标准输出",
+            "没有明确的截断标记时不统计行数、分段或重复读取",
+            "明确截断时只补缺失段，不从头重读",
+            "不能先只返回MISSING",
             "无关记忆",
             "委派",
             "版本解释",
@@ -2143,7 +2177,7 @@ class SkillContractTests(unittest.TestCase):
             "独立触发",
             "并行触发",
         ):
-            self.assertIn(re.sub(r"\s+", "", required), compact)
+            self.assertIn(re.sub(r"\s+", "", required).replace("`", ""), compact)
 
         for rejected in (
             "只读取并应用当前实际动作命中的入口",
