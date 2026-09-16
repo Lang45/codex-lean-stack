@@ -239,18 +239,31 @@ def effective_agents_path(home: Path) -> Path:
     return override if text.strip() else home / "AGENTS.md"
 
 
+def _frontmatter_end(text: str) -> int:
+    """Return the end of an opening YAML block without parsing or rewriting it.
+
+    A delimiter inside an indented YAML scalar is not a closing delimiter.
+    An unclosed opening block is ambiguous, so reject it before installation.
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n").rstrip(" \t") != "---":
+        return 0
+    offset = len(lines[0])
+    for line in lines[1:]:
+        offset += len(line)
+        if line.rstrip("\r\n").rstrip(" \t") in ("---", "..."):
+            return offset
+    raise InstallError("unterminated YAML front matter; refusing to change global instructions")
+
+
 def _has_default_invocation(text: str) -> bool:
     # Examples and HTML comments are not active instructions. Preserve the
     # original bytes; this filtered view is only used for detection.
-    visible = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.DOTALL)
+    body = text[_frontmatter_end(text):]
+    visible = re.sub(r"<!--.*?(?:-->|\Z)", "", body, flags=re.DOTALL)
     lines = visible.splitlines()
     fence = ""
-    frontmatter = bool(lines and lines[0].strip() == "---")
-    for index, line in enumerate(lines):
-        if frontmatter:
-            if index and line.strip() in ("---", "..."):
-                frontmatter = False
-            continue
+    for line in lines:
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
         if marker:
             run, suffix = marker.groups()
@@ -297,7 +310,14 @@ def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
         }
 
     first_line = text.splitlines()[0] if text else ""
-    if (first_line.strip() == "---" or "<!--" in first_line
+    frontmatter_end = _frontmatter_end(text)
+    if frontmatter_end:
+        prefix, body = text[:frontmatter_end], text[frontmatter_end:]
+        # Keep metadata at byte zero (after a preserved BOM) and unchanged.
+        # Separate the new instruction from both delimiters and existing body.
+        separator = newline if prefix.endswith(("\n", "\r")) else newline * 2
+        updated = f"{prefix}{separator}{DEFAULT_INVOCATION_LINE}{newline}{newline}{body}"
+    elif ("<!--" in first_line
             or re.match(r"^ {0,3}(`{3,}|~{3,})", first_line)):
         updated = f"{DEFAULT_INVOCATION_LINE}{newline}{text}"
     elif text:
