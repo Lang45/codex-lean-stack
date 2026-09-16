@@ -139,9 +139,12 @@ class InstallationChainTests(unittest.TestCase):
                 result = installer.ensure_default_invocation(self.home)
                 written = self.base.read_text(encoding="utf-8", newline="")
                 self.assertTrue(result["modified"])
-                # The new active instruction is before the opening example block.
-                self.assertTrue(written.startswith(line + "\n"))
-                self.assertTrue(written.endswith(text))
+                if text.startswith("---\n"):
+                    # Metadata remains first; the instruction belongs to the body.
+                    self.assertEqual(written, text + "\n" + line + "\n\n")
+                else:
+                    self.assertTrue(written.startswith(line + "\n"))
+                    self.assertTrue(written.endswith(text))
                 self.assertFalse(installer.ensure_default_invocation(self.home)["modified"])
 
 
@@ -352,7 +355,9 @@ class CostMaintenanceChainTests(unittest.TestCase):
                 release.set()
             self.assertTrue(first.result(timeout=5)["ok"])
         self.assertEqual(len(calls), 1)
-        self.assertFalse(list((self.home / "lean-stack").glob("*.lock")))
+        # A persistent anchor is harmless: test that the kernel lock is released.
+        with self.cost.record_lock(self.home / "lean-stack" / self.cost.STATE_NAME):
+            pass
 
     def test_failed_first_write_does_not_leave_a_poisoned_state_file(self):
         real_fdopen = self.cost.os.fdopen
@@ -377,7 +382,8 @@ class CostMaintenanceChainTests(unittest.TestCase):
                 self.record()
         state = self.home / "lean-stack" / self.cost.STATE_NAME
         self.assertFalse(state.exists())
-        self.assertFalse(list(state.parent.glob("*.lock")))
+        with self.cost.record_lock(state):
+            pass
         self.assertTrue(self.record()["ok"])
 
 
