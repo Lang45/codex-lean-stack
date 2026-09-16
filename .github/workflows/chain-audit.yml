@@ -1,16 +1,17 @@
 name: Full-chain audit
 
 on:
+  pull_request:
   push:
     branches:
-      - audit/full-chain-5.2.13-20260917
+      - main
 
 permissions:
   contents: read
 
 jobs:
   tests:
-    name: Baseline (${{ matrix.os }})
+    name: Regression (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
