@@ -1,3 +1,93 @@
+# Codex Lean Stack
+
+**Focused task execution and model-aware subagent delegation for Codex.**
+
+Codex Lean Stack helps Codex keep engineering tasks focused and delegate independent work deliberately. It provides two skills: `$lean-simplify` for reducing unnecessary steps and implementation complexity, and `$lean-stack` for choosing and coordinating subagents.
+
+Use either skill on its own, or both in the same task. Simplification does not block delegation, and delegating work does not replace validation.
+
+[Usage](#usage) · [Documentation](#documentation) · [Changelog](CHANGELOG.md)
+
+## Two independent skills
+
+| Skill | Purpose |
+| --- | --- |
+| [`$lean-simplify`](skills/lean-simplify/SKILL.md) | Find the smallest complete approach to the main task. Prefer existing solutions, limit unnecessary changes, and match verification to the affected behavior. |
+| [`$lean-stack`](skills/lean-stack/SKILL.md) | Delegate suitable work, select a model and reasoning effort for each task, coordinate parallel execution, and retain useful specialist experience. |
+
+Both skills preserve the requested outcome, permission boundaries, data integrity, and the evidence needed to support a result.
+
+## How it works
+
+- **Quality, cost, then time.** Model and reasoning effort are selected together. A delegated task must meet the required quality, use a proportionate configuration, and help the parent task finish sooner. More agents are not an objective in themselves.
+- **Tools before agents.** Deterministic work goes directly to tools. Complex PowerShell and cross-language commands use script files and explicit argument boundaries instead of layers of inline shell escaping.
+- **Clear ownership.** Parallel writers need defined scopes and an isolation strategy. Source evidence and verified results are reused rather than independently rediscovered by every agent.
+- **Reusable specialists.** Supporting utilities maintain agent profiles, recorded outcomes, and reusable experience. They support delegation; they do not launch agents on their own.
+
+Simplification is not a reason to skip necessary checks. The aim is to remove work that does not contribute to the result, not the safeguards that make the result trustworthy.
+
+## Installation
+
+Install `codex-lean-stack` from a configured Codex marketplace that contains the plugin. Cloning this repository alone does not install it.
+
+In Codex CLI, enter `/plugins`, select the marketplace entry, and install the plugin. Start a new session before using its bundled skills. See the [OpenAI plugin documentation](https://learn.chatgpt.com/docs/plugins) for supported surfaces and marketplace setup.
+
+Standard plugin installation does not edit your global `AGENTS.md`. The repository's [optional installation helper](skills/lean-stack/scripts/install_plugin.py) is separate and should only be used when you explicitly want default usage configured.
+
+## Usage
+
+For a focused implementation:
+
+```text
+Use $lean-simplify to implement this change with the smallest complete solution and the checks it needs.
+```
+
+For work that can benefit from delegation:
+
+```text
+Use $lean-stack to delegate independent work where it improves completion time, choosing models and reasoning effort to match each task.
+```
+
+Both skills can be named in the same request. Neither is a prerequisite for the other.
+
+## Compatibility and scope
+
+A Codex environment with plugin support is required. Subagent delegation also depends on the models and native agent tools available in that environment.
+
+This plugin supplies workflow instructions and helper scripts. It does not provide model access, replace the Codex runtime, or run a background orchestration service. Updating this source checkout does not automatically update an installed plugin copy or an existing session.
+
+## Documentation
+
+| Topic | Reference |
+| --- | --- |
+| Skill entry points | [Task simplification](skills/lean-simplify/SKILL.md) · [Subagent delegation](skills/lean-stack/SKILL.md) |
+| Execution and coordination | [Execution routing](skills/lean-stack/references/execution-routing.md) · [Delegation](skills/lean-stack/references/delegation.md) · [Coordination parents](skills/lean-stack/references/collaboration.md) |
+| Parallel changes | [Writable parallelism](skills/lean-stack/references/write-parallelism.md) |
+| Specialist reuse | [Agent profiles and experience](skills/lean-stack/references/specialist-memory.md) |
+| Reducing complexity | [Anti-overengineering](skills/lean-stack/references/anti-overengineering.md) · [Ablation loop](skills/lean-stack/references/ablation-loop.md) |
+| Releases | [Changelog](CHANGELOG.md) · [Versioning](skills/lean-stack/references/versioning.md) |
+
+Detailed workflow references are currently written primarily in Chinese. The original Chinese README is also preserved in the expandable reference below.
+
+## Development
+
+Make changes in this source repository rather than editing the installed plugin cache. For changes to skill documentation and contracts, run the relevant contract tests:
+
+```sh
+python -m unittest discover -s tests -p test_skill_contract.py
+```
+
+Choose additional checks according to the behavior affected by the change.
+
+## License
+
+[MIT](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for attribution.
+
+## Technical reference
+
+<details>
+<summary>Chinese workflow reference</summary>
+
 # Codex子代理调用与精简流程
 
 插件标识：`codex-lean-stack`
@@ -150,3 +240,5 @@ py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace <marke
 ## License
 
 [MIT](LICENSE)
+
+</details>
