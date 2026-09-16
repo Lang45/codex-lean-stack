@@ -11,13 +11,14 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import stat
 import tempfile
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 
 STATE_VERSION = 1
@@ -197,20 +198,59 @@ def remove_owned_file(path: Path, identity: tuple[int, int]) -> None:
 
 
 @contextlib.contextmanager
-def record_lock(path: Path):
-    lock = path.with_name(f".{path.name}.lock")
-    try:
-        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise CostCheckError("cost-check record is already in progress; skip this attempt") from exc
-    metadata = os.fstat(descriptor)
-    identity = (metadata.st_dev, metadata.st_ino)
-    os.close(descriptor)
-    try:
-        yield
-    finally:
-        remove_owned_file(lock, identity)
+def record_lock(path: Path) -> Iterator[None]:
+    """Hold a non-blocking OS lock; process death releases it automatically.
 
+    Keep the anchor inode in place after unlocking. Unlinking it would let a
+    waiting opener and a new creator lock different files at the same path.
+    """
+    lock = path.with_name(f".{path.name}.lock")
+
+    def check_anchor(metadata: os.stat_result) -> None:
+        if (stat.S_ISLNK(metadata.st_mode) or is_reparse_point(metadata)
+                or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1):
+            raise CostCheckError("cost-check lock must be one regular, non-linked file")
+
+    if os.path.lexists(lock):
+        check_anchor(os.lstat(lock))
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(lock, flags, 0o600)
+    try:
+        opened = os.fstat(descriptor)
+        check_anchor(opened)
+        current = os.lstat(lock)
+        check_anchor(current)
+        if not os.path.samestat(opened, current):
+            raise CostCheckError("cost-check lock changed while it was being opened")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                # Byte-range locking is valid beyond EOF; leave anchor bytes intact.
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                raise CostCheckError(
+                    "cost-check record is already in progress; skip this attempt"
+                ) from exc
+            raise
+        try:
+            current = os.lstat(lock)
+            check_anchor(current)
+            if not os.path.samestat(opened, current):
+                raise CostCheckError("cost-check lock changed during acquisition")
+            yield
+        finally:
+            if os.name == "nt":
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def record(
