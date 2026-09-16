@@ -236,7 +236,7 @@ class SkillContractTests(unittest.TestCase):
             "model和reasoning_effort",
             "与已加载TOML完全一致",
             'fork_turns="none"或有限正整数历史',
-            'fork_turns="all"因不能同时显式覆盖模型和思考程度而禁止使用',
+            'fork_turns="all"因全量复制无关历史而禁止使用',
             "普通UI、视觉和简单审计不得使用Solultra",
             "Solmax可按任务复杂度、必要质量和相称思考深度正常联合选择",
             "只有Solultra需要高价值复杂边界",
@@ -2012,7 +2012,8 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
     def test_visible_plugin_name_is_consistent_without_renaming_stable_identifiers(self) -> None:
         visible_name = "Codex子代理调用与精简流程"
         self.assertEqual(self.manifest["interface"]["displayName"], visible_name)
-        self.assertTrue(self.readme.startswith(f"# {visible_name}\n"))
+        self.assertTrue(self.readme.startswith("# Codex Lean Stack\n"))
+        self.assertIn(f"# {visible_name}\n", self.readme)
         self.assertIn(visible_name, self.flowcharts)
         self.assertIn("# Codex 子代理调用", self.skill)
         self.assertIn("# Codex 主任务精简", self.simplify_skill)

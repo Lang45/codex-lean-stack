@@ -233,8 +233,34 @@ def _atomic_replace(
             temporary.unlink()
 
 
+def effective_agents_path(home: Path) -> Path:
+    override = home / "AGENTS.override.md"
+    _, text, _, _, _ = _read_agents(override)
+    return override if text.strip() else home / "AGENTS.md"
+
+
 def _has_default_invocation(text: str) -> bool:
-    for line in text.splitlines():
+    # Examples and HTML comments are not active instructions. Preserve the
+    # original bytes; this filtered view is only used for detection.
+    visible = re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.DOTALL)
+    lines = visible.splitlines()
+    fence = ""
+    frontmatter = bool(lines and lines[0].strip() == "---")
+    for index, line in enumerate(lines):
+        if frontmatter:
+            if index and line.strip() in ("---", "..."):
+                frontmatter = False
+            continue
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            run, suffix = marker.groups()
+            if not fence:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and not suffix.strip():
+                fence = ""
+            continue
+        if fence:
+            continue
         if line == DEFAULT_INVOCATION_LINE:
             return True
         for prefix in USER_GLOBAL_INVOCATION_PREFIXES:
@@ -270,7 +296,11 @@ def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
             "line": DEFAULT_INVOCATION_LINE,
         }
 
-    if text:
+    first_line = text.splitlines()[0] if text else ""
+    if (first_line.strip() == "---" or "<!--" in first_line
+            or re.match(r"^ {0,3}(`{3,}|~{3,})", first_line)):
+        updated = f"{DEFAULT_INVOCATION_LINE}{newline}{text}"
+    elif text:
         first_break = re.search(r"\r\n|\r|\n", text)
         if first_break is None:
             updated = f"{text}{newline}{DEFAULT_INVOCATION_LINE}{newline}"
@@ -304,17 +334,15 @@ def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
 def ensure_default_invocation(codex_home: Path | None = None) -> dict[str, Any]:
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
-    agents_path = home / "AGENTS.md"
-    with update_lock(agents_path):
-        return _ensure_default_invocation_locked(agents_path)
+    with update_lock(home / "AGENTS.md"):
+        return _ensure_default_invocation_locked(effective_agents_path(home))
 
 
 def preflight_default_invocation(codex_home: Path | None = None) -> dict[str, Any]:
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
-    agents_path = home / "AGENTS.md"
-    with update_lock(agents_path):
-        return _preflight_default_invocation_locked(agents_path)
+    with update_lock(home / "AGENTS.md"):
+        return _preflight_default_invocation_locked(effective_agents_path(home))
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -349,8 +377,11 @@ def install_plugin(
     environment["PYTHONUTF8"] = "1"
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
-    agents_path = home / "AGENTS.md"
-    with update_lock(agents_path):
+    environment["CODEX_HOME"] = str(home)
+    # One home-level lock coordinates both files, including older helpers that
+    # only knew about AGENTS.md. Never edit an inactive base behind an override.
+    with update_lock(home / "AGENTS.md"):
+        agents_path = effective_agents_path(home)
         agents_preflight = _preflight_default_invocation_locked(agents_path)
         completed = runner(
             command,
@@ -367,6 +398,11 @@ def install_plugin(
             ).strip()
             raise InstallError(
                 f"plugin install failed with exit code {completed.returncode}: {detail}"
+            )
+        if effective_agents_path(home) != agents_path:
+            raise InstallError(
+                "active global instructions changed during installation; "
+                "the plugin may be installed, but activation was not written"
             )
         agents_result = _ensure_default_invocation_locked(agents_path)
     return {

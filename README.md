@@ -32,7 +32,7 @@ Install `codex-lean-stack` from a configured Codex marketplace that contains the
 
 In Codex CLI, enter `/plugins`, select the marketplace entry, and install the plugin. Start a new session before using its bundled skills. See the [OpenAI plugin documentation](https://learn.chatgpt.com/docs/plugins) for supported surfaces and marketplace setup.
 
-Standard plugin installation does not edit your global `AGENTS.md`. The repository's [optional installation helper](skills/lean-stack/scripts/install_plugin.py) is separate and should only be used when you explicitly want default usage configured.
+Standard plugin installation does not edit your global instructions. The repository's [optional installation helper](skills/lean-stack/scripts/install_plugin.py) is separate and should only be used when you explicitly want default usage configured. It uses the selected Codex home and updates the active global instruction file: a non-empty `AGENTS.override.md`, or `AGENTS.md` otherwise.
 
 ## Usage
 
@@ -92,7 +92,9 @@ Choose additional checks according to the behavior affected by the change.
 
 插件标识：`codex-lean-stack`
 
-## 当前版本 5.2.13
+## 当前版本 5.2.14
+
+5.2.14 修复安装激活目标、长经验读取与写入回滚链路，并补全跨平台回归。功能入口和既有兼容能力不变；源码更新不代表安装缓存或已运行会话已更新。
 
 当前使用取向是主要由 Sol 担任父代理，并把高价的 `gpt-6-astra` 留作可调用的子代理专家；具体任务只按模型与思考程度能否联合达到必要质量、质量充分组合是否成本相称、子代理是否实际加快父任务完成三项原则判断。
 

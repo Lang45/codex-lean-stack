@@ -56,6 +56,7 @@ MAX_MANAGED_SCAN_FILES = 256
 BUSY_TIMEOUT_MS = 100
 REPARSE_POINT_FLAG = 0x400
 PENDING_DELETION_DIR_NAME = "待删文件"
+UNLOADED_MEMORY = "已保存原始经验，当前窗口未加载；待摘要压缩。"
 
 ROLE_KEY_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -263,13 +264,16 @@ def ensure_plain_directory(path: Path, *, create: bool) -> Path:
 
 
 def ensure_plain_database(path: Path) -> None:
-    if not path.exists():
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
         return
-    metadata = os.lstat(path)
     if stat.S_ISLNK(metadata.st_mode) or is_reparse_point(metadata):
         raise SpecialistError(f"database cannot be a link or reparse point: {path}")
     if not stat.S_ISREG(metadata.st_mode):
         raise SpecialistError(f"database must be a regular file: {path}")
+    if metadata.st_nlink != 1:
+        raise SpecialistError(f"database must have exactly one hard link: {path}")
 
 
 def validate_direct_agent_file(path: Path, agents_dir: Path) -> os.stat_result:
@@ -468,6 +472,12 @@ def contains_forbidden_persistent_data(value: str) -> bool:
     lowered = value.lower()
     if "://" in value or re.search(r"[A-Za-z]:[\\/]", value):
         return True
+    # Reject rooted paths without classifying I/O, SQLite/TOML, or relative
+    # source paths as machine-specific locations.
+    if re.search(r'''(?<![\w./])/(?:[^\s/\\"'<>]+/)+[^\s/\\"'<>]*''', value):
+        return True
+    if re.search(r"\\\\[^\\\s]+\\[^\\\s]+", value):
+        return True
     if any(token in lowered for token in ("api_key", "api-key", "password=", "token=")):
         return True
     if re.search(
@@ -545,7 +555,11 @@ def normalize_global_contract(
             "global contract must contain exactly domain, input_shapes, responsibilities, "
             "deliverables, and hard_boundaries"
         )
-    domain = " ".join(str(parsed["domain"]).split())
+    if not isinstance(parsed["domain"], str):
+        raise SpecialistError("global contract domain must be a string")
+    if contains_forbidden_persistent_data(parsed["domain"]):
+        raise SpecialistError("global contract domain contains unsafe persistent data")
+    domain = " ".join(parsed["domain"].split())
     if not domain or len(domain) > 120:
         raise SpecialistError("global contract domain must be 1-120 characters")
     normalized: dict[str, Any] = {"domain": domain}
@@ -557,6 +571,11 @@ def normalize_global_contract(
         for raw in raw_items:
             if not isinstance(raw, str):
                 raise SpecialistError(f"global contract {field} entries must be strings")
+            if contains_forbidden_persistent_data(raw):
+                raise SpecialistError(
+                    f"global contract {field} contains a URL, absolute path, "
+                    "credential-like data, or control characters"
+                )
             item = " ".join(raw.split())
             if not item or len(item) > 500:
                 raise SpecialistError(
@@ -1825,10 +1844,20 @@ class SpecialistRegistry:
         )
         memory = self._experience_memory(payload)
         empty_memory = memory_block("", [])
-        if (active_experience_count == 0) != (memory == empty_memory):
+        experience_loaded = memory not in (empty_memory, UNLOADED_MEMORY)
+        if not active_experience_count and memory != empty_memory:
             raise SpecialistError("agent memory does not match active experience state")
+        if active_experience_count and not experience_loaded:
+            summary_row = self._summary_row(connection, row["agent_id"])
+            summary = summary_row["summary"] if summary_row is not None else ""
+            covered = int(summary_row["covered_through_sequence"]) if summary_row is not None else 0
+            pending = self._pending_events(connection, row["agent_id"], covered)
+            if self._memory_for_toml(summary, pending) != UNLOADED_MEMORY:
+                raise SpecialistError("agent memory does not match active experience state")
+            # Older files used the empty placeholder for this same valid deferred
+            # state. Accept it read-only; do not invent a loaded-experience digest.
         experience_digest = (
-            sha256_bytes(memory.encode("utf-8")) if active_experience_count else None
+            sha256_bytes(memory.encode("utf-8")) if experience_loaded else None
         )
         experience_successes = 0
         experience_failures = 0
@@ -1848,7 +1877,10 @@ class SpecialistRegistry:
             f"存活轮次：{success_count}（已记录任务 {attempt_count}，失败 {failure_count}）"
         )
         if experience_digest is None:
-            experience_line = "经验：未加载已保存经验"
+            experience_line = (
+                f"经验：已保存 {active_experience_count} 条，当前未加载；待摘要压缩"
+                if active_experience_count else "经验：未加载已保存经验"
+            )
         elif experience_successes or experience_failures:
             experience_line = (
                 f"经验：当前配置 {active_experience_count} 条；此版本关联的后续结果 "
@@ -1863,6 +1895,7 @@ class SpecialistRegistry:
             "survival_rounds": success_count,
             "failed_attempt_count": failure_count,
             "active_experience_count": active_experience_count,
+            "experience_loaded": experience_loaded,
             "experience_digest": experience_digest,
             "experience_successful_attempt_count": experience_successes,
             "experience_failed_attempt_count": experience_failures,
@@ -1927,11 +1960,16 @@ class SpecialistRegistry:
     def _compression_batch(
         summary: str, pending: Sequence[sqlite3.Row]
     ) -> dict[str, Any] | None:
+        if not pending:
+            return None
         pending_bytes = sum(len(row["lesson"].encode("utf-8")) for row in pending)
+        rendered_bytes = len(
+            memory_block(summary, [row["lesson"] for row in pending]).encode("utf-8")
+        )
         if (
             len(pending) < COMPACT_EVENT_THRESHOLD
             and pending_bytes < COMPACT_BYTE_THRESHOLD
-            and pending_bytes < MAX_MEMORY_BYTES
+            and rendered_bytes <= MAX_MEMORY_BYTES
         ):
             return None
         selected: list[sqlite3.Row] = []
@@ -1962,6 +2000,7 @@ class SpecialistRegistry:
             "source_digest": SpecialistRegistry._source_digest(summary, selected),
             "instruction": (
                 f"Compress the existing summary and events into <= {MAX_SUMMARY_CHARS} characters; "
+                f"the summary including its rendered label must fit within {MAX_MEMORY_BYTES} UTF-8 bytes; "
                 "preserve reusable facts, failure-avoidance lessons, permissions, and evidence rules; "
                 "preserve applicability, uncertainty about failure causes, evidence scope, exceptions, "
                 "and reopening conditions; repeated evidence is not an independent sample, and compression "
@@ -1987,6 +2026,8 @@ class SpecialistRegistry:
             if len(candidate.encode("utf-8")) > max_bytes:
                 break
             selected.append(lesson)
+        if pending and not selected and not summary:
+            return UNLOADED_MEMORY if len(UNLOADED_MEMORY.encode("utf-8")) <= max_bytes else initial
         return memory_block(summary, selected)
 
     def ensure(
@@ -2327,14 +2368,17 @@ class SpecialistRegistry:
             global_domain_key=row["global_domain_key"],
             global_contract_digest=row["global_contract_digest"],
         )
-        if rewritten != original:
-            validate_direct_agent_file(path, self.agents_dir)
-            replace_exact_file(path, expected=original, replacement=rewritten)
         digest = sha256_bytes(rewritten)
+        # Finish fallible ledger work before replacing the file. If replacement
+        # fails the caller rolls back SQL; once it succeeds, return the rollback
+        # bytes immediately so the caller can also recover a failed COMMIT.
         connection.execute(
             "UPDATE agents SET expected_sha256 = ?, updated_at = ? WHERE agent_id = ?",
             (digest, utc_now(), row["agent_id"]),
         )
+        if rewritten != original:
+            validate_direct_agent_file(path, self.agents_dir)
+            replace_exact_file(path, expected=original, replacement=rewritten)
         return digest, rewritten
 
     @staticmethod
@@ -2442,15 +2486,6 @@ class SpecialistRegistry:
             covered = 0
             summary_reset = True
         pending = self._pending_events(connection, row["agent_id"], covered)
-        new_hash, rewritten = self._rewrite_memory(
-            connection,
-            row=row,
-            path=path,
-            original=original,
-            payload=payload,
-            summary=summary,
-            pending=pending,
-        )
         compaction = self._compression_batch(summary, pending)
         total = int(
             connection.execute(
@@ -2470,6 +2505,15 @@ class SpecialistRegistry:
                 if existing is not None
                 else "experience_recorded"
             )
+        new_hash, rewritten = self._rewrite_memory(
+            connection,
+            row=row,
+            path=path,
+            original=original,
+            payload=payload,
+            summary=summary,
+            pending=pending,
+        )
         return ({
             "ok": True,
             "action": action,

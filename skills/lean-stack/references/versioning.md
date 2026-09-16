@@ -65,16 +65,19 @@ py -3 -X utf8 .\skills\lean-stack\scripts\bump_plugin_version.py <plugin-root> `
 py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace personal
 ```
 
-它先核对市场名、唯一插件条目、当前源码根和 `AGENTS.md` 安全前置条件，并在同一把文件锁内
+它先核对市场名、唯一插件条目、当前源码根和实际生效全局指令文件的安全前置条件，并在同一把文件锁内
 执行正式 `codex plugin add` 与成功后的幂等单行写入；已知前置错误不会先安装插件，安装失败
-也不触碰 `AGENTS.md`。没有用户当次授权时仍使用普通安装命令，不修改全局文件。新任务负责
+也不触碰全局指令文件。辅助安装器把显式 `--codex-home` 同时传给安装子进程，优先更新非空
+`AGENTS.override.md`，否则更新 `AGENTS.md`；保留未选中文件、原有编码和换行，不把围栏代码或
+注释中的示例认作激活指令。安装过程中生效文件改变时报告未完成激活，不伪报成功。
+没有用户当次授权时仍使用普通安装命令，不修改全局文件。新任务负责
 加载新技能和专门代理表面，不需要重启 ChatGPT。
 
 安装器只允许补写下列默认调用指令；现有用户文件已含下列句子或用户明确的
 “必须调用已安装的 `codex-lean-stack` 插件。”时视为满足，不重复追加、不改写原句：
 
 ```text
-默认调用已安装的 `codex-lean-stack` 插件：`$lean-simplify` 与 `$lean-stack` 按各自职责独立适用，子代理调用不以主任务精简为前置。
+所有模型和思考程度的父代理必须使用已安装的 `codex-lean-stack`；两个入口按需读取，已加载且未变化的规则直接复用，选配与协作细节由插件维护。
 ```
 
 Windows 上本插件脚本和官方校验器都必须由 `py -3 -X utf8` 启动。即使当前 PowerShell、
