@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import codecs
 import contextlib
 import json
@@ -16,6 +17,16 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterator
+
+
+# Resolve this sibling explicitly: standalone CLI and import-by-path probes
+# must use the same implementation without changing the caller's sys.path.
+_lock_spec = importlib.util.spec_from_file_location(
+    "_lean_stack_maintenance_lock", Path(__file__).with_name("_maintenance_lock.py")
+)
+assert _lock_spec is not None and _lock_spec.loader is not None
+_locks = importlib.util.module_from_spec(_lock_spec)
+_lock_spec.loader.exec_module(_locks)
 
 
 PLUGIN_NAME = "codex-lean-stack"
@@ -74,22 +85,14 @@ def fsync_directory(path: Path) -> None:
 
 @contextlib.contextmanager
 def update_lock(agents_path: Path) -> Iterator[None]:
-    lock_path = agents_path.with_name(f".{agents_path.name}.lean-stack.lock")
-    try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise InstallError(
-            f"AGENTS.md update lock already exists; inspect it before retrying: {lock_path}"
-        ) from exc
-    try:
-        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
-            handle.write(f"pid={os.getpid()}\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+    """Hold a process-lifetime lock; keep the stable anchor after release."""
+    lock = agents_path.with_name(f".{agents_path.name}.lean-stack.lock")
+    with _locks.exclusive_lock(
+        lock, error_type=InstallError,
+        busy_message='AGENTS.md update is already in progress; skip this attempt',
+        reject_legacy_marker=True,
+    ):
         yield
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            lock_path.unlink()
 
 
 def read_manifest(plugin_root: Path) -> tuple[str, str]:

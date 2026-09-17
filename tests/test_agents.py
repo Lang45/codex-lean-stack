@@ -1658,7 +1658,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         expected_event_id = str(
             uuid.uuid5(
                 uuid.UUID(run_id),
-                f"retained-completion:{created['sha256']}",
+                "retained-completion:v2",
             )
         )
         self.assertEqual(completed["action"], "completion_recorded")

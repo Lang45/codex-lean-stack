@@ -266,9 +266,10 @@ class PluginInstallTests(unittest.TestCase):
                     runner=broken_runner,
                 )
         self.assertEqual(self.agents.read_bytes(), original)
-        self.assertFalse(
-            (self.codex_home / ".AGENTS.md.lean-stack.lock").exists()
-        )
+        # A stable empty anchor is retained; actual reacquisition proves release.
+        self.assertTrue((self.codex_home / ".AGENTS.md.lean-stack.lock").is_file())
+        with install_plugin.update_lock(self.agents):
+            pass
 
     def test_invalid_agents_or_plugin_identity_fails_closed(self) -> None:
         self.agents.write_bytes(b"\xff")
@@ -346,9 +347,10 @@ class PluginInstallTests(unittest.TestCase):
             list(self.codex_home.glob(".AGENTS.md.*.tmp")),
             [],
         )
-        self.assertFalse(
-            (self.codex_home / ".AGENTS.md.lean-stack.lock").exists()
-        )
+        # A stable empty anchor is retained; actual reacquisition proves release.
+        self.assertTrue((self.codex_home / ".AGENTS.md.lean-stack.lock").is_file())
+        with install_plugin.update_lock(self.agents):
+            pass
 
     def test_link_metadata_is_rejected_before_reading_agents(self) -> None:
         self.agents.write_text("不要读取\n", encoding="utf-8")

@@ -139,7 +139,9 @@ class PluginVersionTests(unittest.TestCase):
                     cachebuster="fixed",
                 )
         self.assertEqual(self.manifest.read_bytes(), original)
-        self.assertFalse(lock.exists())
+        self.assertTrue(lock.is_file())
+        with bump_plugin_version.release_lock(self.manifest):
+            pass
         self.assertEqual(list(self.manifest.parent.glob(".plugin.json.*.tmp")), [])
 
         # A reparse-point metadata directory is rejected before any write.
@@ -182,7 +184,9 @@ class PluginVersionTests(unittest.TestCase):
                     cachebuster="fixed",
                 )
         self.assertEqual(self.read_manifest()["version"], "0.2.0+codex.fixed")
-        self.assertFalse(lock.exists())
+        self.assertTrue(lock.is_file())
+        with bump_plugin_version.release_lock(self.manifest):
+            pass
         self.assertEqual(list(self.manifest.parent.glob(".plugin.json.*.tmp")), [])
 
 

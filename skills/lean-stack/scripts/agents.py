@@ -472,11 +472,9 @@ def contains_forbidden_persistent_data(value: str) -> bool:
     lowered = value.lower()
     if "://" in value or re.search(r"[A-Za-z]:[\\/]", value):
         return True
-    # Reject rooted paths without classifying I/O, SQLite/TOML, or relative
-    # source paths as machine-specific locations.
-    if re.search(r'''(?<![\w./])/(?:[^\s/\\"'<>]+/)+[^\s/\\"'<>]*''', value):
-        return True
-    if re.search(r"\\\\[^\\\s]+\\[^\\\s]+", value):
+    # A separator at the start of a path token is rooted, even for / or /foo.
+    # Embedded separators in I/O, SQLite/TOML and relative source paths are not.
+    if re.search(r"(?<![\w./\\])[/\\]", value):
         return True
     if any(token in lowered for token in ("api_key", "api-key", "password=", "token=")):
         return True
@@ -592,10 +590,7 @@ def normalize_global_contract(
     )
     if len(canonical.encode("utf-8")) > 16 * 1024:
         raise SpecialistError("global contract exceeds 16 KiB")
-    if contains_forbidden_persistent_data(canonical):
-        raise SpecialistError(
-            "global contract contains a URL, absolute path, credential-like data, or control characters"
-        )
+    # Validate raw fields above, not JSON escape sequences introduced here.
     reject_origin_terms(domain_key, origin_terms, field="global_domain_key")
     reject_origin_terms(canonical, origin_terms, field="global_contract")
     return canonical, sha256_bytes(canonical.encode("utf-8")), normalized
@@ -2745,12 +2740,10 @@ class SpecialistRegistry:
         else:
             if outcome != "success":
                 raise SpecialistError("experience can only accompany an adopted successful result")
-            # Bind the event to both the run id and the caller's CAS snapshot.  This
-            # removes a second caller-generated UUID from the completion path while
-            # preserving exact-request replay after the role file gains the lesson.
-            event_id = str(
-                uuid.uuid5(uuid.UUID(run_id), f"retained-completion:{expected_sha256}")
-            )
+            # A completion has one stable identity even after its lesson rewrites
+            # the TOML. First writes still require the exact CAS snapshot below;
+            # already-completed retries validate the bound event and live ownership.
+            event_id = str(uuid.uuid5(uuid.UUID(run_id), "retained-completion:v2"))
             experience_event = self._prepare_experience_event(
                 lesson=lesson,
                 event_id=event_id,
@@ -2819,8 +2812,24 @@ class SpecialistRegistry:
                     (existing["agent_id"], event_id),
                 ).fetchone()
                 if experience_replay is None:
-                    raise SpecialistError(
-                        "run_id completion replay is missing its bound experience event"
+                    # Older records derived the event ID from the original CAS.
+                    # Preserve exact-request retries without guessing associations
+                    # from lesson text or timestamps, or rewriting historical data.
+                    legacy_id = str(uuid.uuid5(
+                        uuid.UUID(run_id), f"retained-completion:{expected_sha256}"
+                    ))
+                    experience_replay = connection.execute(
+                        "SELECT event_digest,retracts_event_id FROM experience_events "
+                        "WHERE agent_id=? AND event_id=?",
+                        (existing["agent_id"], legacy_id),
+                    ).fetchone()
+                    if experience_replay is None:
+                        raise SpecialistError(
+                            "run_id completion replay is missing its bound experience event; "
+                            "legacy completions require the original expected_sha256"
+                        )
+                    experience_event = (
+                        experience_event[0], legacy_id, retracts_event_id, event_digest
                     )
                 if (
                     experience_replay["event_digest"] != event_digest
@@ -3583,7 +3592,7 @@ def build_parser() -> argparse.ArgumentParser:
     complete_run.add_argument(
         "--lesson",
         help=(
-            "optional adopted experience; its UUID is derived from run-id and the CAS snapshot"
+            "optional adopted experience; new event UUIDs are derived from run-id; legacy replays require the original CAS snapshot"
         ),
     )
     complete_run.add_argument(

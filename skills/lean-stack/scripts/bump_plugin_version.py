@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import contextlib
 import datetime as dt
 import json
@@ -14,6 +15,16 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterator
+
+
+# Resolve this sibling explicitly: standalone CLI and import-by-path probes
+# must use the same implementation without changing the caller's sys.path.
+_lock_spec = importlib.util.spec_from_file_location(
+    "_lean_stack_maintenance_lock", Path(__file__).with_name("_maintenance_lock.py")
+)
+assert _lock_spec is not None and _lock_spec.loader is not None
+_locks = importlib.util.module_from_spec(_lock_spec)
+_lock_spec.loader.exec_module(_locks)
 
 
 MAX_MANIFEST_BYTES = 1024 * 1024
@@ -147,24 +158,14 @@ def fsync_directory(path: Path) -> None:
 
 @contextlib.contextmanager
 def release_lock(manifest_path: Path) -> Iterator[None]:
-    lock_path = manifest_path.with_name(f"{manifest_path.name}.release.lock")
-    try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise VersionError(
-            f"release lock already exists; inspect it before manual removal: {lock_path}"
-        ) from exc
-    owned = True
-    try:
-        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
-            handle.write(f"pid={os.getpid()}\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+    """Hold a process-lifetime lock; keep the stable anchor after release."""
+    lock = manifest_path.with_name(f"{manifest_path.name}.release.lock")
+    with _locks.exclusive_lock(
+        lock, error_type=VersionError,
+        busy_message='plugin release is already in progress; skip this attempt',
+        reject_legacy_marker=True,
+    ):
         yield
-    finally:
-        if owned:
-            with contextlib.suppress(FileNotFoundError):
-                lock_path.unlink()
 
 
 def atomic_replace_json(
