@@ -1349,17 +1349,17 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         for hot_contract in (compact_skill, compact_results):
             for required in (
                 "每个结果经必要核验并被父代理采用后",
-                "已有专家记录本次完成",
+                "已有保留子代理记录本次完成",
                 "临时子代理能形成全局领域规则时",
-                "先保存为专家再记录完成",
+                "先保存为保留子代理再记录完成",
                 "明确排除项才跳过",
             ):
                 self.assertIn(re.sub(r"\s+", "", required), hot_contract)
 
         for public_boundary in (
             "结果核验采用后继续命中保留分支",
-            "已有专家记录完成",
-            "可泛化的新专家先保存身份再记录完成",
+            "已有保留子代理记录完成",
+            "可泛化的临时子代理先保存为保留子代理再记录完成",
             "仅明确排除项跳过并留收据",
             "侧支不阻塞交付",
         ):
@@ -2446,20 +2446,26 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
 
         simplify_routes = self.simplify_skill.split("## 条件路由", 1)[1]
         self.assertNotIn("调查、缺陷修复、构建或审查", simplify_routes)
-        for condition, reference in (
-            ("调查", "investigation.md"),
-            ("缺陷修复", "bug-fix.md"),
-            ("构建或重构", "build.md"),
-            ("审查或审计", "review.md"),
+        for decision, reference in (
+            ("查明未知事实、现状、调用链或原因", "investigation.md"),
+            ("已有错误、失败或可复现症状", "bug-fix.md"),
+            ("准备新增或修改实现", "build.md"),
+            ("判断需求符合度、工程质量、风险或是否适合合并", "review.md"),
         ):
             matching_rows = [
                 line
                 for line in simplify_routes.splitlines()
-                if line.startswith(f"| {condition} |")
+                if reference in line
             ]
             self.assertEqual(len(matching_rows), 1)
+            self.assertIn(decision, matching_rows[0])
             self.assertIn(reference, matching_rows[0])
             self.assertEqual(matching_rows[0].count("]("), 1)
+
+        for entry in (self.skill, self.simplify_skill):
+            route_intro = entry.split("## 条件路由", 1)[1].split("| 条件 |", 1)[0]
+            self.assertIn("按当前状态和下一项实际动作判断", route_intro)
+            self.assertIn("不按用户是否写出条件名称判断", route_intro)
 
         for entry in (self.skill, self.simplify_skill):
             route_table = entry.split("## 条件路由", 1)[1]

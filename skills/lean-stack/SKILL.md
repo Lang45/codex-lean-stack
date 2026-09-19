@@ -19,13 +19,6 @@ description: 出现具体委派候选、首次准备 spawn_agent 或用 followup
 普通子代理从任务卡和指定证据开始，不自行扩读未分配的项目资料、整套技能或插件缓存。首次派发
 只识别技能名称、口头声明、项目交接或猜测路径都不算已读；工具明确截断时只补缺失段。
 
-入口先完成快速判断，保留会改变是否调用、调用谁和如何交付的规则；它不是把完整手册搬回热路径。
-确认命中具体功能分支后，才读取该分支的最小权威段落；未命中分支不读取，也不批量预读可能稍后
-使用的分支。分支读取不再产生第二段技能用途说明；读取后下一次工具调用执行该分支的实际操作。
-普通首次派发动作先读[首次派发执行分支](references/dispatch-start.md)；同一任务可以随实际动作
-依次命中多个分支，其他分支在真正开始对应动作时读取，不能预先成批加载，也不能因拆分而跳过
-后继触发。
-
 ## 每次原生调用的派发硬门
 
 每次 `collaboration.spawn_agent` 调用前都重新检查，且原生参数必须同时包含：
@@ -138,28 +131,34 @@ description: 出现具体委派候选、首次准备 spawn_agent 或用 followup
 
 子代理 commentary 只是进展，不是可采用交付；必须取得其明确最终回复或等价结果收据。只在来源
 变化、冲突或具名缺口时定向补读或补问一次，不循环索取全文。每个结果经必要核验并被父代理采用后，
-都进入一次非阻塞保留收口判断：已有专家记录本次完成；临时子代理能形成全局领域规则时，先保存
-为专家再记录完成；只有明确排除项才跳过并留下保存回执。具体命令只在保留分支中读取，该侧支
+都进入一次非阻塞保留收口判断：已有保留子代理记录本次完成；临时子代理能形成全局领域规则时，
+先保存为保留子代理再记录完成；只有明确排除项才跳过并留下保存回执。具体命令只在保留分支中读取，该侧支
 不能阻塞已经就绪的主任务动作或交付。
 
 ## 条件路由
 
+按当前状态和下一项实际动作判断，不按用户是否写出条件名称判断。入口先完成快速判断，只保留会
+改变是否调用、调用谁和如何交付的规则；确认命中具体功能分支后，才读取其最小权威段落。未命中
+分支不读取，也不批量预读可能稍后使用的分支。分支读取不再产生第二段技能用途说明；读取后下一次
+工具调用执行该分支的实际操作。普通首次派发先读首次派发分支；同一任务可以随实际动作依次命中
+多个分支；每个分支在真正开始对应动作时读取，不能预先成批加载，也不能因拆分而跳过后继触发。
+
 | 条件 | 权威入口 |
 | --- | --- |
-| 已确认普通首次派发 | [首次派发执行分支](references/dispatch-start.md) |
-| 模型边界仍不清楚，或考虑 Astra / Sol `ultra` | [一次确定模型与思考程度](references/dispatch-start.md#一一次确定模型与思考程度) |
-| Windows exec 或 PowerShell 表达 | [Windows exec 与 PowerShell](references/windows-exec.md) |
-| 长来源、来源所有权、覆盖范围或结果复用 | [来源所有权与结果收据](references/source-results.md) |
-| 原生配置、任务卡、最小上下文或工具结果截断 | [任务卡、上下文与所有权](references/dispatch-start.md#三任务卡上下文与所有权) |
-| 迭代测试的工具或子代理路线 | [条件性验证](references/verification.md) |
-| 复制、变体、任务类型组收口或用户否定 | [任务类型组、复制与变体](references/agent-groups.md) |
-| 关键步骤消息、最终提交、父代理汇合或停止 | [子代理结果与汇合](references/agent-results.md) |
-| 两个或更多子代理将写文件或共享状态 | [可写子代理并行](references/write-parallelism.md) |
-| 协作父代理或其他 Codex 任务 | [协作父代理](references/collaboration.md) |
-| 保留子代理发现、TOML、运行、经验、迁移或删除 | [保留子代理经验](references/specialist-memory.md) |
-| 需要维护费率或成本基线 | [成本预估](references/cost-baseline.md) |
-| 主任务调查、实现、复核、消融或发布 | 独立使用 [$lean-simplify](../lean-simplify/SKILL.md)，不得作为派发前置 |
-| 只需解释链路 | [中文链路图](references/flowcharts-zh.md) |
+| 已通过三项原则并准备第一次 `spawn_agent`，或用 `followup_task` 启动新当前子任务 | [首次派发执行分支](references/dispatch-start.md) |
+| 入口快判仍不能确定模型与思考程度，或正在考虑 Astra / Sol `ultra` | [一次确定模型与思考程度](references/dispatch-start.md#一一次确定模型与思考程度) |
+| 下一步要编写 Windows exec、PowerShell、复杂参数或任务脚本 | [Windows exec 与 PowerShell](references/windows-exec.md) |
+| 准备分配长来源所有者、复用证据包、检查覆盖或补具名缺口 | [来源所有权与结果收据](references/source-results.md) |
+| 准备填写原生参数、五行任务卡、有限上下文，或处理工具结果截断 | [任务卡、上下文与所有权](references/dispatch-start.md#三任务卡上下文与所有权) |
+| 准备决定迭代测试使用直接工具还是验证子代理，或失败后最窄重验 | [条件性验证](references/verification.md) |
+| 准备复制、形成变体、任务类型组收口、竞争选择，或处理用户否定 | [任务类型组、复制与变体](references/agent-groups.md) |
+| 子代理已启动，准备关键消息、接收最终结果、采用汇合、等待或停止 | [子代理结果与汇合](references/agent-results.md) |
+| 两个或更多子代理将写文件或共享状态，准备确定所有权、隔离和撤销依据 | [可写子代理并行](references/write-parallelism.md) |
+| 当前子代理将再派下游，或准备与其他 Codex 任务协作 | [协作父代理](references/collaboration.md) |
+| 正向委派后准备发现或召回保留子代理，或采用结果后准备保存身份、记录完成、迁移或删除 | [保留子代理经验](references/specialist-memory.md) |
+| 准备维护官方费率或插件成本基线，而不是为当前任务临时算分 | [成本预估](references/cost-baseline.md) |
+| 下一步属于主任务调查、实现、复核、消融或发布 | 独立使用 [$lean-simplify](../lean-simplify/SKILL.md)，不得作为派发前置 |
+| 只需解释现有执行链，不执行上述动作 | [中文链路图](references/flowcharts-zh.md) |
 
 只读取会改变当前动作的最小相关段落，不把任何 reference 变成普通派发的固定前置。
 

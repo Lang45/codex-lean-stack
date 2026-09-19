@@ -21,12 +21,6 @@ description: 非平凡主任务或可选准备将先于实际推进时读取；�
 工具与 PowerShell 路径精简共同遵守
 [Windows exec 稳健性契约](../lean-stack/references/windows-exec.md#windows-exec-与-powershell)。
 
-入口先完成快速判断，保留会改变下一动作的目标、步骤、风险、验证和停止条件；它不是把完整手册
-搬回热路径。确认命中具体功能分支后，才读取该分支的最小权威段落；未命中分支不读取，也不
-批量预读可能稍后使用的分支。分支读取不再产生第二段技能用途说明；读取后下一次工具调用执行
-该分支的实际操作。同一任务可以随实际动作依次命中多个分支；每个分支在真正开始对应动作时
-读取，不能先成批加载再推进主任务，也不能因拆分而跳过后继触发。
-
 ## 最小完整方法
 
 先理解真实调用流、用户可见结果和受保护边界，再选择第一个完整满足要求的选项：
@@ -66,21 +60,25 @@ description: 非平凡主任务或可选准备将先于实际推进时读取；�
 
 ## 条件路由
 
-只在对应条件命中时读取最小相关段落，不把 reference 变成固定前置：
+按当前状态和下一项实际动作判断，不按用户是否写出条件名称判断。入口先完成快速判断，只保留会
+改变下一动作的目标、步骤、风险、验证和停止条件；确认命中具体功能分支后，才读取其最小权威
+段落。未命中分支不读取，也不批量预读可能稍后使用的分支。分支读取不再产生第二段技能用途说明；
+读取后下一次工具调用执行该分支的实际操作。同一任务可以随实际动作依次命中多个分支；每个分支
+在真正开始对应动作时读取，不能预先成批加载，也不能因拆分而跳过后继触发。
 
 | 条件 | 权威入口 |
 | --- | --- |
-| 调查 | [调查](../lean-stack/references/investigation.md) |
-| 缺陷修复 | [缺陷修复](../lean-stack/references/bug-fix.md) |
-| 构建或重构 | [构建](../lean-stack/references/build.md) |
-| 审查或审计 | [审查](../lean-stack/references/review.md) |
-| 真实多阶段依赖 | [长任务](../lean-stack/references/long-running.md) |
-| Windows exec 或 PowerShell 表达 | [Windows exec 与 PowerShell](../lean-stack/references/windows-exec.md) |
-| 测试范围、条件性验证或最窄重验 | [条件性验证](../lean-stack/references/verification.md) |
-| 维护面可能扩大或需要现实消费者证据 | [反 AI 过度工程](../lean-stack/references/anti-overengineering.md) |
-| 用户明确要求正式消融 | [消融反馈循环](../lean-stack/references/ablation-loop.md) |
-| 获授权发布、安装或维护发布文档 | [版本与发布](../lean-stack/references/versioning.md) |
-| 只需解释链路 | [中文链路图](../lean-stack/references/flowcharts-zh.md) |
+| 准备查明未知事实、现状、调用链或原因，尚不修改 | [调查](../lean-stack/references/investigation.md) |
+| 已有错误、失败或可复现症状，准备建立反馈、定位并修复 | [缺陷修复](../lean-stack/references/bug-fix.md) |
+| 准备新增或修改实现，或在没有待修失败时重构 | [构建](../lean-stack/references/build.md) |
+| 准备判断需求符合度、工程质量、风险或是否适合合并 | [审查](../lean-stack/references/review.md) |
+| 后续有两个或更多必须按顺序完成、前一步会解锁后一步的阶段 | [长任务](../lean-stack/references/long-running.md) |
+| 下一步要编写 Windows exec、PowerShell、复杂参数或任务脚本 | [Windows exec 与 PowerShell](../lean-stack/references/windows-exec.md) |
+| 准备确定检查对象、独立预期或验证范围，或执行条件性验证或最窄重验 | [条件性验证](../lean-stack/references/verification.md) |
+| 准备新增抽象、兼容层、流程或文件，或需要证明现实消费者 | [反 AI 过度工程](../lean-stack/references/anti-overengineering.md) |
+| 用户明确要求执行正式消融，而不只是普通精简 | [消融反馈循环](../lean-stack/references/ablation-loop.md) |
+| 已获授权且下一步确实要升版、安装、发布或维护发布文档 | [版本与发布](../lean-stack/references/versioning.md) |
+| 只需解释现有执行链，不执行上述动作 | [中文链路图](../lean-stack/references/flowcharts-zh.md) |
 
 测试只运行与当前改动、风险和用户要求相称的最窄检查；安全、权限、数据完整性、外部副作用或公共
 合同风险所需检查不得省略。来源与风险未变时复用通过证据；失败只修真实根因并重跑失败项与受
