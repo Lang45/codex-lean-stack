@@ -431,8 +431,32 @@ SQLite v5 经验与任务结果体系只保留：
 
 ## 当前快照与接手入口
 
-当前快照（2026-09-16）。来源为用户当前要求、新全局文件、当前源码、原生子代理回执、SQLite/TOML
+当前快照（2026-09-19）。来源为用户当前要求、新全局文件、当前源码、原生子代理回执、SQLite/TOML
 台账、合同测试、正式安装及源码/缓存哈希核对。源码、静态合同、缓存和真实运行分别取证。
+
+### 2026-09-19 PR #2 完成收据修复与继续审查
+
+- 现有 PR #2 分支 `audit/full-chain-5.2.13-20260917` 从原 head `df130a0` 继续修复，功能提交为
+  `239483e7d15742b333fd35b2cbe9833c81cca753`，源码候选版本为
+  `5.2.15+codex.20260919095828`。提交使用普通非强制 push；PR 仍打开、未合并。
+- 复现并修复 `complete-run` 重放可省略既有 lesson 却返回已完成的问题。SQLite v7 为新运行写入
+  显式 operation/experience 收据：ordinary `record-run` 为 0，`complete-run` 为 1，并为后者绑定
+  nullable experience event；重放继续核对身份、调用类型、结果、加载经验摘要、经验有无、event、
+  正文摘要和纠正目标。首次写入仍严格 CAS；已有明确 v7 completion 收据的只读重放依赖收据和
+  现场所有权核验，不把调用方保存的旧 SHA 当作当前授权。
+- v4/v5/v6 只经显式 `migrate-attempts` 升到 v7，旧行收据保持 `NULL/unknown`。独立复核证明同代理
+  stable/legacy/`improve` event 不能证明历史 run 关联，因此 unknown 对 `record-run` 和
+  `complete-run` 两类重放都 fail-closed；没有回填或猜测历史关联。
+- 本机 Python 3.13 全量运行 242 项，其中 239 项通过、3 项按 Windows 权限或 POSIX 条件跳过；两个技能目录
+  均通过 `quick_validate.py`，`git diff --check` 通过。GitHub Actions 运行
+  [35436265478](https://github.com/Lang45/codex-lean-stack/actions/runs/35436265478) 在功能提交上完成
+  Ubuntu 与 Windows 两个 `Unit and contract tests`，结论均为 success。后续纯交接提交不改变这些
+  代码结论；合并前仍以 PR 当前 head 的 Checks 为准。
+- 对 Matt Pocock `skills` 仓库固定提交 `c55ee46073ed923f86ce59a5eb3b6d895095d1b7` 的检查只形成
+  批判性对照，没有把外部总结直接写成插件规则，也没有新增第三入口、固定双审查、强制 TDD/PRD、
+  issue-tracker 状态机或第二交接系统。
+- 本轮只改并推送 PR 分支；没有安装插件、刷新安装缓存、修改全局指令、重启 ChatGPT、发布或合并。
+  当前任务内的源码与 CI 证据不证明既有会话或全新会话已经加载 5.2.15。
 
 ### 2026-09-17 仓库审计更新
 
