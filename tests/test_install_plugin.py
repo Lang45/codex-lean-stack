@@ -68,7 +68,7 @@ class PluginInstallTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_default_invocation_activates_plugin_without_copying_plugin_policy(self) -> None:
+    def test_default_invocation_line_declares_plugin_without_copying_policy(self) -> None:
         line = install_plugin.DEFAULT_INVOCATION_LINE
         self.assertIn("必须使用已安装的 `codex-lean-stack`", line)
         self.assertIn("两个入口按需读取", line)

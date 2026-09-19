@@ -1,4 +1,4 @@
 interface:
   display_name: "主任务精简"
   short_description: "精简主任务步骤、验证和维护面，按需进行显式消融。"
-  default_prompt: "新会话与 $lean-stack 在同一次工具调用中分别完整读取 $lean-simplify 与 $lean-stack 两份 SKILL.md，为两份独立输出提供足够的外层结果预算，不与交接或源码串成一个 shell 输出；无明确截断不重读，明确截断只补缺段，并同时开始首个确定性动作。随后用 $lean-simplify 独立收窄非平凡主任务，只保留产生首个可验证结果的最短完整路径并立即执行；不得等待或阻断 $lean-stack。"
+  default_prompt: "非平凡主任务触发 $lean-simplify：只读取并应用当前实际动作命中的入口；已读且未变化则复用，不预读未触发的 $lean-stack 或完整 references。读取后下一次工具调用立即开始实际任务，独立收窄到产生首个可验证结果的最短完整路径；其他技能用途说明合并到唯一启动说明，不得等待或阻断 $lean-stack。"
