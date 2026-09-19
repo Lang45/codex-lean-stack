@@ -454,7 +454,8 @@ SQLite v5 经验与任务结果体系只保留：
   `5.3.1+codex.20260919125916`。用户随后明确要求安装并推送；正式安装入口返回
   `plugin_installed_with_default_invocation`，`codex plugin list` 显示 personal 市场中的
   `codex-lean-stack` 已安装、启用且版本正确。安装后缓存 2266 个文件全部能映射到源码且哈希差异
-  为 0；本交接收据写入后只允许本文件与该安装时快照不同，运行技能不应变化。
+  为 0；安装后的交接写入和 Git 提交/推送使本文件及缓存中的 `.git` 元数据自然不同，排除 `.git`
+  后只有本交接存在差异，所有运行技能和 reference 仍与正式缓存一致。
 - 安装器按既有授权向 `C:\Users\fml\.codex\AGENTS.md` 增加唯一默认调用句，回执为
   `agents_default_added`；读回精确句只出现 1 次，文件 SHA-256 为
   `8BD21B2CACA708466763F011CD5D9735E6836B653DDFF8090A9A5E981BD6F3DC`。本轮不再修改全局文件，
