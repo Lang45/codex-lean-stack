@@ -11,6 +11,7 @@ venv/
 *.sqlite
 *.sqlite3
 *.log
+.codex-plugin/plugin.json.release.lock
 .coverage
 .pytest_cache/
 htmlcov/

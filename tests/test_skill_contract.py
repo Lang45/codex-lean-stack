@@ -47,6 +47,7 @@ class SkillContractTests(unittest.TestCase):
         cls.flowcharts = (REFERENCES / "flowcharts-zh.md").read_text(encoding="utf-8")
         cls.readme = (ROOT / "README.md").read_text(encoding="utf-8")
         cls.changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        cls.handoff = (ROOT / "Jiao-Jie.md").read_text(encoding="utf-8")
         cls.build = (REFERENCES / "build.md").read_text(encoding="utf-8")
         cls.bug_fix = (REFERENCES / "bug-fix.md").read_text(encoding="utf-8")
         cls.investigation = (REFERENCES / "investigation.md").read_text(encoding="utf-8")
@@ -911,6 +912,11 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "对上下文读取、传播、结果复用和增量补缺没有例外",
             "`fork_turns=\"none\"` 的合适 GPT-5.6",
             "依赖先前输入时，把所需内容收窄为有限正整数历史或来源快照",
+            "`followup_task` 不以旧上下文不可替代为前提",
+            "持续对话、澄清、纠偏、迭代验证或父代理遥控",
+            "能具体改善质量、速度或总成本时，可以继续使用 `followup_task`",
+            "无关、已经结束或能自包含的新切片",
+            "新建 `spawn_agent(fork_turns=\"none\")`",
             "长来源只筛选一次并沿代理树复用",
             "完整线程、完整工具输出、完整父历史或完整子树结果不得作为默认输入",
             "轻量结果收据",
@@ -1052,6 +1058,14 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "三维建模",
             "渲染",
             "视觉效果",
+            "前端视觉",
+            "视频编辑",
+            "工作中出现影响最终产物的具体视觉质量缺口",
+            "Sol在执行中遇到真实困难",
+            "可把范围明确的困难切片交给Astra协助或验证",
+            "这条专家协助不限于视觉领域",
+            "模型路由审计",
+            "不能构成选择Astra的证据",
             "范围明确的专家判断",
             "最终评审或验收核对只是辅助",
             "不是前置门槛",
@@ -1074,6 +1088,37 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "先让Sol失败再调用Astra",
         ):
             self.assertNotIn(forced_route, compact)
+
+    def test_current_release_surfaces_preserve_followup_and_astra_correction(self) -> None:
+        latest_changelog = re.search(
+            r"^## \d+\.\d+\.\d+[^\n]*\n(?P<body>.*?)(?=^## |\Z)",
+            self.changelog,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(latest_changelog)
+        handoff_snapshots = self.handoff.split("## 当前快照与接手入口", 1)[1]
+        current_handoff = re.search(
+            r"^### \d{4}-\d{2}-\d{2}[^\n]*\n(?P<body>.*?)(?=^### |\Z)",
+            handoff_snapshots,
+            re.MULTILINE | re.DOTALL,
+        )
+        self.assertIsNotNone(current_handoff)
+        compact = re.sub(
+            r"\s+",
+            "",
+            latest_changelog.group("body") + current_handoff.group("body"),
+        )
+        for required in (
+            "父代理遥控能具体改善质量、速度或总成本时，可以继续使用`followup_task`",
+            "无关、已结束或能自包含的新切片",
+            "Astra是通用高成本专家而不只是视觉专家",
+            "Sol在执行中遇到真实困难",
+            "视觉质量缺口是重点场景之一",
+            "路由审计",
+            "不触发升级",
+        ):
+            self.assertIn(required, compact)
+        self.assertNotIn("决定性质量差距或能降低整项资源成本", self.handoff)
 
     def test_task_type_groups_replace_work_block_language(self) -> None:
         for content in (self.skill, self.delegation, self.readme, self.flowcharts):
@@ -1845,8 +1890,15 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "发布/缓存面",
             "交接文件",
             "第二事实源",
+            "官方支持的扩展点",
+            "成熟开源库",
+            "维护状态、许可证、已知安全风险、平台兼容和升级成本",
+            "只有这些选项不能有效满足需求",
+            "开源本身不是安全证明",
         ):
             self.assertIn(required, self.anti_overengineering)
+        self.assertIn("官方支持的扩展点", self.simplify_skill)
+        self.assertIn("成熟开源库", self.simplify_skill)
         self.assertIn("只有四类负向限制值得最小测试", self.anti_overengineering)
         self.assertIn("只更新会作出错误承诺的表面", self.flowcharts)
         self.assertIn("不留桩、注释或假想测试", self.flowcharts)
