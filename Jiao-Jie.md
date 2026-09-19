@@ -447,7 +447,8 @@ SQLite v5 经验与任务结果体系只保留：
   均返回 `Skill is valid!`，`git diff --check` 通过。正式安装返回
   `plugin_installed_with_default_invocation`，版本正确；安装器识别既有全局调用合同并返回
   `modified: false`，本轮未修改全局 `AGENTS.md`。这些证据不证明当前已运行会话热加载新规则。
-  提交与推送待本轮收口。
+  插件行为及发布面提交 `c738f4a` 已推送到 `origin/main`；此后的交接收口不改变插件行为，
+  不重复升版、重装或代码测试，当前发布无剩余动作。
 
 ### 2026-09-19 5.3.1 有意义协作与 Astra 通用专家路线
 
