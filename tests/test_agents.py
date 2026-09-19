@@ -194,6 +194,12 @@ class SpecialistRegistryTests(unittest.TestCase):
             elif version == 2:
                 connection.execute("DROP TABLE agent_runs")
             else:
+                connection.execute(
+                    "ALTER TABLE agent_runs DROP COLUMN completion_experience_event_id"
+                )
+                connection.execute(
+                    "ALTER TABLE agent_runs DROP COLUMN completion_receipt_version"
+                )
                 connection.execute("ALTER TABLE agent_runs DROP COLUMN loaded_experience_digest")
                 connection.execute("ALTER TABLE agent_runs DROP COLUMN outcome")
             connection.execute(f"PRAGMA user_version = {version}")
@@ -266,6 +272,12 @@ class SpecialistRegistryTests(unittest.TestCase):
     def downgrade_experience_schema(self) -> None:
         with contextlib.closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "ALTER TABLE agent_runs DROP COLUMN completion_experience_event_id"
+            )
+            connection.execute(
+                "ALTER TABLE agent_runs DROP COLUMN completion_receipt_version"
+            )
             connection.execute("ALTER TABLE agent_runs DROP COLUMN loaded_experience_digest")
             connection.execute("PRAGMA user_version = 5")
             connection.execute("COMMIT")
@@ -273,6 +285,23 @@ class SpecialistRegistryTests(unittest.TestCase):
             self.assertEqual(
                 agents.exact_schema(connection),
                 agents.expected_schema(agents.SCHEMA_V5_TABLE_SQL),
+            )
+
+    def downgrade_completion_receipt_schema(self) -> None:
+        with contextlib.closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "ALTER TABLE agent_runs DROP COLUMN completion_experience_event_id"
+            )
+            connection.execute(
+                "ALTER TABLE agent_runs DROP COLUMN completion_receipt_version"
+            )
+            connection.execute("PRAGMA user_version = 6")
+            connection.execute("COMMIT")
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                agents.exact_schema(connection),
+                agents.expected_schema(agents.SCHEMA_V6_TABLE_SQL),
             )
 
     def write_migration_plan(
@@ -619,7 +648,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 2)
 
     def test_new_database_has_only_owned_specialist_memory_and_run_tables(self) -> None:
-        self.ensure()
+        created = self.ensure()
         with contextlib.closing(self.db()) as connection:
             tables = {
                 row[0]
@@ -628,6 +657,22 @@ class SpecialistRegistryTests(unittest.TestCase):
                 )
             }
             version = connection.execute("PRAGMA user_version").fetchone()[0]
+            self.assertEqual(
+                agents.exact_schema(connection),
+                agents.expected_schema(agents.SCHEMA_TABLE_SQL),
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO agent_runs("
+                    "run_id,agent_id,invocation_kind,completed_at,outcome,"
+                    "completion_receipt_version,completion_experience_event_id"
+                    ") VALUES(?,?,?,?,?,?,?)",
+                    (
+                        str(uuid.uuid4()), created["agent_id"], "spawn_agent",
+                        agents.utc_now(), "success", agents.ORDINARY_RUN_RECEIPT_VERSION,
+                        str(uuid.uuid4()),
+                    ),
+                )
         self.assertEqual(
             tables,
             {"agents", "experience_events", "experience_summaries", "agent_runs"},
@@ -870,7 +915,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                 1,
             )
 
-    def test_v6_missing_contract_instruction_requires_cas_refresh_and_preserves_state(self) -> None:
+    def test_current_schema_missing_contract_instruction_requires_cas_refresh_and_preserves_state(self) -> None:
         created = self.ensure(speed="fast")
         current_sha256 = created["sha256"]
         compaction = None
@@ -904,7 +949,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         legacy_bytes = path.read_bytes()
         before = self.registry_rows()
         with contextlib.closing(self.db()) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+            self.assertEqual(
+                connection.execute("PRAGMA user_version").fetchone()[0],
+                agents.SCHEMA_VERSION,
+            )
 
         for operation in (
             lambda: self.registry.recall(name=created["name"]),
@@ -1062,7 +1110,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                 1,
             )
 
-    def test_v6_contract_refresh_wrong_cas_busy_commit_failure_and_drift_are_zero_write(self) -> None:
+    def test_current_schema_contract_refresh_wrong_cas_busy_commit_failure_and_drift_are_zero_write(self) -> None:
         created = self.ensure()
         legacy_sha256 = self.remove_canonical_contract_instruction(created)
         path = Path(created["path"])
@@ -1658,7 +1706,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         expected_event_id = str(
             uuid.uuid5(
                 uuid.UUID(run_id),
-                f"retained-completion:{created['sha256']}",
+                "retained-completion:v2",
             )
         )
         self.assertEqual(completed["action"], "completion_recorded")
@@ -1672,6 +1720,15 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn(lesson, Path(created["path"]).read_text(encoding="utf-8"))
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
+            receipt = connection.execute(
+                "SELECT completion_receipt_version,completion_experience_event_id "
+                "FROM agent_runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            self.assertEqual(
+                (receipt["completion_receipt_version"], receipt["completion_experience_event_id"]),
+                (agents.COMPLETION_RECEIPT_VERSION, expected_event_id),
+            )
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
                 1,
@@ -1721,6 +1778,14 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(completed["experience_action"], "not_requested")
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
+            receipt = connection.execute(
+                "SELECT completion_receipt_version,completion_experience_event_id "
+                "FROM agent_runs"
+            ).fetchone()
+            self.assertEqual(
+                (receipt["completion_receipt_version"], receipt["completion_experience_event_id"]),
+                (agents.COMPLETION_RECEIPT_VERSION, None),
+            )
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
                 0,
@@ -1814,6 +1879,15 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(status["registered_agents"][0]["survival_rounds"], 2)
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 2)
+            self.assertEqual(
+                {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT completion_receipt_version FROM agent_runs"
+                    )
+                },
+                {agents.ORDINARY_RUN_RECEIPT_VERSION},
+            )
 
     def test_survival_round_rejects_hash_drift_reuse_collision_and_deletion(self) -> None:
         created = self.ensure()
@@ -2159,11 +2233,19 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(status[successful["name"]]["successful_attempt_count"], 1)
         with contextlib.closing(self.db()) as connection:
             row = connection.execute(
-                "SELECT run_id,outcome,loaded_experience_digest FROM agent_runs"
+                "SELECT run_id,outcome,loaded_experience_digest,"
+                "completion_receipt_version,completion_experience_event_id "
+                "FROM agent_runs"
             ).fetchone()
             self.assertEqual(
-                (row["run_id"], row["outcome"], row["loaded_experience_digest"]),
-                (run_id, "success", None),
+                (
+                    row["run_id"],
+                    row["outcome"],
+                    row["loaded_experience_digest"],
+                    row["completion_receipt_version"],
+                    row["completion_experience_event_id"],
+                ),
+                (run_id, "success", None, None, None),
             )
 
     def test_explicit_v5_attempt_migration_preserves_outcomes_without_reuse_backfill(self) -> None:
@@ -2185,6 +2267,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(migrated["migrated_successful_attempt_count"], 1)
         self.assertEqual(migrated["migrated_failure_attempt_count"], 1)
         self.assertFalse(migrated["historical_experience_reuse_backfill"])
+        self.assertFalse(migrated["historical_completion_receipt_backfill"])
         self.assertTrue(migrated["existing_outcome_semantics_preserved"])
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(
@@ -2192,6 +2275,80 @@ class SpecialistRegistryTests(unittest.TestCase):
                     "SELECT COUNT(*) FROM agent_runs WHERE loaded_experience_digest IS NOT NULL"
                 ).fetchone()[0],
                 0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM agent_runs WHERE "
+                    "completion_receipt_version IS NOT NULL OR "
+                    "completion_experience_event_id IS NOT NULL"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_explicit_v6_receipt_migration_keeps_old_runs_unknown_and_fail_closed(self) -> None:
+        created = self.ensure()
+        ordinary_run_id = str(uuid.uuid4())
+        no_experience_run_id = str(uuid.uuid4())
+        experience_run_id = str(uuid.uuid4())
+        self.registry.record_run(
+            name=created["name"], expected_sha256=created["sha256"],
+            run_id=ordinary_run_id, invocation_kind="spawn_agent",
+        )
+        self.registry.complete_run(
+            name=created["name"], expected_sha256=created["sha256"],
+            run_id=no_experience_run_id, invocation_kind="spawn_agent", outcome="success",
+        )
+        experience_request = {
+            "name": created["name"],
+            "expected_sha256": created["sha256"],
+            "run_id": experience_run_id,
+            "invocation_kind": "followup_task",
+            "outcome": "success",
+            "lesson": "Preserve a migrated completion experience.",
+            "origin_terms": ("fixture-project",),
+        }
+        completed = self.registry.complete_run(**experience_request)
+        self.downgrade_completion_receipt_schema()
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "migrate-attempts"):
+            self.registry.status()
+
+        migrated = self.registry.migrate_attempts()
+        self.assertEqual(migrated["source_schema_version"], 6)
+        self.assertFalse(migrated["historical_completion_receipt_backfill"])
+        with contextlib.closing(self.db()) as connection:
+            rows = list(connection.execute(
+                "SELECT completion_receipt_version,completion_experience_event_id "
+                "FROM agent_runs"
+            ))
+            self.assertEqual([(row[0], row[1]) for row in rows], [(None, None)] * 3)
+
+        for migrated_run_id, invocation_kind in (
+            (ordinary_run_id, "spawn_agent"),
+            (no_experience_run_id, "spawn_agent"),
+            (experience_run_id, "followup_task"),
+        ):
+            with self.subTest(run_id=migrated_run_id), self.assertRaisesRegex(
+                agents.SpecialistError,
+                "cannot prove.*ordinary record-run",
+            ):
+                self.registry.record_run(
+                    name=created["name"], expected_sha256=completed["sha256"],
+                    run_id=migrated_run_id, invocation_kind=invocation_kind,
+                )
+        with self.assertRaisesRegex(
+            agents.SpecialistError,
+            "cannot prove.*recorded by complete-run",
+        ):
+            self.registry.complete_run(
+                **dict(experience_request, expected_sha256=completed["sha256"])
+            )
+        with self.assertRaisesRegex(
+            agents.SpecialistError,
+            "cannot prove.*recorded by complete-run",
+        ):
+            self.registry.complete_run(
+                name=created["name"], expected_sha256=completed["sha256"],
+                run_id=no_experience_run_id, invocation_kind="spawn_agent", outcome="success",
             )
 
     def test_delete_rejects_recorded_experience_without_pending_artifacts(self) -> None:
@@ -3022,7 +3179,15 @@ class SpecialistRegistryTests(unittest.TestCase):
                 {(value["agent_id"], value["owner_token"], value["created_at"]) for value in original_identity.values()},
             )
             self.assertTrue(all(row["global_contract_version"] == 1 for row in identities))
-            self.assertEqual(connection.execute("SELECT run_id FROM agent_runs").fetchone()[0], run_id)
+            run = connection.execute(
+                "SELECT run_id,completion_receipt_version,"
+                "completion_experience_event_id FROM agent_runs"
+            ).fetchone()
+            self.assertEqual(
+                (run["run_id"], run["completion_receipt_version"],
+                 run["completion_experience_event_id"]),
+                (run_id, None, None),
+            )
             events = list(connection.execute(
                 "SELECT sequence,event_id,event_digest,lesson,retracts_event_id FROM experience_events ORDER BY sequence"
             ))

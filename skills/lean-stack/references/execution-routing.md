@@ -134,8 +134,8 @@ parent_speedup: <该委派如何对父任务实际完成速度产生正贡献>
 在新项目调用通用 `default`、`explorer`、`worker`、其他 custom 或具名保留子代理时，父代理必须
 在每次原生 `collaboration.spawn_agent` 中显式传 `model` 和 `reasoning_effort`；这条合同适用于
 任何层级和任何 `agent_type`。具名保留子代理传入值必须与已加载 TOML 完全一致。新派发只使用
-`fork_turns="none"` 或有限正整数历史；`fork_turns="all"` 因无法同时显式覆盖模型和思考程度而
-禁止。不得用任务卡文字冒充宿主参数，也不得省略为继承。
+`fork_turns="none"` 或有限正整数历史；`fork_turns="all"` 因全量复制无关历史而
+禁止；不能把插件的上下文约束说成宿主不支持参数覆盖。不得用任务卡文字冒充宿主参数，也不得省略为继承。
 
 ### 持续多工作流任务的积极派发
 
@@ -288,7 +288,9 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
    拼接参数，也不能用 `Invoke-Expression` 执行拼出的命令；不把 `Start-Process -ArgumentList` 数组
    当作无损参数数组接口。`.cmd`、`.bat` 和 `cmd.exe` 单独按其解析规则处理，不把任意文本直接
    嵌入命令，也不为此全局改变 `$PSNativeCommandArgumentPassing`。
-5. 脚本用 `param()` 接收路径和普通参数；路径放入变量，支持时使用 `-LiteralPath`。数据与代码分开，
+5. PowerShell 脚本或函数的具名参数使用直接命名传参或哈希表 splatting；不能把
+   `@("-Name", "value")` 当成具名参数字典。原生程序仍使用上一项的参数数组。
+   脚本用 `param()` 接收路径和普通参数；路径放入变量，支持时使用 `-LiteralPath`。数据与代码分开，
    复杂数据优先使用数据文件或程序支持的标准输入；不把文件内容、用户文本或 JSON 拼入可执行代码。
    凭据、令牌或秘密沿用已有安全通道，不写入脚本或命令行参数。
 6. 如果第一次内联失败明确属于 PowerShell 解析或转义问题，立即停止继续改写长 one-liner；后续修复只编辑同一个
@@ -384,7 +386,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
   custom 以及具名保留子代理没有例外，具名子代理传入值必须与已加载 TOML 一致。这条规则沿
   parent → child → grandchild 逐层递归。
 - 新派发只用 `fork_turns="none"` 或工具允许的有限正整数历史，并传入自包含任务卡；禁止
-  `fork_turns="all"`，因为它会强制继承并拒绝同时显式覆盖模型和思考程度。需要完整历史中的
+  `fork_turns="all"`，因为它会复制完整父历史；不以“宿主拒绝模型与思考程度覆盖”作为理由。需要完整历史中的
   决定性输入时，将该输入收窄为有限历史、来源定位与当前约束。工具字段以实际 schema 为准。
 - 范围窄、输入可完整描述的独立只读侦察优先 `fork_turns="none"`，避免带入父代理无关推理；
   需要此前决策时才增加有限历史。无历史任务说明显式携带当前工具限制、安全限制、只读或

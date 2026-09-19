@@ -9,6 +9,7 @@ the official pages and updating the fixed baseline when needed.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import contextlib
 import datetime as dt
 import hashlib
@@ -17,7 +18,17 @@ import os
 from pathlib import Path
 import stat
 import tempfile
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
+
+
+# Resolve this sibling explicitly: standalone CLI and import-by-path probes
+# must use the same implementation without changing the caller's sys.path.
+_lock_spec = importlib.util.spec_from_file_location(
+    "_lean_stack_maintenance_lock", Path(__file__).with_name("_maintenance_lock.py")
+)
+assert _lock_spec is not None and _lock_spec.loader is not None
+_locks = importlib.util.module_from_spec(_lock_spec)
+_lock_spec.loader.exec_module(_locks)
 
 
 STATE_VERSION = 1
@@ -186,6 +197,28 @@ def atomic_replace(path: Path, *, expected: bytes, replacement: bytes) -> None:
             temporary.unlink()
 
 
+def remove_owned_file(path: Path, identity: tuple[int, int]) -> None:
+    """Clean up only the inode this operation created, never a replacement."""
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if (metadata.st_dev, metadata.st_ino) == identity:
+        path.unlink()
+
+
+@contextlib.contextmanager
+def record_lock(path: Path) -> Iterator[None]:
+    """Hold a process-lifetime lock; keep the stable anchor after release."""
+    lock = path.with_name(f".{path.name}.lock")
+    with _locks.exclusive_lock(
+        lock, error_type=CostCheckError,
+        busy_message='cost-check record is already in progress; skip this attempt',
+        reject_legacy_marker=False,
+    ):
+        yield
+
+
 def record(
     *,
     codex_home: Path,
@@ -207,21 +240,28 @@ def record(
         + "\n"
     ).encode("utf-8")
 
-    if os.path.lexists(state_path):
-        original = state_bytes(state_path, state_dir)
-        if expected_state_sha256 is None:
-            raise CostCheckError("existing state requires --expected-state-sha256")
-        if sha256_bytes(original) != expected_state_sha256:
-            raise CostCheckError("expected state SHA-256 is stale")
-        atomic_replace(state_path, expected=original, replacement=replacement)
-    else:
-        if expected_state_sha256 is not None:
-            raise CostCheckError("state does not exist but an expected hash was supplied")
-        descriptor = os.open(state_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(replacement)
-            handle.flush()
-            os.fsync(handle.fileno())
+    with record_lock(state_path):
+        if os.path.lexists(state_path):
+            original = state_bytes(state_path, state_dir)
+            if expected_state_sha256 is None:
+                raise CostCheckError("existing state requires --expected-state-sha256")
+            if sha256_bytes(original) != expected_state_sha256:
+                raise CostCheckError("expected state SHA-256 is stale")
+            atomic_replace(state_path, expected=original, replacement=replacement)
+        else:
+            if expected_state_sha256 is not None:
+                raise CostCheckError("state does not exist but an expected hash was supplied")
+            descriptor = os.open(state_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            metadata = os.fstat(descriptor)
+            identity = (metadata.st_dev, metadata.st_ino)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(replacement)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except BaseException:
+                remove_owned_file(state_path, identity)
+                raise
 
     return {
         "ok": True,

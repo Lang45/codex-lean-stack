@@ -1,4 +1,4 @@
 interface:
   display_name: "子代理调用"
   short_description: "按质量、成本、时间选择工具、四模型子代理与思考程度。"
-  default_prompt: "派发硬门：首次准备派发前实际读取 $lean-stack；每次 collaboration.spawn_agent 显式传 model、reasoning_effort 和非全量 fork_turns，任务卡与子代理首条可见 commentary 均以子代理名称、模型、思考程度、存活轮次、经验五行实际值开头。按质量、成本、时间选择并及时并行，普通 UI、视觉和简单审计不用 Sol ultra；结果采用后，复用走 complete-run，新运行时组走 ensure → complete-run 或说明明确跳过。新会话与 $lean-simplify 在同一次工具调用中分别完整读取两份 SKILL.md，为两份独立输出提供足够的外层结果预算，不与交接或源码串成一个 shell 输出；无明确截断不重读，明确截断只补缺段，并同时开始首个确定性动作。$lean-stack 不等待或阻断 $lean-simplify。"
+  default_prompt: "派发硬门：首次准备调用 collaboration.spawn_agent 或用 followup_task 启动新当前子任务前实际读取 $lean-stack；已读且未变化则复用，不预读未触发的 $lean-simplify 或完整 references。读取后下一次工具调用立即开始实际任务；其他技能用途说明合并到唯一启动说明。每次 collaboration.spawn_agent 显式传 model、reasoning_effort 和非全量 fork_turns。父代理只把子代理名称、模型、思考程度、存活轮次、经验五行实际值写入内部任务卡；仅由子代理本人在自己的第一条可见 commentary 原样开场，父代理不得在自己的用户可见 commentary 或最终回复中代为展示或重复。按质量、成本、时间选择并及时并行，普通 UI、视觉和简单审计不用 Sol ultra；结果采用后，复用走 complete-run，新运行时组走 ensure → complete-run 或说明明确跳过。$lean-stack 不等待或阻断 $lean-simplify。"

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import codecs
 import contextlib
 import json
@@ -16,6 +17,16 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterator
+
+
+# Resolve this sibling explicitly: standalone CLI and import-by-path probes
+# must use the same implementation without changing the caller's sys.path.
+_lock_spec = importlib.util.spec_from_file_location(
+    "_lean_stack_maintenance_lock", Path(__file__).with_name("_maintenance_lock.py")
+)
+assert _lock_spec is not None and _lock_spec.loader is not None
+_locks = importlib.util.module_from_spec(_lock_spec)
+_lock_spec.loader.exec_module(_locks)
 
 
 PLUGIN_NAME = "codex-lean-stack"
@@ -74,22 +85,14 @@ def fsync_directory(path: Path) -> None:
 
 @contextlib.contextmanager
 def update_lock(agents_path: Path) -> Iterator[None]:
-    lock_path = agents_path.with_name(f".{agents_path.name}.lean-stack.lock")
-    try:
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError as exc:
-        raise InstallError(
-            f"AGENTS.md update lock already exists; inspect it before retrying: {lock_path}"
-        ) from exc
-    try:
-        with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
-            handle.write(f"pid={os.getpid()}\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+    """Hold a process-lifetime lock; keep the stable anchor after release."""
+    lock = agents_path.with_name(f".{agents_path.name}.lean-stack.lock")
+    with _locks.exclusive_lock(
+        lock, error_type=InstallError,
+        busy_message='AGENTS.md update is already in progress; skip this attempt',
+        reject_legacy_marker=True,
+    ):
         yield
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            lock_path.unlink()
 
 
 def read_manifest(plugin_root: Path) -> tuple[str, str]:
@@ -233,8 +236,47 @@ def _atomic_replace(
             temporary.unlink()
 
 
+def effective_agents_path(home: Path) -> Path:
+    override = home / "AGENTS.override.md"
+    _, text, _, _, _ = _read_agents(override)
+    return override if text.strip() else home / "AGENTS.md"
+
+
+def _frontmatter_end(text: str) -> int:
+    """Return the end of an opening YAML block without parsing or rewriting it.
+
+    A delimiter inside an indented YAML scalar is not a closing delimiter.
+    An unclosed opening block is ambiguous, so reject it before installation.
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip("\r\n").rstrip(" \t") != "---":
+        return 0
+    offset = len(lines[0])
+    for line in lines[1:]:
+        offset += len(line)
+        if line.rstrip("\r\n").rstrip(" \t") in ("---", "..."):
+            return offset
+    raise InstallError("unterminated YAML front matter; refusing to change global instructions")
+
+
 def _has_default_invocation(text: str) -> bool:
-    for line in text.splitlines():
+    # Examples and HTML comments are not active instructions. Preserve the
+    # original bytes; this filtered view is only used for detection.
+    body = text[_frontmatter_end(text):]
+    visible = re.sub(r"<!--.*?(?:-->|\Z)", "", body, flags=re.DOTALL)
+    lines = visible.splitlines()
+    fence = ""
+    for line in lines:
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if marker:
+            run, suffix = marker.groups()
+            if not fence:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and not suffix.strip():
+                fence = ""
+            continue
+        if fence:
+            continue
         if line == DEFAULT_INVOCATION_LINE:
             return True
         for prefix in USER_GLOBAL_INVOCATION_PREFIXES:
@@ -270,7 +312,18 @@ def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
             "line": DEFAULT_INVOCATION_LINE,
         }
 
-    if text:
+    first_line = text.splitlines()[0] if text else ""
+    frontmatter_end = _frontmatter_end(text)
+    if frontmatter_end:
+        prefix, body = text[:frontmatter_end], text[frontmatter_end:]
+        # Keep metadata at byte zero (after a preserved BOM) and unchanged.
+        # Separate the new instruction from both delimiters and existing body.
+        separator = newline if prefix.endswith(("\n", "\r")) else newline * 2
+        updated = f"{prefix}{separator}{DEFAULT_INVOCATION_LINE}{newline}{newline}{body}"
+    elif ("<!--" in first_line
+            or re.match(r"^ {0,3}(`{3,}|~{3,})", first_line)):
+        updated = f"{DEFAULT_INVOCATION_LINE}{newline}{text}"
+    elif text:
         first_break = re.search(r"\r\n|\r|\n", text)
         if first_break is None:
             updated = f"{text}{newline}{DEFAULT_INVOCATION_LINE}{newline}"
@@ -304,17 +357,15 @@ def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
 def ensure_default_invocation(codex_home: Path | None = None) -> dict[str, Any]:
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
-    agents_path = home / "AGENTS.md"
-    with update_lock(agents_path):
-        return _ensure_default_invocation_locked(agents_path)
+    with update_lock(home / "AGENTS.md"):
+        return _ensure_default_invocation_locked(effective_agents_path(home))
 
 
 def preflight_default_invocation(codex_home: Path | None = None) -> dict[str, Any]:
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
-    agents_path = home / "AGENTS.md"
-    with update_lock(agents_path):
-        return _preflight_default_invocation_locked(agents_path)
+    with update_lock(home / "AGENTS.md"):
+        return _preflight_default_invocation_locked(effective_agents_path(home))
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -349,8 +400,11 @@ def install_plugin(
     environment["PYTHONUTF8"] = "1"
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
-    agents_path = home / "AGENTS.md"
-    with update_lock(agents_path):
+    environment["CODEX_HOME"] = str(home)
+    # One home-level lock coordinates both files, including older helpers that
+    # only knew about AGENTS.md. Never edit an inactive base behind an override.
+    with update_lock(home / "AGENTS.md"):
+        agents_path = effective_agents_path(home)
         agents_preflight = _preflight_default_invocation_locked(agents_path)
         completed = runner(
             command,
@@ -367,6 +421,11 @@ def install_plugin(
             ).strip()
             raise InstallError(
                 f"plugin install failed with exit code {completed.returncode}: {detail}"
+            )
+        if effective_agents_path(home) != agents_path:
+            raise InstallError(
+                "active global instructions changed during installation; "
+                "the plugin may be installed, but activation was not written"
             )
         agents_result = _ensure_default_invocation_locked(agents_path)
     return {

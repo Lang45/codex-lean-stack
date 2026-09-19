@@ -32,7 +32,7 @@ Install `codex-lean-stack` from a configured Codex marketplace that contains the
 
 In Codex CLI, enter `/plugins`, select the marketplace entry, and install the plugin. Start a new session before using its bundled skills. See the [OpenAI plugin documentation](https://learn.chatgpt.com/docs/plugins) for supported surfaces and marketplace setup.
 
-Standard plugin installation does not edit your global `AGENTS.md`. The repository's [optional installation helper](skills/lean-stack/scripts/install_plugin.py) is separate and should only be used when you explicitly want default usage configured.
+Standard plugin installation does not edit your global instructions. The repository's [optional installation helper](skills/lean-stack/scripts/install_plugin.py) is separate and should only be used when you explicitly want default usage configured. It uses the selected Codex home and updates the active global instruction file: a non-empty `AGENTS.override.md`, or `AGENTS.md` otherwise.
 
 ## Usage
 
@@ -92,7 +92,9 @@ Choose additional checks according to the behavior affected by the change.
 
 插件标识：`codex-lean-stack`
 
-## 当前版本 5.2.13
+## 当前版本 5.2.16
+
+5.2.16 将两个平行入口改为真正按动作触发：非平凡主任务才读取 `lean-simplify`，首次真实派发或启动新的 `followup_task` 前才读取 `lean-stack`；入口正文收窄为决策、硬门和条件式引用。五行配置只由对应子代理本人在自己的第一条可见 commentary 宣读，父代理只写内部任务卡。源码更新不代表安装缓存或已运行会话已更新。
 
 当前使用取向是主要由 Sol 担任父代理，并把高价的 `gpt-6-astra` 留作可调用的子代理专家；具体任务只按模型与思考程度能否联合达到必要质量、质量充分组合是否成本相称、子代理是否实际加快父任务完成三项原则判断。
 
@@ -100,16 +102,16 @@ Choose additional checks according to the behavior affected by the change.
 2. 两个或更多子代理将修改文件或共享状态时，父代理在首次可写派发前记录 `WRITE_ROUTE`，明确写入者、范围、共同热点、隔离路线、撤销依据和受影响检查；范围不能隔离或撤销不能精确归因时，只允许一个候选直接写目标。
 3. 同一卷内只改变路径的移动不再默认建立迁移前后整树长度与 SHA-256 清单；路径与结构验收、实际字节复制以及正式交付清单使用各自相称的验证。
 4. 写入安全、用户否定、反 AI 过度工程、消融和条件性验证由插件自身的权威 reference 单一承载，不要求项目文档复制规则。
-5. 插件不规定项目交接文件的创建、读取、更新或结构；这些由用户和项目或全局规则决定。新会话在同一次启动热路径中快速实际读取已加载的 `lean-simplify` 与 `lean-stack` 两个按需入口，不预读它们链接的参考细则，并立即开始第一个实际动作；两入口随后独立触发或并行触发，同一会话入口未变化时直接复用。首次准备派发前必须确认已实际读取 `lean-stack`，只识别名称或口头声明采用不算调用。
+5. 插件不规定项目交接文件的创建、读取、更新或结构；这些由用户和项目或全局规则决定。新会话不无条件读取两个入口：非平凡主任务触发 `lean-simplify`，首次 `spawn_agent` 或用 `followup_task` 启动新当前子任务前触发 `lean-stack`；已读且未变化的入口直接复用。只读取当前实际动作命中的入口，不预读未触发入口或完整 `references`。入口读取后的下一次工具调用立即开始实际任务；其他技能用途说明合并到唯一启动说明。两入口仍可在同一任务中分别命中，但互不等待、互不代证。
 6. 同一长来源由一个所有者完成发现与完整读取；其他子代理复用 `SOURCE_ROUTE` 证据包，只定向补
    具名缺口或必要的高风险事实。
-7. 每次原生派发必须同时提交显式模型、思考程度、有限上下文和五行任务卡；缺字段、使用“继承”占位或给普通 UI 选择 Sol `ultra` 时不得调用。所有子代理的新当前任务都以“子代理名称、模型、思考程度”三行实际配置开场，随后显示存活轮次和经验状态，仍不显示父侧 `run_id`；经验版本可以
+7. 每次原生派发必须同时提交显式模型、思考程度、有限上下文和五行任务卡；缺字段、使用“继承”占位或给普通 UI 选择 Sol `ultra` 时不得调用。父代理只把五行写入内部任务卡，不在自己的用户可见 commentary 或最终回复中代为展示或重复；只有子代理本人在自己的第一条可见 commentary 以“子代理名称、模型、思考程度”三行实际配置开场，随后显示存活轮次和经验状态，仍不显示父侧 `run_id`；经验版本可以
    与后续明确结果关联，旧调用和旧迁移记录继续兼容但不伪造历史复用。
 8. 用户已明确要求安装插件的所有项目和新会话保持主动委派；符合三项原则的独立切片立即调用，
    不等待逐次重申，并可为提高父任务完成速度在实际并发容量内同时派发多个子代理。面向用户
    主任务的启动句不适用于子代理；中文会话的可见子代理名称必须使用
    中文，不能照抄技术 `task_name`。
-9. 普通派发若启动热路径已经读取且入口未变化就直接复用，否则只读取一次 `lean-stack` 入口；
+9. 普通派发若此前派发已触发读取且入口未变化就直接复用，否则只读取一次 `lean-stack` 入口；
    命中候选后才读取其完整保留合同。父代理采用新运行时组的结果后，新加入先执行首次 `ensure`，
    仅对 `reconfiguration_required` 或 `global_contract_refresh_required` 响应用返回 SHA 作一次 CAS
    确认，再执行一次 `complete-run`；复用直接走 `complete-run`。明确跳过必须留下原因，`improve`
@@ -144,7 +146,7 @@ Choose additional checks according to the behavior affected by the change.
 3. **三原则决定调用。** 直接判断模型是否适合并守住必要质量、思考程度是否与任务相称、该子代理
    是否实际加快父任务完成。调用数量本身不构成成本错误；上下文、交流、整合和复验按各自执行
    规则收敛，不作为新增调用的第二套判断清单。
-4. **新会话直接开始。** 在同一次启动热路径中快速实际读取已加载的 `lean-simplify` 与 `lean-stack` 两个按需入口，不预读它们链接的参考细则，并立即执行第一个实际动作；两份入口各用独立完整输出，外层工具结果预算须覆盖二者，不与交接或源码串成一个 shell 输出。无明确截断时不重读，明确截断时只补缺段；两入口随后独立或并行触发，入口未变化时后续轮次直接复用。无关记忆、保留目录、委派或版本解释不能阻塞主任务，也不能预造用户未要求的交付物。
+4. **新会话按触发开始。** 不在开场通读两个入口。非平凡主任务只触发 `lean-simplify`；首次真实派发或启动新 `followup_task` 前只触发 `lean-stack`。入口已读且未变化时直接复用；未触发入口和完整 `references` 不预读。入口读取后的下一次工具调用立即推进实际任务；本轮其他技能用途说明合并到唯一启动说明，不追加逐技能前言。无关记忆、保留目录、委派或版本解释不能阻塞主任务，也不能预造用户未要求的交付物。
 5. **四模型联合选配。** 不设调用数量；父代理按任务类型与任务类型组复用保留子代理或定制新子代理，一次联合选择模型与思考程度，并保留 `MODEL_ROUTE` 收据。Luna 处理清楚易验切片，Terra 处理有限语义歧义，Sol 承担复杂端到端工作；Sol `max` 可按任务需要选用，只有 Sol `ultra` 要求高价值复杂边界及 `xhigh`、`max` 均不足的具体依据。Astra 仅处理 GPT-5.6 仍有决定性质量差距的当前专家问题，最高 `xhigh`，普通视觉任务不触发。任何层级、任何子代理的每次 `spawn_agent` 都显式传入模型和思考程度；保留子代理以 TOML 为实际值来源，但 TOML 不能代替原生调用参数。保留子代理 TOML 的其他宿主预配置由保留子代理生命周期规则维护，不进入本次模型与思考程度选配、任务卡、`MODEL_ROUTE` 或可见声明。
 6. **上下文按需。** 独立任务优先 `fork_turns="none"`；同一长来源由一个所有者完整读取，其他
    子代理消费可定位证据包，只为具名缺口或必要高风险事实定向复核。
@@ -153,7 +155,7 @@ Choose additional checks according to the behavior affected by the change.
 
 1. **内部交流只服务真实依赖。** 证据能解锁下一动作、需要纠偏或出现风险时才发消息。
 2. **子代理先公开实际配置与保留状态。** 父代理把“子代理名称、模型、思考程度”三行实际配置及
-   “存活轮次、经验状态”两行客观状态写进每个新当前任务的任务卡；该合同从父到子、从子到孙逐层适用，不假定通用、具名、保留或继承历史会自动取得这些值。第一条可见 commentary 严格依此五行开头；保留子代理采用 `recall` 的客观状态，运行时子代理说明 0 轮和未加载保留经验。五行前不出现计划或运行 ID；最终只重复当前任务卡前三行。上级保留角色的固定身份、模型和思考程度即使被宿主传播到下游，也不得覆盖下游自己的任务卡。
+   “存活轮次、经验状态”两行客观状态写进每个新当前任务的内部任务卡，但不得在父代理自己的用户可见 commentary 或最终回复中代为展示或重复。该合同从父到子、从子到孙逐层适用，不假定通用、具名、保留或继承历史会自动取得这些值。只有子代理本人在自己的第一条可见 commentary 严格依此五行开头；保留子代理采用 `recall` 的客观状态，运行时子代理说明 0 轮和未加载保留经验。五行前不出现计划或运行 ID；子代理自己的最终回复只重复当前任务卡前三行。上级保留角色的固定身份、模型和思考程度即使被宿主传播到下游，也不得覆盖下游自己的任务卡。
    面向用户主任务的交接启动句不适用于子代理；普通派发只读一次 `lean-stack` 入口，不通读参考文档。轻量路由目录选中候选后才 `recall` 完整合同；每个新运行时组的结果被采用后，必须完成保留/经验写入或给出明确跳过原因。
 3. **关键步骤只为真实依赖。** 只有中间结果会解锁下一动作时才报告一次并继续；不发送定时心跳、纯确认消息或普通过程复述。
 4. **父代理不中断主线。** 父代理立即推进，只在真实依赖点等待，不完整重做已核验结果。
@@ -207,6 +209,8 @@ Use $lean-simplify independently for main-task simplification. Use $lean-stack i
 
 安装后验证子代理调用时只运行最小探针：从调用收据观察真实启动事件、模型和思考程度后立即
 停止并由测试父任务中断子代理，不等待或要求子代理完整做题；该结果不外推为业务质量证明。
+只有在正式安装、全新项目目录、独立父任务且只依赖自动加载的全局入口与正式缓存时，这才是
+正式新会话调用验收；其他情形只算安装后的调用面探针。
 
 当前加载规则见 [OpenAI 官方插件文档](https://learn.chatgpt.com/docs/plugins)。
 See the [official OpenAI plugin documentation](https://learn.chatgpt.com/docs/plugins).
