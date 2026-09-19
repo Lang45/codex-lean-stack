@@ -159,6 +159,39 @@ class PluginInstallTests(unittest.TestCase):
         self.assertFalse(ensured["modified"])
         self.assertEqual(self.agents.read_bytes(), original)
 
+    def test_current_detailed_parent_contract_is_not_duplicated_by_install(self) -> None:
+        original = (
+            "# 用户全局规则\n"
+            "所有父代理（无论模型与思考程度）必须使用已安装的 `codex-lean-stack`。"
+            "新会话第一条用户可见说明包含两个平行、独立的按需入口。"
+            "`lean-simplify` 在非简单主任务中按需读取或复用；"
+            "`lean-stack` 在首次准备调用 `spawn_agent` 或以 `followup_task` 启动新子任务前"
+            "读取或复用。两者独立触发、互不前置；选配与协作细节由插件维护。\n"
+            "# 其他规则\n"
+        ).encode("utf-8")
+        self.agents.write_bytes(original)
+
+        preflight = install_plugin.preflight_default_invocation(self.codex_home)
+
+        def successful_runner(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout='{"ok":true}', stderr="")
+
+        with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+            installed = install_plugin.install_plugin(
+                self.plugin_root,
+                marketplace="personal",
+                marketplace_path=self.marketplace,
+                codex_home=self.codex_home,
+                runner=successful_runner,
+            )
+        ensured = install_plugin.ensure_default_invocation(self.codex_home)
+
+        self.assertEqual(preflight["action"], "agents_default_present")
+        self.assertFalse(installed["agents"]["modified"])
+        self.assertFalse(ensured["modified"])
+        self.assertEqual(self.agents.read_bytes(), original)
+        self.assertNotIn(install_plugin.DEFAULT_INVOCATION_LINE.encode("utf-8"), original)
+
     def test_line_starting_with_user_plugin_requirement_is_preserved_after_install(self) -> None:
         original = (
             "必须调用已安装的 `codex-lean-stack` 插件，所有模型和思考程度的父代理均须使用本插件。\r\n"

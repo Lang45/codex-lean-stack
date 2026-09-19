@@ -21,8 +21,49 @@ class SkillContractTests(unittest.TestCase):
         cls.simplify_skill = (SIMPLIFY_SKILL_DIR / "SKILL.md").read_text(
             encoding="utf-8"
         )
-        cls.routing = (REFERENCES / "execution-routing.md").read_text(encoding="utf-8")
-        cls.delegation = (REFERENCES / "delegation.md").read_text(encoding="utf-8")
+        cls.routing_index = (REFERENCES / "execution-routing.md").read_text(
+            encoding="utf-8"
+        )
+        cls.delegation_index = (REFERENCES / "delegation.md").read_text(
+            encoding="utf-8"
+        )
+        cls.dispatch_start = (REFERENCES / "dispatch-start.md").read_text(
+            encoding="utf-8"
+        )
+        cls.source_results = (REFERENCES / "source-results.md").read_text(
+            encoding="utf-8"
+        )
+        cls.agent_groups = (REFERENCES / "agent-groups.md").read_text(
+            encoding="utf-8"
+        )
+        cls.agent_results = (REFERENCES / "agent-results.md").read_text(
+            encoding="utf-8"
+        )
+        cls.windows_exec = (REFERENCES / "windows-exec.md").read_text(
+            encoding="utf-8"
+        )
+        cls.verification = (REFERENCES / "verification.md").read_text(
+            encoding="utf-8"
+        )
+        cls.routing = "\n".join(
+            (
+                cls.routing_index,
+                cls.dispatch_start,
+                cls.source_results,
+                cls.agent_results,
+                cls.windows_exec,
+                cls.verification,
+            )
+        )
+        cls.delegation = "\n".join(
+            (
+                cls.delegation_index,
+                cls.agent_groups,
+                cls.agent_results,
+                cls.dispatch_start,
+                cls.source_results,
+            )
+        )
         cls.collaboration = (REFERENCES / "collaboration.md").read_text(
             encoding="utf-8"
         )
@@ -54,6 +95,31 @@ class SkillContractTests(unittest.TestCase):
         cls.review = (REFERENCES / "review.md").read_text(encoding="utf-8")
         cls.long_running = (REFERENCES / "long-running.md").read_text(encoding="utf-8")
         cls.versioning = (REFERENCES / "versioning.md").read_text(encoding="utf-8")
+        cls.routing = "\n".join(
+            (
+                cls.skill,
+                cls.routing_index,
+                cls.dispatch_start,
+                cls.source_results,
+                cls.agent_results,
+                cls.windows_exec,
+                cls.verification,
+                cls.write_parallelism,
+                cls.versioning,
+            )
+        )
+        cls.delegation = "\n".join(
+            (
+                cls.skill,
+                cls.delegation_index,
+                cls.dispatch_start,
+                cls.agent_groups,
+                cls.source_results,
+                cls.agent_results,
+                cls.write_parallelism,
+                cls.memory,
+            )
+        )
         cls.openai_yaml = (SKILL_DIR / "agents" / "openai.yaml").read_text(
             encoding="utf-8"
         )
@@ -79,6 +145,8 @@ class SkillContractTests(unittest.TestCase):
             (
                 cls.simplify_skill,
                 cls.routing,
+                cls.windows_exec,
+                cls.verification,
                 cls.anti_overengineering,
                 cls.ablation,
                 cls.build,
@@ -131,7 +199,7 @@ class SkillContractTests(unittest.TestCase):
         combined = self.skill + self.routing + self.cost + self.readme
         compact = re.sub(r"\s+", "", combined)
         for required in (
-            "调用数量本身也不是成本结论",
+            "调用数量本身不是成本结论",
             "多个调用只要分别通过三项原则就可同时成立",
             "模型与思考程度联合达到该切片的必要质量",
             "质量充分的模型与思考程度组合中选择与任务相称的成本",
@@ -154,7 +222,10 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("质量充分的模型与思考程度组合中选择与任务相称的成本", compact_routing)
         self.assertIn("该委派对父任务实际完成速度有正贡献", compact_routing)
         self.assertIn("多个调用只要分别通过三项原则就可同时成立", compact_routing)
-        self.assertIn("用户要求全文或必要核验不受精简限制", self.delegation)
+        self.assertIn(
+            "用户要求全文和必要的高风险独立核验仍保留",
+            self.dispatch_start,
+        )
         main = self.flowcharts.split("```mermaid", 1)[1].split("```", 1)[0]
         decision = re.search(r"BP\{([^}]+)\}", main)
         self.assertIsNotNone(decision)
@@ -170,9 +241,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertNotIn(stale_priority, combined)
 
     def test_four_model_route_receipt_is_joint_and_task_specific(self) -> None:
-        authority = self.routing.split("### 四模型一次联合选配", 1)[1].split(
-            "###", 1
-        )[0]
+        authority = self.dispatch_start.split("## 二、选择运行时或保留子代理", 1)[0]
         compact = re.sub(r"\s+", "", authority)
 
         for required in (
@@ -203,12 +272,12 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(receipt_field, authority)
 
         self.assertIn("父代理侧", authority)
-        self.assertIn("子代理不得复述", authority)
+        self.assertIn("不在固定五行开场前复述", authority)
         for boundary in (
-            "Sol `max` 可按任务复杂度和必要质量正常联合选择",
+            "Sol `max` 可按任务复杂度和必要质量正常选择",
             "不要求先证明 `xhigh` 不足",
             "普通 UI、视觉和简单审计不得使用 Sol",
-            "只有高价值复杂边界可选择 Sol `ultra`",
+            "只有高价值复杂边界可选择",
             "`xhigh` 与 `max` 都无法可靠处理",
             "Astra 子代理仍最高 `xhigh`",
             "唯一称为高成本专家",
@@ -226,7 +295,7 @@ class SkillContractTests(unittest.TestCase):
     def test_new_project_dispatch_contract_requires_entry_and_explicit_native_configuration(
         self,
     ) -> None:
-        entry = self.skill.split("## 两个独立入口", 1)[0]
+        entry = self.skill
         frontmatter = self.skill.split("---", 2)[1]
         calling_match = re.search(
             r'^\s*default_prompt:\s*"([^"]+)"', self.openai_yaml, re.MULTILINE
@@ -236,14 +305,15 @@ class SkillContractTests(unittest.TestCase):
         calling_prompt = calling_match.group(1)
         compact_entry = re.sub(r"\s+", "", entry).replace("`", "")
         compact_prompt = re.sub(r"\s+", "", calling_prompt).replace("`", "")
+        compact_dispatch = re.sub(r"\s+", "", self.dispatch_start).replace("`", "")
 
         self.assertTrue(
-            calling_prompt.startswith("派发硬门："),
-            "the public prompt must put the native call gate before startup prose",
+            calling_prompt.startswith("出现具体委派候选"),
+            "the public prompt must start with the real delegation trigger",
         )
 
         self.assertIn(
-            "每次collaboration.spawn_agent或启动新子任务的followup_task前必须读取并应用",
+            "出现具体委派候选、首次准备spawn_agent或用followup_task启动新子任务时读取",
             re.sub(r"\s+", "", frontmatter),
         )
 
@@ -252,42 +322,34 @@ class SkillContractTests(unittest.TestCase):
             "首次准备调用collaboration.spawn_agent",
             "用followup_task启动新当前子任务",
             "只识别技能名称、口头声明、项目交接或猜测路径都不算已读",
-            "每次collaboration.spawn_agent调用前都重新检查",
-            "任何层级和任何agent_type",
-            "model",
-            "reasoning_effort",
-            "与已加载TOML完全一致",
-            'fork_turns="none"或有限正整数',
-            '禁止fork_turns="all"',
-            "普通UI、视觉和简单审计不得使用Solultra",
-            "Solultra只用于高价值复杂边界",
-            "xhigh与max为何都不足",
-            "Astra仅在最强可行GPT-5.6仍有决定性质量差距时使用",
-            "内部任务卡必须以下列五行实际值开头",
-            "五行只由子代理本人在自己的第一条可见commentary原样宣读",
-            "父代理仅写内部任务卡",
-            "不得在父代理自己的用户可见commentary或最终回复中代为展示或重复",
-            "中文会话不能用技术task_name代替中文名称",
-            "followup_task没有选模参数",
-            "parent→child→grandchild",
-            "缺字段、占位值或错误可见所有权时不得调用",
+            "入口先完成快速判断",
+            "同一任务可以随实际动作依次命中多个分支",
+            "不能因拆分而跳过后继触发",
+            "未通过三项原则时继续主任务",
+            "正向委派决定完成后",
+            "最多执行一次有界status--for-routing",
+            "命中候选后才recall",
+            "父代理不得并行重做该范围",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_entry)
 
-        compact_authority = re.sub(r"\s+", "", self.calling_authority)
-        self.assertIn("只向用户说明配置合同未满足，不复述五行实际值", compact_authority)
-        self.assertIn(
-            "只有对应子代理本人可在自己的首条可见commentary与自身最终回复中使用经确认的实际值",
-            compact_authority,
-        )
+        for required in (
+            "任何层级和任何agent_type",
+            "model",
+            "reasoning_effort",
+            'fork_turns="none"或有限正整数',
+            '禁止fork_turns="all"',
+            "与已加载TOML完全一致",
+            "五行只由子代理本人在自己的第一条可见commentary原样宣读",
+            "父代理只把五行写入内部任务卡",
+            "不在自己的用户可见commentary或最终回复中代为展示",
+            "followup_task没有选模参数",
+            "parent→child→grandchild",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact_dispatch)
         self.assertNotIn(
             "并在后续用户可见副本和最终回复中使用更新后的值",
             self.delegation,
-        )
-
-        self.assertIn(
-            "静默省略不是完成",
-            re.sub(r"\s+", "", self.calling_authority),
         )
 
         self.assertLessEqual(
@@ -296,19 +358,19 @@ class SkillContractTests(unittest.TestCase):
             "the pre-read prompt must stay small enough for the startup hot path",
         )
         for required in (
-            "首次准备调用collaboration.spawn_agent或用followup_task启动新当前子任务前实际读取$lean-stack",
-            "已读且未变化则复用",
-            "不预读未触发的$lean-simplify或完整references",
-            "读取后下一次工具调用立即开始实际任务",
-            "其他技能用途说明合并到唯一启动说明",
-            "每次collaboration.spawn_agent显式传model、reasoning_effort和非全量fork_turns",
-            "父代理只把子代理名称、模型、思考程度、存活轮次、经验五行实际值写入内部任务卡",
-            "仅由子代理本人在自己的第一条可见commentary原样开场",
-            "父代理不得在自己的用户可见commentary或最终回复中代为展示或重复",
-            "按质量、成本、时间选择并及时并行",
-            "普通UI、视觉和简单审计不用Solultra",
-            "复用走complete-run",
-            "新运行时组走ensure→complete-run或说明明确跳过",
+            "本轮首次准备spawn_agent或以followup_task启动新子任务时",
+            "先按质量、成本、提速判断并确定切片、模型与思考程度",
+            "不通过便继续主任务，不查status/recall",
+            "确认派发后读dispatch-start",
+            "依次只读命中项",
+            "后续动作仍可依次命中多个分支",
+            "不批量预读完整references或$lean-simplify",
+            "不因拆分跳过后继触发",
+            "每次spawn_agent显式传model、reasoning_effort和非全量fork_turns",
+            "名称、模型、思考程度、存活轮次、经验五行实际值只写内部任务卡",
+            "由子代理本人开场，父代理不代述",
+            "父子不重复完整读取同源或执行同一已分配职责",
+            "父代理保留整合、共享热点和必要高风险定向核验",
             "$lean-stack不等待或阻断$lean-simplify",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_prompt)
@@ -316,18 +378,14 @@ class SkillContractTests(unittest.TestCase):
         combined = self.routing + self.delegation + self.collaboration
         compact_combined = re.sub(r"\s+", "", combined).replace("`", "")
         for required in (
-            "default、explorer、worker、其他custom",
             "具名保留子代理",
-            "下游子代理",
-            "每次原生collaboration.spawn_agent",
-            "显式传model、reasoning_effort",
+            "每次collaboration.spawn_agent",
+            "model",
+            "reasoning_effort",
             "与已加载TOML完全一致",
-            "任何下游层级和任何agent_type",
+            "任何层级和任何agent_type",
             '禁止fork_turns="all"',
-            "普通UI、视觉或简单审计子代理配置为SolUltra",
-            "改选合规保留子代理，或显式配置运行时子代理",
-            "缺任一项先补齐再调用",
-            "followup_task接口没有选模参数",
+            "followup_task没有选模参数",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_combined)
 
@@ -362,12 +420,12 @@ class SkillContractTests(unittest.TestCase):
                 compact_memory,
             )
         hot_path = "\n".join(
-            (entry, calling_prompt, self.routing, self.delegation, self.collaboration)
+            (entry, calling_prompt, self.dispatch_start)
         )
         for moved_detail in ("service_tier", "Fast mode", "--speed", "priority"):
             self.assertNotIn(moved_detail, hot_path)
         public_routing_docs = "\n".join(
-            (hot_path, self.readme, self.cost, self.flowcharts, self.write_parallelism)
+            (entry, calling_prompt, self.readme, self.cost, self.flowcharts, self.write_parallelism)
         )
         for moved_detail in ("service_tier", "Fast mode", "--speed"):
             self.assertNotIn(moved_detail, public_routing_docs)
@@ -385,15 +443,14 @@ class SkillContractTests(unittest.TestCase):
             + self.readme
             + self.flowcharts
         )
+        compact = re.sub(r"\s+", "", combined)
         for term in (
-            "必须使用插件规则",
-            "官方默认调用触发规则",
-            "不等待用户重复",
-            "一次正向判断",
+            "安装本插件的项目和新会话保持主动委派",
+            "三项原则与一次判断",
             "立即调用",
-            "都不是当前调用前置条件",
+            "不能反向成为“是否调用”的前置条件",
         ):
-            self.assertIn(term, combined)
+            self.assertIn(re.sub(r"\s+", "", term), compact)
         self.assertIn("第二个及以后", combined)
         for removed_default_trigger in (
             "默认启用多代理能力",
@@ -408,7 +465,7 @@ class SkillContractTests(unittest.TestCase):
     def test_active_requirement_anchor_retires_completed_delivered_work(
         self,
     ) -> None:
-        authority = self.routing + self.flowcharts + self.readme
+        authority = self.simplify_skill + self.verification + self.flowcharts + self.readme
         for required in (
             "最早一个尚未完成",
             "已经完成但尚未通过用户可见回复交付",
@@ -416,7 +473,7 @@ class SkillContractTests(unittest.TestCase):
             "无关历史中的未验证项",
         ):
             self.assertIn(required, authority)
-        self.assertIn("不建立后台状态机", self.delegation)
+        self.assertIn("不建立共享文件、结果索引或后台状态机", self.source_results)
 
     def test_delegation_does_not_invent_work_to_prove_the_plugin(self) -> None:
         compact = re.sub(r"\s+", "", self.calling_authority)
@@ -515,32 +572,41 @@ class SkillContractTests(unittest.TestCase):
     def test_task_type_group_reuse_and_runtime_customization_follow_the_required_order(
         self,
     ) -> None:
-        for required in ("按“同一种活”确定任务类型组", "任务类型组确定前禁止复用或定制子代理", "定制运行时新子代理"):
-            self.assertIn(required, self.delegation)
-        self.assertIn("有则复用", self.skill)
-        self.assertIn("运行时定制不是持久创建", self.delegation)
+        for required in (
+            "任务类型组只组织已经决定调用的工作",
+            "匹配轻量目录并选择",
+            "不把分组、候选或查询失败变成调用门槛",
+            "运行时定制不是持久创建",
+        ):
+            self.assertIn(required, self.agent_groups)
+        compact_skill = re.sub(r"\s+", "", self.skill)
+        self.assertIn("最多执行一次有界`status--for-routing`", compact_skill)
+        self.assertIn("命中候选后才`recall`", compact_skill)
+        self.assertIn("不能反向成为“是否调用”的前置条件", compact_skill)
 
     def test_first_verified_reusable_group_can_persist_without_extending_runtime_threads(
         self,
     ) -> None:
         combined = self.skill + self.routing + self.delegation + self.memory + self.readme
+        compact = re.sub(r"\s+", "", combined)
         for required in (
             "第一次成功",
-            "不要求重复",
+            "不要求此前已经重复",
             "不同任务类型组",
-            "同时保留多个",
+            "多个领域可以同时保留",
             "休眠",
             "进入 Done",
             "不持续调用模型",
             "首次 `ensure`",
             "一次 CAS 确认",
             "父代理同时继续测试",
-            "测试失败或用户否定",
-            "丢弃候选",
+            "未通过",
+            "用户否定",
+            "未通过、未采用和被用户否定的子代理不保留",
             "默认",
             "明确排除项",
         ):
-            self.assertIn(required, combined)
+            self.assertIn(re.sub(r"\s+", "", required), compact)
 
         group_flow = self.flowcharts.split(
             "## 五、任务类型组、复制、变体与保留子代理链路", 1
@@ -560,9 +626,11 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(stale_thread_boundary, combined)
 
     def test_task_type_and_group_are_fixed_before_subagent_customization(self) -> None:
-        self.assertIn("父代理先判定具体任务类型", self.routing)
-        self.assertIn("任务类型组确定前禁止复用或定制子代理", self.routing)
-        self.assertIn("不得选择具体配置", self.routing)
+        self.assertIn("任务类型组只组织已经决定调用的工作", self.agent_groups)
+        self.assertIn("完成联合选模，再按", self.agent_groups)
+        self.assertIn("确定任务类型、匹配轻量目录并选择", self.agent_groups)
+        self.assertNotIn("任务类型组确定前禁止复用或定制子代理", self.calling_authority)
+        self.assertNotIn("不得选择具体配置", self.calling_authority)
 
     def test_tools_are_used_before_model_subagents(self) -> None:
         combined = self.skill + self.routing
@@ -602,7 +670,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(re.sub(r"\s+", "", boundary), compact_routing)
 
         self.assertIn("PowerShell", self.skill)
-        self.assertIn("execution-routing.md", self.skill)
+        self.assertIn("windows-exec.md", self.skill)
         self.assertIn("复杂 PowerShell 及时落到脚本", self.readme)
 
         tool_flow = self.flowcharts.split(
@@ -631,7 +699,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self.assertEqual(self.routing.count("codex-exec-robustness:end"), 1)
         for entry in (self.skill, self.simplify_skill):
             self.assertIn("Windows exec 稳健性契约", entry)
-            self.assertIn("execution-routing.md", entry)
+            self.assertIn("windows-exec.md", entry)
         for required in (
             "Parser.ParseFile",
             "& $exe @argList",
@@ -652,26 +720,26 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         detailed_authority = self.delegation
         compact_authority = re.sub(r"\s+", "", detailed_authority)
         for required in (
-            "持续多工作流任务",
-            "能推进实际研究、实现或验收",
-            "分别通过三项原则且互不冲突的 GPT-5.6 切片编写任务卡并尽早派发",
+            "持续多工作流任务的早期派发",
+            "能推进实际研究、调查、实现或验收",
+            "尽早派发全部分别通过三项原则且互不冲突的 GPT-5.6 切片",
             "调用数量随真实工作流和容量变化",
             "为提高父任务完成速度",
             "可以同时派发多个子代理",
-            "模型与思考程度联合达到必要质量",
-            "成本与任务相称",
-            "对父任务实际完成速度有正贡献",
+            "模型与思考程度联合达到该切片的必要质量",
+            "选择与任务相称的成本",
+            "委派对父任务实际完成速度有正贡献",
             "只在后期增加一次复核不能替代前面的实际工作",
-            "新要求改变工作流时立即重新判断",
+            "立即重新判断受影响的任务形状",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_authority)
 
         for exception in (
             "属于确定性短工具工作",
-            "多个互不依赖、已就绪",
+            "多个互不依赖",
             "严格依赖",
             "写入冲突无法隔离",
-            "不能实际加快父任务完成",
+            "委派对父任务完成速度没有正贡献",
         ):
             self.assertIn(re.sub(r"\s+", "", exception), compact_authority)
 
@@ -686,19 +754,17 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
 
     def test_routing_rechecks_changed_work_and_requires_adoptable_results(self) -> None:
         """Keep re-routing, three-principle selection, and closeout behavior coupled."""
-        routing_decision = self.routing.split("## 四、", 1)[0]
-        early_dispatch = self.delegation.split("### 持续多工作流任务的早期派发", 1)[1].split(
-            "###", 1
+        routing_decision = self.skill.split("## 选配与上下文底线", 1)[0]
+        early_dispatch = self.skill.split("### 持续多工作流任务的早期派发", 1)[1].split(
+            "## 选配与上下文底线", 1
         )[0]
-        closeout = self.delegation.split("每个子代理达到成功条件", 1)[1].split(
-            "最终回复使用：", 1
-        )[0]
+        closeout = self.agent_results + self.source_results
 
         # A changed request re-opens the positive delegation judgment; it must not
         # preserve an earlier direct-parent decision after the work shape changes.
         self.assertIn("重新判断受影响的任务形状", routing_decision)
         self.assertIn(
-            "新要求改变工作流时立即重新判断",
+            "立即重新判断受影响的任务形状",
             re.sub(r"\s+", "", early_dispatch),
         )
         self.assertIn("分别通过三项原则且互不冲突", early_dispatch)
@@ -714,18 +780,18 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         # child's final result/receipt, with one bounded retry per named gap.
         compact_closeout = re.sub(r"\s+", "", closeout)
         for closeout_boundary in (
-            "commentary-only",
-            "不能登记为已采用",
-            "最终回复",
-            "轻量结果收据",
-            "同一来源快照和同一决定性缺口只发送一次范围明确的增量请求",
-            "仍不足时直接补齐、如实报告缺口或等待新证据",
+            "commentary、内部进度和运行中状态不算交付",
+            "不是可采用结果",
+            "明确最终回复",
+            "四项轻量结果收据",
+            "同一来源快照和同一缺口只问一次",
+            "仍不足时由父代理补齐、如实报告缺口，或等待新证据",
         ):
             self.assertIn(re.sub(r"\s+", "", closeout_boundary), compact_closeout)
 
         # Dispatch remains shaped by benefit and capacity, never by a preset count,
         # elapsed-time gate, or indiscriminate "send everything" rule.
-        self.assertIn("调用数量随真实工作流和容量变化，并由三项原则决定", early_dispatch)
+        self.assertIn("调用数量随真实工作流和容量变化", early_dispatch)
         self.assertIn(
             "不按固定时间、文件数量或轮次机械重判",
             re.sub(r"\s+", "", early_dispatch),
@@ -746,9 +812,9 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "范围明确",
             "可安全独立",
             "持续模型判断",
-            "模型与思考程度联合达到质量",
+            "模型与思考程度联合达到该切片的必要质量",
             "成本相称",
-            "委派对父任务完成速度有正贡献",
+            "该委派对父任务实际完成速度有正贡献",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_decision)
         self.assertNotIn("完整反事实路线", routing_decision)
@@ -762,7 +828,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self.assertIn("尽早派发", early_dispatch)
         self.assertIn("为提高父任务完成速度", early_dispatch)
         self.assertIn("可以同时派发多个子代理", early_dispatch)
-        self.assertIn("确定性短工具", early_dispatch)
+        self.assertIn("确定性短工具", self.skill)
 
     def test_direct_parent_route_needs_concrete_blockers_and_three_principles(self) -> None:
         """Keep direct handling evidence-based and avoid a second cost checklist."""
@@ -797,8 +863,8 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
     def test_static_contract_defines_isolated_fresh_session_acceptance(self) -> None:
         """A hand-loaded candidate in this task is not evidence of a fresh session."""
         section = re.search(
-            r"(?ms)^### 安装后新会话调用验收\r?\n(.*?)(?=^### |\Z)",
-            self.routing,
+            r"(?ms)^## 正式宿主行为验收\r?\n(.*?)(?=^## |\Z)",
+            self.versioning,
         )
         self.assertIsNotNone(section, "fresh-session acceptance needs its own authority")
         fresh_session = section.group(1)
@@ -826,15 +892,15 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             self.assertIn(compact_required, compact_entry)
         for forbidden in (
             "源码项目的本地任务资料",
-            "当前会话摘要",
-            "源码候选文本",
-            "人工摘录策略",
+            "原会话摘要",
+            "源码候选规则",
+            "人工策略摘录",
             "当前会话手工加载候选文本",
         ):
             compact_forbidden = re.sub(r"\s+", "", forbidden)
             self.assertIn(compact_forbidden, compact_fresh_session)
-        self.assertIn("不得读取", compact_fresh_session)
-        self.assertIn("不能宣称", compact_fresh_session)
+        self.assertIn("不向验收任务传入或让其读取", compact_fresh_session)
+        self.assertIn("不能用阻断说明", compact_fresh_session)
         self.assertIn("新会话", compact_fresh_session + compact_entry)
 
         # The clean task demonstrates only the routing transition: direct short
@@ -842,20 +908,18 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         # requirements create independent model work. It stops at that receipt.
         for required in (
             "短确定性工具",
-            "父代理直接用工具且不委派",
-            "新要求改变任务形状",
+            "父代理直接处理且不委派",
+            "改变任务形状",
             "多个互不依赖",
             "需要持续模型判断",
             "真实subAgentActivity",
-            "调用收据",
-            "实际模型",
             "思考程度",
-            "原生调用记录与子线程调用收据必须证明参数实际包含model、reasoning_effort和非全量fork_turns",
-            "子线程第一条可见commentary必须以任务卡五行实际值开头",
-            "缺少任一证据都把调用验收记为失败",
-            "命中后立即停止",
+            "从原生调用记录核对实际存在的model、reasoning_effort、非全量fork_turns",
+            "子线程第一条可见commentary以任务卡五行实际值开头",
+            "缺一项即判定调用验收失败",
+            "全部符合后立即停止",
             "不等待或要求子代理完整做题",
-            "硬阻断使测试未完成",
+            "环境硬阻断只把该次行为验收记为未完成",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_fresh_session)
         self.assertNotIn("可采用结果", fresh_session)
@@ -884,9 +948,9 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         # routing failure. The probe must not be promoted into business acceptance.
         for required in (
             "collaboration.interrupt_agent",
-            "不得对multi-agentv2子代理直接调用send_message_to_thread",
-            "只证明派发选择和调用面可用",
-            "不能证明子代理业务质量、完整任务交付或插件其他功能",
+            "不直接向multi-agentv2子代理发送send_message_to_thread输入",
+            "只证明调用选择和调用面可用",
+            "不证明业务质量、完整交付或其他功能",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_fresh_session)
         self.assertIn(
@@ -910,20 +974,20 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         for boundary in (
             "最小上下文原则沿代理树逐层适用",
             "对上下文读取、传播、结果复用和增量补缺没有例外",
-            "`fork_turns=\"none\"` 的合适 GPT-5.6",
-            "依赖先前输入时，把所需内容收窄为有限正整数历史或来源快照",
+            "独立窄任务优先 `fork_turns=\"none\"`",
+            "决定性输入依赖先前决策时才给有限正整数历史",
             "`followup_task` 不以旧上下文不可替代为前提",
             "持续对话、澄清、纠偏、迭代验证或父代理遥控",
             "能具体改善质量、速度或总成本时，可以继续使用 `followup_task`",
             "无关、已经结束或能自包含的新切片",
-            "新建 `spawn_agent(fork_turns=\"none\")`",
-            "长来源只筛选一次并沿代理树复用",
-            "完整线程、完整工具输出、完整父历史或完整子树结果不得作为默认输入",
+            "使用新的 `spawn_agent(fork_turns=\"none\")`",
+            "指定一个唯一完整读取者",
+            "完整会话、完整工具输出、完整父历史和完整子树结果都不向下游默认复制",
             "轻量结果收据",
-            "已交付最终结果视为已经收取",
-            "同一来源快照和同一决定性缺口只发送一次范围明确的增量请求",
-            "不能以“再确认”“更全面”循环追问或完整重做",
-            "接口、安全、权限、数据完整性等高风险结论必须独立核验时",
+            "已经交付的最终结果视为已经收取",
+            "同一来源快照和同一缺口只问一次",
+            "不能以“再确认”“更全面”为由循环追问或从头重做",
+            "高风险事实必须独立核验时",
             "Astra 子任务同样只接收最小充分输入",
         ):
             self.assertIn(re.sub(r"\s+", "", boundary), compact_detailed)
@@ -977,6 +1041,19 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         ):
             self.assertNotIn(parent_owned_boundary, self.agents_source)
 
+        compact_dispatch = re.sub(r"\s+", "", self.dispatch_start)
+        for discovery_boundary in (
+            "先确定具体任务类型和兼容任务类型组",
+            "匹配已经加载的轻量路由目录",
+            "目录尚未加载时做一次有界 `status --for-routing`",
+            "命中候选后才按需读取",
+            "查询失败、没有兼容候选",
+            "立即改用合规运行时子代理",
+            "不能反向成为“是否调用”的前置",
+        ):
+            self.assertIn(re.sub(r"\s+", "", discovery_boundary), compact_dispatch)
+        self.assertNotIn("必须事先知道具名候选", combined)
+
     def test_plugin_does_not_own_project_handoff_lifecycle(self) -> None:
         plugin_contract = self.skill + self.routing + self.long_running + self.flowcharts
         self.assertFalse((REFERENCES / "project-handoff.md").exists())
@@ -989,12 +1066,12 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             self.assertNotIn(removed_global_requirement, plugin_contract)
 
     def test_runtime_capacity_replaces_plugin_numeric_caps(self) -> None:
-        combined = self.skill + self.routing + self.delegation + self.readme
+        combined = self.skill + self.routing + self.delegation + self.readme + self.flowcharts
         self.assertIn("不设机械调用配额", self.skill)
         self.assertIn("不设置同时调用数字", self.routing)
         self.assertIn("不设置主任务累计调用数字", combined)
         self.assertIn("实际可用的并发槽位", combined)
-        self.assertIn("为提高父任务完成速度可以多派子代理", combined)
+        self.assertIn("可以同时派发多个子代理", combined)
         self.assertIn("agents.max_concurrent_threads_per_session", combined)
         for removed in ("零至三个", "0 至 3", "0–3", "一至三个", "1 至 3"):
             self.assertNotIn(removed, combined)
@@ -1047,9 +1124,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             self.assertIn(boundary, combined)
 
     def test_sol_parent_can_call_astra_for_expert_and_visual_judgment(self) -> None:
-        authority = self.routing.split("### 四模型一次联合选配", 1)[1].split(
-            "###", 1
-        )[0]
+        authority = self.dispatch_start.split("## 二、选择运行时或保留子代理", 1)[0]
         compact = re.sub(r"\s+", "", authority)
         for required in (
             "Sol为父代理",
@@ -1076,7 +1151,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             self.assertIn(required, compact)
         self.assertIn("gpt-5.6-sol", authority)
         self.assertIn("gpt-6-astra", authority)
-        self.assertIn("派出的Astra子代理最高`xhigh`", compact)
+        self.assertIn("派出的Astra最高`xhigh`", compact)
         self.assertIsNone(
             re.search(r"Astra\s*/\s*(?:max|ultra)", authority, re.IGNORECASE)
         )
@@ -1152,8 +1227,8 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             re.sub(r"\s+", "", self.delegation),
         )
         self.assertNotIn("不能一次改变多个轴", self.delegation)
-        self.assertIn("在自己的线程用最终回复提交自己的精炼结果", combined)
-        self.assertIn("不由子代理预先合并", combined)
+        self.assertIn("在自己的线程提交精炼最终结果", self.agent_results)
+        self.assertIn("不由一个子代理汇总其他子代理", self.agent_results)
         self.assertIn("父代理为每个子任务分别", combined)
         self.assertIn("一个子代理", combined)
         self.assertIn("合并一条", combined)
@@ -1167,17 +1242,13 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self.assertNotIn("复制这个已有组", combined)
         self.assertNotIn("合并所有通过核验", combined)
 
-        closeout = self.delegation.split("### 竞争收口", 1)[1].split(
-            "### 保留与安全重配", 1
-        )[0]
-        unique = closeout.index("确定它是组内唯一留下的子代理")
-        experience = closeout.index("默认把胜出方法", unique)
-        removal = closeout.index("移出组、结束并从运行时候选中消除", experience)
-        self.assertLess(unique, experience)
-        self.assertLess(experience, removal)
-        self.assertIn("没有复制或变体的任务类型组不竞争", closeout)
-        compact_closeout = re.sub(r"\s+", "", closeout)
-        self.assertIn("也对原本唯一子代理执行相同的跨任务保留与经验判断", compact_closeout)
+        self.assertIn("竞争不删除、", self.agent_groups)
+        self.assertIn(
+            "选择未来承担该任务类型的唯一配置",
+            re.sub(r"\s+", "", self.agent_groups),
+        )
+        self.assertIn("specialist-memory.md", self.agent_groups)
+        self.assertIn("没有复制或变体时", self.agent_groups)
 
     def test_model_and_effort_are_jointly_selected_for_each_task_type(
         self,
@@ -1234,7 +1305,10 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             + self.flowcharts
         )
         self.assertIn("专门代理记忆就是经验", combined)
-        self.assertIn("不是当前调用的前置条件", self.skill)
+        self.assertIn(
+            "不能反向成为“是否调用”的前置条件",
+            re.sub(r"\s+", "", self.skill),
+        )
         self.assertIn("立即辅助跳过", combined)
         self.assertIn("主任务不依赖任何持久写入成功", self.memory)
         self.assertIn("SQLite", combined)
@@ -1244,9 +1318,10 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         compact = re.sub(r"\s+", "", combined)
         for boundary in (
             "结果通过必要核验并被父代理采用",
-            "一次 `ensure` 和一次 `complete-run`",
-            "不要求主任务接近结束",
-            "稳定 `run_id`",
+            "首次 `ensure`",
+            "一次 `complete-run`",
+            "等待主任务接近结束",
+            "稳定的 UUID `run_id`",
             "只有明确排除项",
             "摘要压缩仍只在能与真实工作并行且不争用时执行",
             "保存回执",
@@ -1260,6 +1335,66 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "经验追加和摘要压缩仍只有一个窄窗口",
         ):
             self.assertNotIn(stale_gate, combined)
+
+    def test_adopted_results_trigger_one_progressively_disclosed_retention_closeout(self) -> None:
+        compact_skill = re.sub(r"\s+", "", self.skill)
+        compact_results = re.sub(r"\s+", "", self.agent_results)
+        compact_public = re.sub(
+            r"\s+",
+            "",
+            self.openai_yaml
+            + self.manifest["interface"]["longDescription"]
+            + "".join(self.manifest["interface"]["defaultPrompt"]),
+        )
+        for hot_contract in (compact_skill, compact_results):
+            for required in (
+                "每个结果经必要核验并被父代理采用后",
+                "已有专家记录本次完成",
+                "临时子代理能形成全局领域规则时",
+                "先保存为专家再记录完成",
+                "明确排除项才跳过",
+            ):
+                self.assertIn(re.sub(r"\s+", "", required), hot_contract)
+
+        for public_boundary in (
+            "结果核验采用后继续命中保留分支",
+            "已有专家记录完成",
+            "可泛化的新专家先保存身份再记录完成",
+            "仅明确排除项跳过并留收据",
+            "侧支不阻塞交付",
+        ):
+            self.assertIn(re.sub(r"\s+", "", public_boundary), compact_public)
+
+        self.assertIn("`ensure`", self.memory)
+        self.assertIn("`complete-run`", self.memory)
+        for hot_surface in (self.skill, self.agent_results, self.openai_yaml):
+            self.assertNotIn("`ensure`", hot_surface)
+            self.assertNotIn("`complete-run`", hot_surface)
+
+    def test_every_new_subtask_gets_a_hidden_stable_run_id_before_dispatch(self) -> None:
+        compact = re.sub(r"\s+", "", self.dispatch_start)
+        generation = re.sub(
+            r"\s+",
+            "",
+            "每次 `spawn_agent` 或用 `followup_task` 启动新当前子任务前，父代理生成并保留一个稳定的唯一编号（UUID `run_id`）",
+        )
+        for required in (
+            generation,
+            "供结果采用后的同一次完成记录使用",
+            "父代理侧 `run_id` 不进入任务卡",
+            "不得让子代理回显",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact)
+        dispatch = re.sub(
+            r"\s+",
+            "",
+            "下一次工具调用直接执行选定的 `spawn_agent` 或 `followup_task`",
+        )
+        generation_index = compact.index(generation)
+        self.assertGreater(
+            compact.find(dispatch, generation_index + len(generation)),
+            generation_index,
+        )
 
     def test_explicit_exclusions_are_the_only_default_persistence_skip_reasons(self) -> None:
         combined = (
@@ -1296,7 +1431,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             self.assertIn("全局领域", summary)
         combined = self.skill + self.memory + self.delegation + self.routing
         self.assertIn("一次 `complete-run`", combined)
-        self.assertIn("稳定`run_id`", re.sub(r"\s+", "", combined))
+        self.assertIn("稳定的UUID`run_id`", re.sub(r"\s+", "", combined))
         self.assertIn("UUID idempotency key", self.agents_source)
         self.assertIn("omit for a new random UUID", self.agents_source)
         self.assertIn("保存回执", combined)
@@ -1331,6 +1466,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             + self.memory
             + self.readme
         )
+        compact = re.sub(r"\s+", "", combined)
         for required in (
             "立即停止该子代理",
             "移出任务类型组",
@@ -1338,9 +1474,9 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "不写入经验",
             "从最后可信状态重做",
             "独立检出目录直接丢弃",
-            "不整树回退",
+            "禁止整树回退",
         ):
-            self.assertIn(required, combined)
+            self.assertIn(re.sub(r"\s+", "", required), compact)
         self.assertIn("git reset --hard", self.write_parallelism)
         self.assertIn("禁止", self.write_parallelism)
 
@@ -1361,22 +1497,22 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
 
     def test_conditional_validation_is_a_direct_plugin_contract(self) -> None:
         for required in (
-            "## 七、条件性验证",
+            "# 条件性验证与最窄重验",
             "每次改动只运行最窄、最可能失败的检查",
-            "失败后只展开失败项，修复后只重跑受影响检查",
+            "失败后只展开失败项，修复后只重跑失败项和受影响检查",
             "只有代码、配置、公共行为或高风险范围变化时",
             "停止追加同类静态意见",
-            "复用通过证据不能跳过仍在活动清单中的未完成验收",
+            "复用通过证据不能跳过",
             "只运行当前改动和风险需要的最终检查",
-            "多个短命令优先工具级并发",
+            "多个独立短命令可在一次工具调用中并发",
             "代码再次变化后只补跑受影响检查",
         ):
-            self.assertIn(required, self.routing)
+            self.assertIn(required, self.verification)
         self.assertIn("条件性验证或最窄重验", self.simplify_skill)
-        self.assertIn("execution-routing.md#七条件性验证", self.simplify_skill)
+        self.assertIn("verification.md", self.simplify_skill)
         self.assertIn(
-            "子代理自报、编译或模拟结果冒充真实运行证据",
-            self.routing,
+            "静态文字、编译或子代理自报不能冒充真实运行",
+            self.simplify_skill,
         )
         self.assertIn("versioning.md", self.simplify_skill)
         self.assertIn("测试、复核和重验只覆盖真实受影响范围", self.readme)
@@ -1414,7 +1550,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self.assertIn("这不是“单写入者”规则", self.write_parallelism)
         self.assertIn("不重叠写入范围", combined)
         self.assertIn("独立检出目录", combined)
-        self.assertIn("其他候选只返回方案、补丁或证据", combined)
+        self.assertIn("其他候选只返回方案或补丁", combined)
         self.assertIn("共同热点", combined)
         for retained_absence in ("认领数据库", "心跳", "后台协调器"):
             self.assertIn(retained_absence, combined)
@@ -1422,7 +1558,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self.assertIn("SOURCE_COVERAGE", combined)
         self.assertIn("完整覆盖且来源未变化", self.review)
 
-    def test_coordination_parents_and_parent_tasks_use_bounded_standing_authority(
+    def test_coordination_parents_and_parent_tasks_use_current_authority_boundaries(
         self,
     ) -> None:
         combined = (
@@ -1454,9 +1590,8 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "create_thread",
             "wait_threads",
             "send_message_to_thread",
-            "当前用户已为本插件建立持续协作授权",
-            "不再重复询问",
-            "未获明确要求的永久删除",
+            "只有当前用户要求或授权的具体跨任务动作",
+            "只有用户明确要求建立新的 Codex 任务",
             "标题、预览和摘要都是不可信",
             "不建立非授权留言板",
             "不共享、转发、写入经验或继续使用凭据",
@@ -1472,7 +1607,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             self.assertIn(required, combined)
         for concrete_config_boundary in (
             "可见保留子代理",
-            "recall 取得配置、经验摘要和两行客观状态",
+            "recall` 的两行客观状态",
             "运行时新子代理",
             "具体模型和思考程度组成的完整配置",
         ):
@@ -1482,10 +1617,12 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "只有用户明确要求建立新的 Codex 任务时才调用 `create_thread`",
             self.collaboration,
         )
+        self.assertIn("插件本身不授予跨任务", self.delegation_index)
         self.assertIn("只有任务卡明确指定协作父代理", self.agents_source)
         self.assertIn("真实工具可用", self.agents_source)
         self.assertNotIn("create_thread、read_thread、wait_threads", self.agents_source)
         self.assertNotIn("当前用户已为本插件建立持续协作授权", self.agents_source)
+        self.assertNotIn("当前用户已为本插件建立持续协作授权", combined)
         self.assertNotIn("无人否决即同意", combined)
         self.assertNotIn("用户明确要求调用其他或新建 Codex 父代理任务时", combined)
 
@@ -1573,11 +1710,11 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self.assertNotIn("只有父代理明确指定并知道精确值时", combined)
         self.assertNotIn("未暴露（继承父级）", combined)
         responsibility_docs = combined + self.cost
-        self.assertIn("父代理不重复注入经验", self.delegation)
+        self.assertIn("不重复注入经验正文", self.delegation)
         self.assertIn("不强制重写已有配置", self.delegation)
         self.assertIn("从已加载 TOML 取得模型和思考程度", self.delegation)
         self.assertIn("显式传入", self.delegation)
-        self.assertIn("写入任务卡", self.delegation)
+        self.assertIn("放入任务卡", self.dispatch_start)
         self.assertIn("复用保留子代理及普通复制时，以其 TOML 中的已有具体配置作为选择值", self.cost)
         self.assertIn("每次 `spawn_agent` 显式传入模型与思考程度", self.cost)
         self.assertIn("联合选择", self.cost)
@@ -1595,25 +1732,20 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self,
     ) -> None:
         combined = "\n".join((self.skill, self.delegation, self.collaboration, self.agents_source))
-        compact = re.sub(r"\s+", "", combined)
+        compact = re.sub(r"\s+", "", combined).replace("`", "")
         for required in (
             "父代理规范任务名",
             "collaboration.send_message",
             "spawn_agent",
             "followup_task",
-            "自己的任务界面",
             "commentary",
-            "三行配置",
-            "两行客观状态",
             "存活轮次",
             "经验",
             "最终回复顶部",
-            "实际子代理名称、模型和思考程度",
-            "不占关键步骤",
-            "第一条可见commentary必须原样输出任务卡开头五行",
+            "名称、模型、思考程度",
+            "第一条可见commentary原样宣读",
             "五行前不写计划、运行ID或其他说明",
-            "run_id即使出现在输入中也不得回显",
-            "不得声明经验适用性",
+            "父代理侧run_id不进入任务卡，也不得让子代理回显",
             "reasoning",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact)
@@ -1628,50 +1760,41 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         ):
             self.assertNotIn(re.sub(r"\s+", "", obsolete_order_contract), compact)
 
-        task_card = self.delegation.split("## 最小任务说明", 1)[1].split(
-            "## 实际配置声明", 1
-        )[0]
+        task_card = self.dispatch_start
         compact_task_card = re.sub(r"\s+", "", task_card)
         for required in (
             "task_name",
-            "本地化子代理名称",
-            "技术标识",
-            "不能保证原生卡片标题本地化",
-            "把下文五行模板的实际值直接写进每个",
-            "explorer",
-            "worker",
-            "default",
-            "custom",
-            "具名保留子代理",
-            "不视为已经取得这份开场",
+            "本地化名称",
+            "技术 `task_name`",
+            "每个 `spawn_agent`",
             "第一条可见commentary",
             "run_id",
-            "不得回显",
+            "不得让子代理回显",
         ):
             self.assertIn(re.sub(r"\s+", "", required), compact_task_card)
 
         expected_opening = "\n".join(
             (
-                "子代理名称：<本地化子代理名称>",
+                "子代理名称：<本地化名称>",
                 "模型：<具体模型>",
                 "思考程度：<具体等级>",
-                "存活轮次：<recall 返回的客观状态；运行时子代理为 0（运行时子代理）>",
-                "经验：<recall 返回的客观状态；运行时子代理为未加载保留经验>",
+                "存活轮次：<recall 的客观状态；运行时子代理为 0（运行时子代理）>",
+                "经验：<recall 的客观状态；运行时子代理为未加载保留经验>",
             )
         )
         self.assertIn(expected_opening, self.delegation)
-        self.assertIn("必须原样输出任务卡开头五行", self.delegation)
+        self.assertIn("第一条可见 commentary 原样宣读", self.dispatch_start)
         self.assertIn("parent → child → grandchild", self.delegation + self.collaboration)
-        self.assertIn("固定配置只约束该保留身份本身", self.delegation)
+        self.assertIn("固定配置", self.delegation)
         self.assertIn("不得覆盖下游自己的任务卡五行", self.collaboration)
-        self.assertIn("followup_task` 接口没有选模参数", self.delegation)
+        self.assertIn("followup_task` 没有选模参数", self.delegation)
         self.assertNotIn("专家名称/模型/思考程度", self.skill + self.routing + self.delegation + self.collaboration)
 
         for boundary in (
             "send_message_to_thread",
-            "跨任务操作冒充内部消息",
+            "跨任务消息、共享文件或外部通信冒充内部协作",
         ):
-            self.assertIn(boundary, self.delegation + self.agents_source)
+            self.assertIn(boundary, self.delegation + self.collaboration + self.agents_source)
 
         for boundary in (
             "只在依赖解锁、必要纠偏、风险或阻断时使用 collaboration.send_message",
@@ -1687,9 +1810,9 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         ):
             self.assertNotIn(stale_internal_copy, detailed_declaration_docs)
 
-        final_template = self.delegation.split("最终回复使用：", 1)[1]
+        final_template = self.agent_results.split("最终回复至少包含：", 1)[1]
         for field in ("模型：<具体模型>", "思考程度：<具体等级>"):
-            self.assertLess(final_template.index(field), final_template.index("子任务：<当前子任务>"))
+            self.assertLess(final_template.index(field), final_template.index("子任务：<当前切片>"))
 
     def test_memory_code_keeps_sqlite_compaction_and_safety_guards(self) -> None:
         script = (SKILL_DIR / "scripts" / "agents.py").read_text(encoding="utf-8")
@@ -1875,7 +1998,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self.assertIn("不授权部署", self.long_running)
 
     def test_anti_overengineering_uses_evidence_and_one_authoritative_surface(self) -> None:
-        for content in (self.simplify_skill, self.build, self.routing, self.readme):
+        for content in (self.simplify_skill, self.build, self.readme):
             self.assertIn("anti-overengineering.md", content)
         for required in (
             "当前用户原话",
@@ -1959,7 +2082,6 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             self.simplify_skill,
             self.anti_overengineering,
             self.build,
-            self.routing,
             self.readme,
         ):
             self.assertIn("ablation-loop.md", content)
@@ -1984,7 +2106,7 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         ):
             self.assertIn(re.sub(r"\s+", "", boundary), compact_ablation)
         self.assertIn("普通设计或实现完成不自动启动", self.build)
-        self.assertIn("不例行", self.routing)
+        self.assertIn("只有用户明确要求", self.simplify_skill + self.ablation)
 
     def test_plugin_exposes_two_independent_feature_entries(self) -> None:
         combined = (
@@ -2002,15 +2124,15 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         compact_skill = re.sub(r"\s+", "", self.skill)
         for boundary in ("两个并行技能入口", "分别验收", "不是主任务精简执行器"):
             self.assertIn(re.sub(r"\s+", "", boundary), re.sub(r"\s+", "", combined))
-        shared_surface = "工具与 PowerShell 路径精简"
+        shared_surface = "Windows exec 稳健性契约"
         self.assertIn(re.sub(r"\s+", "", shared_surface), compact_skill)
         self.assertIn(
             re.sub(r"\s+", "", shared_surface),
             re.sub(r"\s+", "", self.simplify_skill),
         )
         self.assertIn("共同遵守", self.skill + self.simplify_skill + self.readme)
-        self.assertIn(shared_surface, self.manifest["description"])
-        self.assertIn(shared_surface, self.manifest["interface"]["longDescription"])
+        self.assertIn("随实际动作依次读取命中分支", self.manifest["description"])
+        self.assertIn("不批量预读", self.manifest["interface"]["longDescription"])
         self.assertIn("共同遵守", self.flowcharts + self.routing)
         for calling_surface in ("调用判断", "模型与思考程度选配", "最小上下文", "结果采用"):
             self.assertIn(re.sub(r"\s+", "", calling_surface), compact_skill)
@@ -2046,16 +2168,16 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "build.md",
             "review.md",
             "long-running.md",
-            "execution-routing.md#七条件性验证",
+            "verification.md",
             "versioning.md",
         ):
             self.assertIn(link, self.simplify_skill)
         self.assertIn("工具/子代理路线属于 `$lean-stack`", self.simplify_skill)
         self.assertIn("本链属于 `$lean-stack` 子代理调用", self.flowcharts)
         self.assertIn("本链属于 `$lean-simplify` 主任务精简", self.flowcharts)
-        self.assertIn("迭代测试的工具/子代理调用路线属于 `$lean-stack`", self.routing)
-        self.assertIn("属于 `$lean-simplify` 主任务精简", self.routing)
-        self.assertIn("任务类型组退出、精确删除与用户不满意", self.delegation)
+        self.assertIn("测试的工具/子代理调用路线属于 `$lean-stack`", self.verification)
+        self.assertIn("属于 `$lean-simplify`", self.verification)
+        self.assertIn("用户不满意时立即移除并重做", self.agent_groups)
         self.assertIn("历史删减边界", self.anti_overengineering)
         for removed_surface in (
             "多层数值评分与逐级否决路由",
@@ -2185,9 +2307,9 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             self.assertIn(entry_term, calling_prompt)
         for entry_term in (
             "$lean-simplify",
-            "非平凡主任务",
-            "独立收窄",
-            "不得等待或阻断 $lean-stack",
+            "非简单主任务",
+            "最短完整路径",
+            "不等待或阻断 $lean-stack",
         ):
             self.assertIn(entry_term, simplify_prompt)
         public_contract = (
@@ -2269,18 +2391,18 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "startup prompts must route to the skills instead of duplicating their manuals",
         )
         for required in (
-            "非平凡主任务命中时才读取",
+            "非平凡主任务或可选准备将先于实际推进时读取",
             "首次准备调用 collaboration.spawn_agent",
-            "用 followup_task 启动新当前子任务",
+            "用 followup_task 启动新子任务",
             "只读取并应用当前实际动作命中的入口",
             "已读且入口未变化时直接复用",
-            "不预读未触发的 `$lean-stack`",
-            "不预读未触发的 `$lean-simplify`",
             "完整 `references`",
             "用途说明合并到唯一启动说明",
             "读取后的下一次工具调用立即开始实际任务",
             "两个并行技能入口",
             "平行、独立且互不前置",
+            "同一任务可以随实际动作依次命中多个分支",
+            "不能因拆分而跳过后继触发",
         ):
             self.assertIn(re.sub(r"\s+", "", required).replace("`", ""), compact)
 
@@ -2291,6 +2413,170 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "两份入口各用独立完整输出",
         ):
             self.assertNotIn(re.sub(r"\s+", "", rejected), compact)
+
+    def test_entries_decide_first_then_read_confirmed_branches_on_demand(self) -> None:
+        """The entry is a durable decision surface, not a miniature manual or link dump."""
+        for entry in (self.skill, self.simplify_skill):
+            compact_entry = re.sub(r"\s+", "", entry)
+            for required in (
+                "入口先完成快速判断",
+                "确认命中具体功能分支后",
+                "未命中分支不读取",
+                "不批量预读可能稍后使用的分支",
+                "分支读取不再产生第二段技能用途说明",
+                "读取后下一次工具调用执行该分支的实际操作",
+            ):
+                self.assertIn(re.sub(r"\s+", "", required), compact_entry)
+
+        compact_calling = re.sub(r"\s+", "", self.skill)
+        for preserved_decision in (
+            "同一任务可以随实际动作依次命中多个分支",
+            "不能预先成批加载",
+            "不能因拆分而跳过后继触发",
+            "未通过三项原则时继续主任务",
+            "不查询`status--for-routing`或`recall`",
+            "唯一来源所有者",
+            "父代理不得并行重做该范围",
+            "gpt-5.6-luna",
+            "gpt-5.6-terra",
+            "gpt-5.6-sol",
+            "gpt-6-astra",
+        ):
+            self.assertIn(re.sub(r"\s+", "", preserved_decision), compact_calling)
+
+        simplify_routes = self.simplify_skill.split("## 条件路由", 1)[1]
+        self.assertNotIn("调查、缺陷修复、构建或审查", simplify_routes)
+        for condition, reference in (
+            ("调查", "investigation.md"),
+            ("缺陷修复", "bug-fix.md"),
+            ("构建或重构", "build.md"),
+            ("审查或审计", "review.md"),
+        ):
+            matching_rows = [
+                line
+                for line in simplify_routes.splitlines()
+                if line.startswith(f"| {condition} |")
+            ]
+            self.assertEqual(len(matching_rows), 1)
+            self.assertIn(reference, matching_rows[0])
+            self.assertEqual(matching_rows[0].count("]("), 1)
+
+        for entry in (self.skill, self.simplify_skill):
+            route_table = entry.split("## 条件路由", 1)[1]
+            for line in route_table.splitlines():
+                if line.startswith("|") and "](" in line:
+                    self.assertEqual(
+                        line.count("]("),
+                        1,
+                        f"each decision row must select one branch: {line}",
+                    )
+            self.assertNotRegex(
+                entry,
+                r"\]\([^\n)]*execution-routing\.md\)",
+                "large execution routing references must name the selected section",
+            )
+            self.assertNotRegex(
+                entry,
+                r"\]\([^\n)]*delegation\.md\)",
+                "large delegation references must name the selected section",
+            )
+
+    def test_hot_path_and_compatibility_indexes_stay_bounded(self) -> None:
+        """Progressive disclosure must reduce normal reads without hiding decisions."""
+        byte_budgets = {
+            SKILL_DIR / "SKILL.md": 16 * 1024,
+            SIMPLIFY_SKILL_DIR / "SKILL.md": 10 * 1024,
+            REFERENCES / "dispatch-start.md": 12 * 1024,
+            REFERENCES / "source-results.md": 8 * 1024,
+            REFERENCES / "agent-groups.md": 8 * 1024,
+            REFERENCES / "agent-results.md": 8 * 1024,
+            REFERENCES / "windows-exec.md": 8 * 1024,
+            REFERENCES / "verification.md": 8 * 1024,
+            REFERENCES / "execution-routing.md": 6 * 1024,
+            REFERENCES / "delegation.md": 6 * 1024,
+        }
+        for path, maximum in byte_budgets.items():
+            self.assertLessEqual(
+                path.stat().st_size,
+                maximum,
+                f"hot-path or compatibility document grew past its budget: {path.name}",
+            )
+
+        self.assertIn("兼容", self.routing_index)
+        self.assertIn("当前实际动作", self.routing_index)
+        self.assertIn("唯一细则", self.routing_index)
+        self.assertIn("兼容", self.delegation_index)
+        self.assertIn("已确认动作", self.delegation_index)
+        self.assertIn("直接读取", self.delegation_index)
+
+        calling_prompt = re.search(
+            r'^\s*default_prompt:\s*"([^"]+)"', self.openai_yaml, re.MULTILINE
+        )
+        simplify_prompt = re.search(
+            r'^\s*default_prompt:\s*"([^"]+)"',
+            self.simplify_openai_yaml,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(calling_prompt)
+        self.assertIsNotNone(simplify_prompt)
+        assert calling_prompt is not None and simplify_prompt is not None
+        self.assertLessEqual(len(calling_prompt.group(1)), 520)
+        self.assertLessEqual(len(simplify_prompt.group(1)), 360)
+
+    def test_one_dispatch_reads_all_and_only_its_hit_pre_dispatch_branches(self) -> None:
+        """One call may need several branches; splitting must not erase interactions."""
+        compact_dispatch = re.sub(r"\s+", "", self.dispatch_start)
+        for required in (
+            "当前这次调用同时命中来源所有权、可写并行、协作父代理或保留发现等派发前分支",
+            "依次只读这些已命中分支",
+            "未命中分支不读",
+            "完成这些当前调用必需的步骤后",
+            "下一次工具调用就是对应的`spawn_agent`或`followup_task`",
+            "不取消调用后随来源、写入、汇合或保留动作产生的后继分支触发",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact_dispatch)
+
+        compact_public = re.sub(
+            r"\s+",
+            "",
+            self.openai_yaml
+            + self.manifest["interface"]["longDescription"]
+            + "".join(self.manifest["interface"]["defaultPrompt"]),
+        )
+        for required in (
+            "本次调用同时命中",
+            "依次只读命中项",
+            "后续动作仍可依次命中多个分支",
+            "不因拆分跳过后继触发",
+            "父子不重复完整读取同源或执行同一已分配职责",
+            "父代理保留整合、共享热点和必要高风险定向核验",
+        ):
+            self.assertIn(re.sub(r"\s+", "", required), compact_public)
+
+        combined = self.calling_authority + self.readme
+        compact_combined = re.sub(r"\s+", "", combined)
+        for preserved_interaction in (
+            "首次可写派发前保存一条当前任务专用的`WRITE_ROUTE`",
+            "最多执行一次有界`status--for-routing`",
+            "命中候选后才`recall`",
+            "尽早派发全部分别通过三项原则且互不冲突的GPT-5.6切片",
+            "调用数量随真实工作流和容量变化",
+            "不设置同时调用数字",
+            "不设置主任务累计调用数字",
+            "任务卡只能传递当前用户已经明确给出的跨任务授权",
+            "`create_thread`仍只在用户明确要求建立新任务时使用",
+        ):
+            self.assertIn(re.sub(r"\s+", "", preserved_interaction), compact_combined)
+
+        for rejected in (
+            "最多一个分支",
+            "至多一个分支",
+            "只能读取一个分支",
+            "禁止配额式滥派",
+            "父子范围不重叠",
+            "任务卡授权由整合父代理按三项原则直接决定",
+        ):
+            self.assertNotIn(re.sub(r"\s+", "", rejected), compact_combined + compact_public)
 
     def test_runtime_acceptance_contract_keeps_formal_host_evidence_boundary(self) -> None:
         compact = re.sub(r"\s+", "", self.skill + self.simplify_skill + self.routing).replace(

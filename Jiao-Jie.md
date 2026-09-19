@@ -407,10 +407,12 @@ SQLite v5 经验与任务结果体系只保留：
 - 个人市场：`C:\Users\fml\.agents\plugins\marketplace.json`，市场名为 `personal`。
 - SQLite 台账：`C:\Users\fml\.codex\lean-stack\specialist-memory-v1.sqlite3`。
 - 全局领域台账实现：`skills/lean-stack/scripts/agents.py`。
-- 工具、子代理、PowerShell 复杂转义、迭代测试调用路线，以及主任务条件性验证的单一详细来源：
-  `skills/lean-stack/references/execution-routing.md`；各段归属由两个技能入口说明。
+- 两个 `SKILL.md` 是快速判断入口；实际动作细则按命中条件分别由 `dispatch-start.md`、
+  `windows-exec.md`、`source-results.md`、`verification.md`、`agent-groups.md` 和
+  `agent-results.md` 承载。`execution-routing.md` 仅为旧链接兼容索引，不再是普通任务的大手册。
 - 可写并行、共同热点与精确撤销：`skills/lean-stack/references/write-parallelism.md`。
-- 委派及用户否定后的停止与重做：`skills/lean-stack/references/delegation.md`。
+- 首次派发、任务类型组、结果汇合及用户否定后的停止与重做分别由上述小分支承载；
+  `skills/lean-stack/references/delegation.md` 仅为旧链接兼容索引。
 - 反 AI 过度工程权威规则：`skills/lean-stack/references/anti-overengineering.md`。
 - 显式消融反馈循环：`skills/lean-stack/references/ablation-loop.md`。
 - 13 条 Mermaid 权威规则内容源：`skills/lean-stack/references/flowcharts-zh.md`。
@@ -432,6 +434,33 @@ SQLite v5 经验与任务结果体系只保留：
 
 当前快照（2026-09-19）。来源为用户当前要求、新全局文件、当前源码、原生子代理回执、SQLite/TOML
 台账、合同测试、正式安装及源码/缓存哈希核对。源码、静态合同、缓存和真实运行分别取证。
+
+### 2026-09-19 5.3.2 按能力复用与按动作分支
+
+- 两个入口保留会改变下一动作的快速判断；确认实际动作后，当前调用可依次读取多个已经命中的
+  小分支，未命中分支和完整 reference 不预读。拆分不取消后继调用、来源、写入、汇合或保留触发，
+  也不增加第三入口或普通任务必读总手册。
+- 子代理先按可复用能力族、职责、输入输出、权限、安全风险和决定性证据形状匹配，不按名字、
+  项目、框架或动作词匹配。正向委派决定后最多做一次有界 `status --for-routing`，命中才
+  `recall`；失败立即使用运行时子代理，不把保留查询变成“是否调用”的前置，也不减少分别通过
+  质量、成本、时间三原则的真实切片。
+- 每次 `spawn_agent` 或用 `followup_task` 启动新当前子任务前，父代理生成并保留稳定 UUID
+  `run_id`，不写进任务卡、不让子代理回显。每个结果经必要核验并被采用后必经一次非阻塞保留
+  收口：已有专家记录完成，可泛化运行时身份先保存再记录完成；只有明确排除项可跳过并留回执。
+- 本会话实际续用了三个已存在子代理线程，并按能力调用已有“保留代理持久化实现审计”身份；其
+  结果核验采用后以派发前同一 `run_id` 成功记为第 12 次完成，未追加重复经验。台账曾从 schema 6
+  显式迁移到 7，保留 92 次历史成功且不伪造失败、经验复用或完成收据。
+- 持续对话、澄清、纠偏、迭代验证或父代理遥控能具体改善质量、速度或总成本时，可以继续使用
+  `followup_task`；无关、已结束或能自包含的新切片才建立零历史子代理。Astra 是通用高成本专家
+  而不只是视觉专家；Sol 在执行中遇到真实困难时可交出范围明确且有决定性质量收益的专家切片，
+  视觉质量缺口是重点场景之一；路由审计、提示文档或只提到相关领域不触发升级。
+- 源码已升为 `5.3.2+codex.20260919154025`；最终源码全套 250 项通过、3 项按平台条件跳过，两个
+  技能均返回 `Skill is valid!`，`git diff --check` 通过。正式安装返回
+  `plugin_installed_with_default_invocation`，插件清单显示该版本已安装并启用；正式缓存与源码各
+  79 个非 `.git` 文件，逐文件哈希差异为 0。全局 `AGENTS.md` 安装前后 SHA-256 均为
+  `CDE4E5F127B0424A032B3109440370A5038FA5BED3B0B19F2E356358211900C7`，安装器返回已有详细调用
+  合同且 `modified: false`。这些证据不证明当前已运行会话热加载新规则。PR #2 已于 2026-09-19
+  合并且双平台检查成功，不重复合并；当前最窄下一步仅为提交并推送本轮 5.3.2 改动。
 
 ### 2026-09-19 5.3.1 有意义协作与 Astra 通用专家路线
 

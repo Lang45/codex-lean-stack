@@ -63,7 +63,11 @@ class DocumentationAuditTests(unittest.TestCase):
         self.assertIn("AGENTS.override.md", versioning)
         self.assertIn("--codex-home", versioning)
         # Correct the stale API explanation without permitting full-history forks.
-        for relative in ("SKILL.md", "references/delegation.md", "references/execution-routing.md"):
+        for relative in (
+            "SKILL.md",
+            "references/dispatch-start.md",
+            "references/collaboration.md",
+        ):
             source = (ROOT / "skills/lean-stack" / relative).read_text(encoding="utf-8")
             self.assertNotRegex(source, r"因(?:无法|不能)\s*同时显式覆盖")
             self.assertIn('fork_turns="all"', source)

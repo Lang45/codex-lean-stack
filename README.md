@@ -61,7 +61,9 @@ This plugin supplies workflow instructions and helper scripts. It does not provi
 | Topic | Reference |
 | --- | --- |
 | Skill entry points | [Task simplification](skills/lean-simplify/SKILL.md) · [Subagent delegation](skills/lean-stack/SKILL.md) |
-| Execution and coordination | [Execution routing](skills/lean-stack/references/execution-routing.md) · [Delegation](skills/lean-stack/references/delegation.md) · [Coordination parents](skills/lean-stack/references/collaboration.md) |
+| First dispatch | [Dispatch start](skills/lean-stack/references/dispatch-start.md) |
+| Sources and results | [Source ownership](skills/lean-stack/references/source-results.md) · [Result convergence](skills/lean-stack/references/agent-results.md) |
+| Agent groups | [Groups, copies, and variants](skills/lean-stack/references/agent-groups.md) · [Coordination parents](skills/lean-stack/references/collaboration.md) |
 | Parallel changes | [Writable parallelism](skills/lean-stack/references/write-parallelism.md) |
 | Specialist reuse | [Agent profiles and experience](skills/lean-stack/references/specialist-memory.md) |
 | Reducing complexity | [Anti-overengineering](skills/lean-stack/references/anti-overengineering.md) · [Ablation loop](skills/lean-stack/references/ablation-loop.md) |
@@ -92,9 +94,14 @@ Choose additional checks according to the behavior affected by the change.
 
 插件标识：`codex-lean-stack`
 
-## 当前版本 5.3.1
+## 当前版本 5.3.2
 
-5.3.1 明确旧线程的有意义协作：持续对话、澄清、纠偏、迭代验证或父代理遥控能改善质量、速度或总成本时可以继续使用 `followup_task`；无关、已结束或能自包含的新切片才以 `fork_turns="none"` 新建子代理。主任务会先评估官方支持的扩展点和安全、许可、兼容、升级成本可接受的成熟开源库；只有现有选项不能有效满足需求或总风险更高时才从零构建。Sol 遇到真实困难时可调用 Astra 处理范围明确的通用专家切片，困难 3D、前端视觉和视频编辑的实际产物质量缺口是重点场景而非唯一场景；模型路由审计、提示/文档编写或只提到 Astra 与视觉领域不能触发升级。源码更新不代表安装缓存或已运行会话已更新。
+5.3.2 把两个入口收窄为会改变下一动作的判断面：入口先判断，确认动作后才依次读取当前命中的
+小分支；同一任务可以连续命中多个分支，但不批量预读完整 reference，也不因拆分丢失后继调用。
+子代理复用按可复用能力、权限和证据形状匹配，而不是按名称、项目或动作词匹配；只有正向委派
+决定完成后才做一次有界保留目录发现，命中才读取经验，失败立即使用运行时子代理。每个新子任务
+在派发前生成父侧隐藏的稳定 `run_id`，结果核验采用后必经一次非阻塞保留收口。源码更新、安装
+成功或缓存一致仍不能证明已运行会话热加载了新规则。
 
 当前使用取向是主要由 Sol 担任父代理，并把高价的 `gpt-6-astra` 留作可调用的子代理专家；具体任务只按模型与思考程度能否联合达到必要质量、质量充分组合是否成本相称、子代理是否实际加快父任务完成三项原则判断。
 
@@ -102,7 +109,7 @@ Choose additional checks according to the behavior affected by the change.
 2. 两个或更多子代理将修改文件或共享状态时，父代理在首次可写派发前记录 `WRITE_ROUTE`，明确写入者、范围、共同热点、隔离路线、撤销依据和受影响检查；范围不能隔离或撤销不能精确归因时，只允许一个候选直接写目标。
 3. 同一卷内只改变路径的移动不再默认建立迁移前后整树长度与 SHA-256 清单；路径与结构验收、实际字节复制以及正式交付清单使用各自相称的验证。
 4. 写入安全、用户否定、反 AI 过度工程、消融和条件性验证由插件自身的权威 reference 单一承载，不要求项目文档复制规则。
-5. 插件不规定项目交接文件的创建、读取、更新或结构；这些由用户和项目或全局规则决定。新会话不无条件读取两个入口：非平凡主任务触发 `lean-simplify`，首次 `spawn_agent` 或用 `followup_task` 启动新当前子任务前触发 `lean-stack`；已读且未变化的入口直接复用。只读取当前实际动作命中的入口，不预读未触发入口或完整 `references`。入口读取后的下一次工具调用立即开始实际任务；其他技能用途说明合并到唯一启动说明。两入口仍可在同一任务中分别命中，但互不等待、互不代证。
+5. 插件不规定项目交接文件的创建、读取、更新或结构；这些由用户和项目或全局规则决定。新会话不无条件读取两个入口：非简单主任务和可选准备先于实际推进时触发 `lean-simplify`，出现具体委派候选且首次准备 `spawn_agent` 或以 `followup_task` 启动新子任务时触发 `lean-stack`；已读且未变化的入口直接复用。入口先完成快速判断，当前动作命中哪个分支就读取哪个并立即行动；同一任务可随实际动作依次命中多个分支，但不预先批量加载完整 `references`，也不因拆分跳过后继触发。两入口互不等待、互不代证。
 6. 同一长来源由一个所有者完成发现与完整读取；其他子代理复用 `SOURCE_ROUTE` 证据包，只定向补
    具名缺口或必要的高风险事实。
 7. 每次原生派发必须同时提交显式模型、思考程度、有限上下文和五行任务卡；缺字段、使用“继承”占位或给普通 UI 选择 Sol `ultra` 时不得调用。父代理只把五行写入内部任务卡，不在自己的用户可见 commentary 或最终回复中代为展示或重复；只有子代理本人在自己的第一条可见 commentary 以“子代理名称、模型、思考程度”三行实际配置开场，随后显示存活轮次和经验状态，仍不显示父侧 `run_id`；经验版本可以
@@ -111,8 +118,9 @@ Choose additional checks according to the behavior affected by the change.
    不等待逐次重申，并可为提高父任务完成速度在实际并发容量内同时派发多个子代理。面向用户
    主任务的启动句不适用于子代理；中文会话的可见子代理名称必须使用
    中文，不能照抄技术 `task_name`。
-9. 普通派发若此前派发已触发读取且入口未变化就直接复用，否则只读取一次 `lean-stack` 入口；
-   命中候选后才读取其完整保留合同。父代理采用新运行时组的结果后，新加入先执行首次 `ensure`，
+9. 普通派发若此前派发已触发读取且入口未变化就直接复用，否则读取 `lean-stack` 入口；确认派发
+   后先读首次派发小分支并立即调用，只有后继动作真正命中时才依次读取来源、写入、汇合或保留
+   分支。父代理采用新运行时组的结果后，新加入先执行首次 `ensure`，
    仅对 `reconfiguration_required` 或 `global_contract_refresh_required` 响应用返回 SHA 作一次 CAS
    确认，再执行一次 `complete-run`；复用直接走 `complete-run`。明确跳过必须留下原因，`improve`
    不能代替完成收据。
@@ -121,7 +129,7 @@ Choose additional checks according to the behavior affected by the change.
 
 ### 两个并行功能
 
-1. **共同执行底座。** 两个入口都遵守[Windows exec 稳健性契约](skills/lean-stack/references/execution-routing.md)：确定性短工作直接用工具，独立短命令用一次工具调用并发，复杂或跨语言代码及时转为任务专属脚本，分离参数和数据，不增加多余包装或通用执行层。
+1. **共同执行底座。** 两个入口都遵守[Windows exec 稳健性契约](skills/lean-stack/references/windows-exec.md)：确定性短工作直接用工具，独立短命令用一次工具调用并发，复杂或跨语言代码及时转为任务专属脚本，分离参数和数据，不增加多余包装或通用执行层。
 2. **子代理调用 `$lean-stack`。** 负责调用判断与模型、成本、时间选配，上下文、来源和结果复用，内部交流与子代理结果收口，子代理、经验和生命周期表面精简，以及迭代测试链。
 3. **主任务精简 `$lean-simplify`。** 负责最小完整任务方法，主任务状态与沟通收窄，调查、实现和任务手册，测试、复核和重验范围，反过度工程与维护面，显式消融，发布、安装和文档维护，以及条件性语义复核与最终验证链、失败后的最窄重验链。
 4. **互不代证。** 主任务精简不要求先调用子代理；复杂任务可同时使用两个入口，但调用记录不能证明主任务已精简，静态精简规则也不能证明子代理运行成功。
@@ -142,11 +150,11 @@ Choose additional checks according to the behavior affected by the change.
 ### 子代理调用前
 
 1. **工具先行。** 短命令、批量查询和确定性工作直接用工具，不启动只会代跑命令的模型子代理。
-2. **复杂 PowerShell 及时落到脚本。** 多层引号、JSON/正则或多行逻辑使用任务专属 `.ps1`；确认转义失败后只修同一脚本，按执行路由检查 Parser、实际结果和退出码，不反复改 one-liner。
+2. **复杂 PowerShell 及时落到脚本。** 多层引号、JSON/正则或多行逻辑使用任务专属 `.ps1`；确认转义失败后只修同一脚本，按 Windows exec 分支检查 Parser、实际结果和退出码，不反复改 one-liner。
 3. **三原则决定调用。** 直接判断模型是否适合并守住必要质量、思考程度是否与任务相称、该子代理
    是否实际加快父任务完成。调用数量本身不构成成本错误；上下文、交流、整合和复验按各自执行
    规则收敛，不作为新增调用的第二套判断清单。
-4. **新会话按触发开始。** 不在开场通读两个入口。非平凡主任务只触发 `lean-simplify`；首次真实派发或启动新 `followup_task` 前只触发 `lean-stack`。入口已读且未变化时直接复用；未触发入口和完整 `references` 不预读。入口读取后的下一次工具调用立即推进实际任务；本轮其他技能用途说明合并到唯一启动说明，不追加逐技能前言。无关记忆、保留目录、委派或版本解释不能阻塞主任务，也不能预造用户未要求的交付物。
+4. **新会话按触发开始。** 不在开场通读两个入口。非简单主任务和准备先于推进时触发 `lean-simplify`；出现具体候选且首次真实派发或启动新 `followup_task` 前触发 `lean-stack`。入口已读且未变化时直接复用；入口先判断，再随实际动作依次读取命中分支并立即推进，不批量预读完整 `references`，也不因拆分跳过后继触发。本轮其他技能用途说明并入唯一启动说明；无关记忆、保留目录、委派或版本解释不能阻塞主任务，也不能预造用户未要求的交付物。
 5. **四模型联合选配。** 不设调用数量；父代理按任务类型与任务类型组复用保留子代理或定制新子代理，一次联合选择模型与思考程度，并保留 `MODEL_ROUTE` 收据。Luna 处理清楚易验切片，Terra 处理有限语义歧义，Sol 承担复杂端到端工作；Sol `max` 可按任务需要选用，只有 Sol `ultra` 要求高价值复杂边界及 `xhigh`、`max` 均不足的具体依据。Astra 仅处理 GPT-5.6 仍有决定性质量差距的当前专家问题，最高 `xhigh`，普通视觉任务不触发。Sol 在执行中遇到真实困难时，可以把范围明确的通用专家切片交给 Astra 协助或验证；这不限于视觉领域。3D、前端视觉或视频编辑在实际产物中出现具体质量缺口时也可重新评估 Astra；模型路由审计、提示编写或只提到 Astra 和视觉领域不能触发升级。任何层级、任何子代理的每次 `spawn_agent` 都显式传入模型和思考程度；保留子代理以 TOML 为实际值来源，但 TOML 不能代替原生调用参数。保留子代理 TOML 的其他宿主预配置由保留子代理生命周期规则维护，不进入本次模型与思考程度选配、任务卡、`MODEL_ROUTE` 或可见声明。
 6. **上下文按需。** 独立任务优先 `fork_turns="none"`；持续对话、澄清、纠偏、迭代验证或父代理遥控有具体收益时可继续使用 `followup_task`，并只发送新增信息。无关、已结束或能自包含的新切片才新建零历史子代理。同一长来源由一个所有者完整读取，其他子代理消费可定位证据包，只为具名缺口或必要高风险事实定向复核。
 
@@ -155,7 +163,7 @@ Choose additional checks according to the behavior affected by the change.
 1. **内部交流只服务真实依赖。** 证据能解锁下一动作、需要纠偏或出现风险时才发消息。
 2. **子代理先公开实际配置与保留状态。** 父代理把“子代理名称、模型、思考程度”三行实际配置及
    “存活轮次、经验状态”两行客观状态写进每个新当前任务的内部任务卡，但不得在父代理自己的用户可见 commentary 或最终回复中代为展示或重复。该合同从父到子、从子到孙逐层适用，不假定通用、具名、保留或继承历史会自动取得这些值。只有子代理本人在自己的第一条可见 commentary 严格依此五行开头；保留子代理采用 `recall` 的客观状态，运行时子代理说明 0 轮和未加载保留经验。五行前不出现计划或运行 ID；子代理自己的最终回复只重复当前任务卡前三行。上级保留角色的固定身份、模型和思考程度即使被宿主传播到下游，也不得覆盖下游自己的任务卡。
-   面向用户主任务的交接启动句不适用于子代理；普通派发只读一次 `lean-stack` 入口，不通读参考文档。轻量路由目录选中候选后才 `recall` 完整合同；每个新运行时组的结果被采用后，必须完成保留/经验写入或给出明确跳过原因。
+   面向用户主任务的交接启动句不适用于子代理；普通派发确认后读取首次派发小分支，不通读参考目录。正向决定后按任务类型匹配轻量路由目录，目录未加载时最多查询一次，命中后才 `recall`；失败立即使用运行时子代理。当前调用和后续动作可依次读取各自命中的来源、写入、协作、汇合或经验分支。每个新运行时组的结果被采用后，必须完成保留/经验写入或给出明确跳过原因。
 3. **关键步骤只为真实依赖。** 只有中间结果会解锁下一动作时才报告一次并继续；不发送定时心跳、纯确认消息或普通过程复述。
 4. **父代理不中断主线。** 父代理立即推进，只在真实依赖点等待，不完整重做已核验结果。
 5. **持续多工作流任务尽早派发并重判。** 新范围、独立困难或压缩后的多个就绪工作流会使旧的直接处理判断失效；对新切片重新判断模型、思考程度和实际提速。
@@ -221,15 +229,19 @@ See the [official OpenAI plugin documentation](https://learn.chatgpt.com/docs/pl
 py -3 -X utf8 .\skills\lean-stack\scripts\install_plugin.py --marketplace <marketplace>
 ```
 
-辅助安装器会把用户全局文件中以“所有模型和思考程度的父代理必须使用”或“必须都使用”开头的
-展开句式识别为已有调用入口；命中后保持文件字节不变，不重复追加旧式默认行。
+辅助安装器会把用户全局文件中以“所有模型和思考程度的父代理必须使用”、“所有父代理（无论
+模型与思考程度）必须使用”或“必须都使用”开头的展开句式识别为已有调用入口；命中后保持
+文件字节不变，不重复追加旧式默认行。
 
 ## 文档 / Docs
 
 - [子代理调用技能 / Subagent calling skill](skills/lean-stack/SKILL.md)
 - [主任务精简技能 / Main-task simplification skill](skills/lean-simplify/SKILL.md)
-- [执行路由 / Execution routing](skills/lean-stack/references/execution-routing.md)
-- [子代理委派 / Delegation](skills/lean-stack/references/delegation.md)
+- [首次派发 / Dispatch start](skills/lean-stack/references/dispatch-start.md)
+- [来源所有权与结果收据 / Source ownership and receipts](skills/lean-stack/references/source-results.md)
+- [任务类型组、复制与变体 / Agent groups, copies, and variants](skills/lean-stack/references/agent-groups.md)
+- [子代理结果与汇合 / Agent results and convergence](skills/lean-stack/references/agent-results.md)
+- [兼容索引 / Compatibility indexes](skills/lean-stack/references/execution-routing.md) · [Delegation index](skills/lean-stack/references/delegation.md)
 - [协作父代理 / Coordination parents](skills/lean-stack/references/collaboration.md)
 - [全局领域经验 / Global-domain experience](skills/lean-stack/references/specialist-memory.md)
 - [可写子代理并行 / Writable parallelism](skills/lean-stack/references/write-parallelism.md)

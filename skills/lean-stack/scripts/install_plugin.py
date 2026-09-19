@@ -31,14 +31,15 @@ _lock_spec.loader.exec_module(_locks)
 
 PLUGIN_NAME = "codex-lean-stack"
 DEFAULT_INVOCATION_LINE = (
-    "所有模型和思考程度的父代理必须使用已安装的 `codex-lean-stack`；两个入口按需读取，已加载且未变化"
-    "的规则直接复用，选配与协作细节由插件维护。"
+    "所有模型和思考程度的父代理必须使用已安装的 `codex-lean-stack`；两个入口按需读取，入口保留"
+    "快速判断，确认命中后才读取对应功能分支，选配与协作细节由插件维护。"
 )
 USER_GLOBAL_INVOCATION_LINE = "必须调用已安装的 `codex-lean-stack` 插件。"
 USER_GLOBAL_INVOCATION_PREFIXES = (
     USER_GLOBAL_INVOCATION_LINE.removesuffix("。"),
     "所有模型和思考程度的父代理必须使用已安装的 `codex-lean-stack`",
     "所有模型和思考程度的父代理必须都使用已安装的 `codex-lean-stack`",
+    "所有父代理（无论模型与思考程度）必须使用已安装的 `codex-lean-stack`",
 )
 INVOCATION_SEPARATOR_PUNCTUATION = frozenset("，。；：！？、,.;:!?")
 MAX_MANIFEST_BYTES = 1024 * 1024
