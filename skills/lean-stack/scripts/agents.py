@@ -27,7 +27,9 @@ from typing import Any, Iterable, Sequence
 import uuid
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+ORDINARY_RUN_RECEIPT_VERSION = 0
+COMPLETION_RECEIPT_VERSION = 1
 GLOBAL_CONTRACT_VERSION = 1
 GLOBAL_SCOPE = "codex-global-domain-v1"
 DB_NAME = "specialist-memory-v1.sqlite3"
@@ -181,10 +183,10 @@ SCHEMA_V5_TABLE_SQL["agent_runs"] = """
             CHECK(outcome IN ('success','failure')))
 """
 
-SCHEMA_TABLE_SQL = dict(SCHEMA_V5_TABLE_SQL)
+SCHEMA_V6_TABLE_SQL = dict(SCHEMA_V5_TABLE_SQL)
 # The nullable digest preserves old run semantics.  Only runs that explicitly
 # carry a verified pre-invocation experience snapshot count as reuse evidence.
-SCHEMA_TABLE_SQL["agent_runs"] = """
+SCHEMA_V6_TABLE_SQL["agent_runs"] = """
     CREATE TABLE agent_runs (
         run_id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL REFERENCES agents(agent_id),
@@ -194,6 +196,27 @@ SCHEMA_TABLE_SQL["agent_runs"] = """
         outcome TEXT NOT NULL DEFAULT 'success'
             CHECK(outcome IN ('success','failure')),
         loaded_experience_digest TEXT)
+"""
+
+SCHEMA_TABLE_SQL = dict(SCHEMA_V6_TABLE_SQL)
+# Explicit run-level receipt state keeps four cases distinct without inferring
+# associations from agent-wide events: NULL is a migrated unknown v4-v6 row,
+# 0 is an ordinary record-run, and 1 is a complete-run whose nullable event ID
+# explicitly records either no adopted experience or the exact bound event.
+SCHEMA_TABLE_SQL["agent_runs"] = """
+    CREATE TABLE agent_runs (
+        run_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+        invocation_kind TEXT NOT NULL
+            CHECK(invocation_kind IN ('spawn_agent', 'followup_task')),
+        completed_at TEXT NOT NULL ,
+        outcome TEXT NOT NULL DEFAULT 'success'
+            CHECK(outcome IN ('success','failure')),
+        loaded_experience_digest TEXT,
+        completion_receipt_version INTEGER
+            CHECK(completion_receipt_version IS NULL OR completion_receipt_version IN (0,1)),
+        completion_experience_event_id TEXT
+            CHECK(completion_experience_event_id IS NULL OR completion_receipt_version IS 1))
 """
 
 SCHEMA_V1_TABLE_SQL = dict(SCHEMA_V2_TABLE_SQL)
@@ -977,7 +1000,13 @@ class SpecialistRegistry:
             elif version in (4, 5):
                 raise AuxiliarySkipped(
                     f"specialist database schema {version} requires explicit migrate-attempts; "
-                    "ordinary registry commands do not infer task failures or experience reuse"
+                    "ordinary registry commands do not infer task failures, experience reuse, "
+                    "or completion receipts"
+                )
+            elif version == 6:
+                raise AuxiliarySkipped(
+                    "specialist database schema 6 requires explicit migrate-attempts; "
+                    "ordinary registry commands do not infer completion receipts"
                 )
             elif version != SCHEMA_VERSION:
                 raise AuxiliarySkipped(
@@ -1005,7 +1034,7 @@ class SpecialistRegistry:
     def _attempt_migration_connection(self) -> tuple[sqlite3.Connection, int]:
         ensure_plain_database(self.db_path)
         if not self.db_path.exists():
-            raise AuxiliarySkipped("migrate-attempts requires an existing v4 or v5 database")
+            raise AuxiliarySkipped("migrate-attempts requires an existing v4, v5, or v6 database")
         connection = sqlite3.connect(
             self.db_path,
             timeout=BUSY_TIMEOUT_MS / 1000,
@@ -1019,10 +1048,11 @@ class SpecialistRegistry:
             source_schema = {
                 4: SCHEMA_V4_TABLE_SQL,
                 5: SCHEMA_V5_TABLE_SQL,
+                6: SCHEMA_V6_TABLE_SQL,
             }.get(version)
             if source_schema is None or exact_schema(connection) != expected_schema(source_schema):
                 raise AuxiliarySkipped(
-                    "migrate-attempts accepts only the exact published v4 or v5 schema"
+                    "migrate-attempts accepts only the exact published v4, v5, or v6 schema"
                 )
             return connection, version
         except BaseException:
@@ -1030,21 +1060,23 @@ class SpecialistRegistry:
             raise
 
     def migrate_attempts(self) -> dict[str, Any]:
-        """Explicitly add outcomes/reuse evidence without inventing history."""
+        """Add attempt evidence and unknown completion receipts without inventing history."""
         connection, source_version = self._attempt_migration_connection()
         try:
             connection.execute("BEGIN IMMEDIATE")
             if int(connection.execute("PRAGMA user_version").fetchone()[0]) != source_version:
                 raise AuxiliarySkipped("attempt migration raced with another schema change")
-            source_schema = (
-                SCHEMA_V4_TABLE_SQL if source_version == 4 else SCHEMA_V5_TABLE_SQL
-            )
+            source_schema = {
+                4: SCHEMA_V4_TABLE_SQL,
+                5: SCHEMA_V5_TABLE_SQL,
+                6: SCHEMA_V6_TABLE_SQL,
+            }[source_version]
             if exact_schema(connection) != expected_schema(source_schema):
                 raise AuxiliarySkipped("attempt migration source schema changed")
             existing_successes = int(
                 connection.execute(
                     "SELECT COUNT(*) FROM agent_runs"
-                    + (" WHERE outcome='success'" if source_version == 5 else "")
+                    + (" WHERE outcome='success'" if source_version in (5, 6) else "")
                 ).fetchone()[0]
             )
             existing_failures = 0
@@ -1060,8 +1092,19 @@ class SpecialistRegistry:
                         "SELECT COUNT(*) FROM agent_runs WHERE outcome='failure'"
                     ).fetchone()[0]
                 )
+            if source_version in (4, 5):
+                connection.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN loaded_experience_digest TEXT"
+                )
             connection.execute(
-                "ALTER TABLE agent_runs ADD COLUMN loaded_experience_digest TEXT"
+                "ALTER TABLE agent_runs ADD COLUMN completion_receipt_version INTEGER "
+                "CHECK(completion_receipt_version IS NULL OR "
+                "completion_receipt_version IN (0,1))"
+            )
+            connection.execute(
+                "ALTER TABLE agent_runs ADD COLUMN completion_experience_event_id TEXT "
+                "CHECK(completion_experience_event_id IS NULL OR "
+                "completion_receipt_version IS 1)"
             )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -1096,6 +1139,7 @@ class SpecialistRegistry:
             "migrated_failure_attempt_count": outcomes.get("failure", 0),
             "historical_failure_backfill": False,
             "historical_experience_reuse_backfill": False,
+            "historical_completion_receipt_backfill": False,
             "existing_outcome_semantics_preserved": (
                 outcomes.get("success", 0) == existing_successes
                 and outcomes.get("failure", 0) == existing_failures
@@ -1622,6 +1666,16 @@ class SpecialistRegistry:
                 )
                 connection.execute(
                     "ALTER TABLE agent_runs ADD COLUMN loaded_experience_digest TEXT"
+                )
+                connection.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN completion_receipt_version INTEGER "
+                    "CHECK(completion_receipt_version IS NULL OR "
+                    "completion_receipt_version IN (0,1))"
+                )
+                connection.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN completion_experience_event_id TEXT "
+                    "CHECK(completion_experience_event_id IS NULL OR "
+                    "completion_receipt_version IS 1)"
                 )
             connection.execute("DROP TABLE agents")
             connection.execute(SCHEMA_TABLE_SQL["agents"])
@@ -2797,52 +2851,84 @@ class SpecialistRegistry:
             existing = connection.execute(
                 "SELECT agent_runs.agent_id, agent_runs.invocation_kind, "
                 "agent_runs.completed_at, agent_runs.outcome, "
-                "agent_runs.loaded_experience_digest, agents.name, "
+                "agent_runs.loaded_experience_digest, "
+                "agent_runs.completion_receipt_version, "
+                "agent_runs.completion_experience_event_id, agents.name, "
                 "agents.expected_sha256, agents.retired_at "
                 "FROM agent_runs JOIN agents ON agents.agent_id = agent_runs.agent_id "
                 "WHERE agent_runs.run_id = ?",
                 (run_id,),
             ).fetchone()
             experience_replay = None
-            if existing is not None and experience_event is not None:
-                _, event_id, retracts_event_id, event_digest = experience_event
-                experience_replay = connection.execute(
-                    "SELECT event_digest,retracts_event_id FROM experience_events "
-                    "WHERE agent_id=? AND event_id=?",
-                    (existing["agent_id"], event_id),
-                ).fetchone()
-                if experience_replay is None:
-                    # Older records derived the event ID from the original CAS.
-                    # Preserve exact-request retries without guessing associations
-                    # from lesson text or timestamps, or rewriting historical data.
-                    legacy_id = str(uuid.uuid5(
-                        uuid.UUID(run_id), f"retained-completion:{expected_sha256}"
-                    ))
-                    experience_replay = connection.execute(
-                        "SELECT event_digest,retracts_event_id FROM experience_events "
-                        "WHERE agent_id=? AND event_id=?",
-                        (existing["agent_id"], legacy_id),
-                    ).fetchone()
-                    if experience_replay is None:
+            completion_receipt_verified = False
+            if existing is not None:
+                receipt_version = existing["completion_receipt_version"]
+                receipt_event_id = existing["completion_experience_event_id"]
+                if receipt_version in (None, ORDINARY_RUN_RECEIPT_VERSION):
+                    if receipt_event_id is not None:
                         raise SpecialistError(
-                            "run_id completion replay is missing its bound experience event; "
-                            "legacy completions require the original expected_sha256"
+                            "run_id has an invalid completion receipt state"
                         )
-                    experience_event = (
-                        experience_event[0], legacy_id, retracts_event_id, event_digest
-                    )
-                if (
-                    experience_replay["event_digest"] != event_digest
-                    or experience_replay["retracts_event_id"] != retracts_event_id
-                ):
+                elif receipt_version != COMPLETION_RECEIPT_VERSION:
+                    raise SpecialistError("run_id has an unsupported completion receipt")
+
+                if completion:
+                    if receipt_version == ORDINARY_RUN_RECEIPT_VERSION:
+                        raise SpecialistError(
+                            "run_id was recorded without a completion receipt"
+                        )
+                    if receipt_version == COMPLETION_RECEIPT_VERSION:
+                        requested_event_id = (
+                            experience_event[1] if experience_event is not None else None
+                        )
+                        if receipt_event_id != requested_event_id:
+                            raise SpecialistError(
+                                "run_id completion replay has different experience"
+                            )
+                        completion_receipt_verified = True
+                        if experience_event is not None:
+                            _, _, retracts_event_id, event_digest = experience_event
+                            experience_replay = connection.execute(
+                                "SELECT event_digest,retracts_event_id "
+                                "FROM experience_events WHERE agent_id=? AND event_id=?",
+                                (existing["agent_id"], receipt_event_id),
+                            ).fetchone()
+                            if experience_replay is None:
+                                raise SpecialistError(
+                                    "run_id completion receipt is missing its experience event"
+                                )
+                            if (
+                                experience_replay["event_digest"] != event_digest
+                                or experience_replay["retracts_event_id"]
+                                != retracts_event_id
+                            ):
+                                raise SpecialistError(
+                                    "run_id completion replay has different experience"
+                                )
+                    else:
+                        # A v4-v6 row has no trustworthy operation kind or
+                        # completion-event binding.  A separately appended event
+                        # can deliberately collide with every derived UUID, so no
+                        # event lookup can upgrade an unknown row into a receipt.
+                        raise SpecialistError(
+                            "run_id replay cannot prove that the migrated run was "
+                            "recorded by complete-run"
+                        )
+                elif receipt_version is None:
                     raise SpecialistError(
-                        "run_id completion replay has different experience"
+                        "run_id replay cannot prove that the migrated run was "
+                        "an ordinary record-run"
+                    )
+                elif receipt_version == COMPLETION_RECEIPT_VERSION:
+                    raise SpecialistError(
+                        "run_id was recorded with a completion receipt"
                     )
             if existing is not None and (
                 existing["name"] != name
                 or (
                     existing["expected_sha256"] != expected_sha256
                     and experience_replay is None
+                    and not completion_receipt_verified
                 )
                 or existing["invocation_kind"] != invocation_kind
                 or existing["outcome"] != outcome
@@ -2858,7 +2944,10 @@ class SpecialistRegistry:
                         connection,
                         name=name,
                         expected_sha256=(
-                            None if experience_replay is not None else expected_sha256
+                            None
+                            if experience_replay is not None
+                            or completion_receipt_verified
+                            else expected_sha256
                         ),
                     )
                 completed_at = existing["completed_at"]
@@ -2921,10 +3010,21 @@ class SpecialistRegistry:
                     )
                 completed_at = utc_now()
                 agent_id = row["agent_id"]
+                receipt_version = (
+                    COMPLETION_RECEIPT_VERSION
+                    if completion
+                    else ORDINARY_RUN_RECEIPT_VERSION
+                )
+                receipt_event_id = (
+                    experience_event[1]
+                    if completion and experience_event is not None
+                    else None
+                )
                 connection.execute(
                     "INSERT INTO agent_runs("
-                    "run_id,agent_id,invocation_kind,completed_at,outcome,loaded_experience_digest"
-                    ") VALUES(?,?,?,?,?,?)",
+                    "run_id,agent_id,invocation_kind,completed_at,outcome,"
+                    "loaded_experience_digest,completion_receipt_version,"
+                    "completion_experience_event_id) VALUES(?,?,?,?,?,?,?,?)",
                     (
                         run_id,
                         agent_id,
@@ -2932,6 +3032,8 @@ class SpecialistRegistry:
                         completed_at,
                         outcome,
                         loaded_experience_digest,
+                        receipt_version,
+                        receipt_event_id,
                     ),
                 )
                 action = (
@@ -3536,8 +3638,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "migrate-attempts",
         help=(
-            "explicitly migrate the exact v4 or v5 ledger without inferring historical "
-            "failures or experience reuse"
+            "explicitly migrate the exact v4, v5, or v6 ledger without inferring "
+            "historical failures, experience reuse, or completion receipts"
         ),
     )
 

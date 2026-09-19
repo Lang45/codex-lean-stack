@@ -155,6 +155,27 @@ class CompletionReplayReviewTests(unittest.TestCase):
         self.assertEqual(replay["action"], "completion_already_recorded")
         self.assertEqual(self.snapshot(), before)
 
+    def test_completion_receipt_replay_uses_live_ownership_not_a_stale_cas(self):
+        completed = self.registry.complete_run(**self.request)
+        before = self.snapshot()
+        unrelated_sha = "f" * 64
+        self.assertNotIn(
+            unrelated_sha,
+            (self.request["expected_sha256"], completed["sha256"]),
+        )
+
+        replay = self.registry.complete_run(
+            **dict(self.request, expected_sha256=unrelated_sha)
+        )
+        self.assertEqual(replay["action"], "completion_already_recorded")
+        self.assertEqual(self.snapshot(), before)
+
+        with self.assertRaises(self.agents.SpecialistError):
+            self.registry.complete_run(
+                **dict(self.request, expected_sha256="not-a-sha256")
+            )
+        self.assertEqual(self.snapshot(), before)
+
     def test_conflicting_replays_and_first_write_stale_cas_are_rejected(self):
         completed = self.registry.complete_run(**self.request)
         before = self.snapshot()
@@ -172,6 +193,100 @@ class CompletionReplayReviewTests(unittest.TestCase):
             self.assertEqual(self.snapshot(), before)
         with self.assertRaises(self.agents.SpecialistError):
             self.registry.complete_run(**dict(self.request, run_id=str(uuid.uuid4())))
+        self.assertEqual(self.snapshot(), before)
+        with self.assertRaisesRegex(
+            self.agents.SpecialistError,
+            "recorded with a completion receipt",
+        ):
+            self.registry.record_run(
+                name=self.request["name"],
+                expected_sha256=completed["sha256"],
+                run_id=self.request["run_id"],
+                invocation_kind=self.request["invocation_kind"],
+                outcome=self.request["outcome"],
+            )
+        self.assertEqual(self.snapshot(), before)
+
+    def test_ordinary_run_id_cannot_be_replayed_as_a_completion(self):
+        run_id = str(uuid.uuid4())
+        self.registry.record_run(
+            name=self.created["name"],
+            expected_sha256=self.created["sha256"],
+            run_id=run_id,
+            invocation_kind="spawn_agent",
+            outcome="success",
+        )
+        before = self.snapshot()
+
+        with self.assertRaisesRegex(
+            self.agents.SpecialistError,
+            "without a completion receipt",
+        ):
+            self.registry.complete_run(
+                name=self.created["name"],
+                expected_sha256=self.created["sha256"],
+                run_id=run_id,
+                invocation_kind="spawn_agent",
+                outcome="success",
+            )
+        self.assertEqual(self.snapshot(), before)
+
+    def test_replay_cannot_omit_an_already_recorded_experience(self):
+        completed = self.registry.complete_run(**self.request)
+        before = self.snapshot()
+        replay = dict(self.request, expected_sha256=completed["sha256"])
+        replay.pop("lesson")
+
+        with self.assertRaisesRegex(
+            self.agents.SpecialistError,
+            "different experience",
+        ):
+            self.registry.complete_run(**replay)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_replay_cannot_add_experience_to_a_completion_without_one(self):
+        request = dict(self.request)
+        request.pop("lesson")
+        completed = self.registry.complete_run(**request)
+        before = self.snapshot()
+
+        replay = self.registry.complete_run(
+            **dict(request, expected_sha256=completed["sha256"])
+        )
+        self.assertEqual(replay["action"], "completion_already_recorded")
+        self.assertEqual(replay["experience_action"], "not_requested")
+        self.assertEqual(self.snapshot(), before)
+
+        with self.assertRaisesRegex(
+            self.agents.SpecialistError,
+            "different experience",
+        ):
+            self.registry.complete_run(
+                **dict(
+                    request,
+                    expected_sha256=completed["sha256"],
+                    lesson="A later experience must not change the receipt.",
+                )
+            )
+        self.assertEqual(self.snapshot(), before)
+
+    def test_unrelated_experience_does_not_block_no_experience_replay(self):
+        unrelated = self.fixture.improve_with_lesson(
+            name=self.created["name"],
+            expected_sha256=self.created["sha256"],
+            lesson="An unrelated retained result.",
+            event_id=str(uuid.uuid4()),
+        )
+        request = dict(self.request, expected_sha256=unrelated["sha256"])
+        request.pop("lesson")
+        completed = self.registry.complete_run(**request)
+        before = self.snapshot()
+
+        replay = self.registry.complete_run(
+            **dict(request, expected_sha256=completed["sha256"])
+        )
+        self.assertEqual(replay["action"], "completion_already_recorded")
+        self.assertEqual(replay["experience_action"], "not_requested")
         self.assertEqual(self.snapshot(), before)
 
     def test_completed_replay_still_rejects_actual_owned_file_drift(self):
@@ -196,7 +311,7 @@ class CompletionReplayReviewTests(unittest.TestCase):
         self.assertEqual(replay["retracts_event_id"], old["experience_event_id"])
         self.assertEqual(self.snapshot(), before)
 
-    def test_legacy_cas_bound_event_keeps_exact_request_replay(self):
+    def test_migrated_legacy_event_cannot_stand_in_for_a_completion_receipt(self):
         legacy_id = str(uuid.uuid5(uuid.UUID(self.request["run_id"]),
                                   f"retained-completion:{self.request['expected_sha256']}"))
         # Produce a valid old-format completion, including its TOML digest.
@@ -205,11 +320,59 @@ class CompletionReplayReviewTests(unittest.TestCase):
                                uuid.UUID(legacy_id) if ns == uuid.UUID(self.request["run_id"])
                                else real_uuid5(ns, name)):
             recorded = self.registry.complete_run(**self.request)
+        # Model a migrated v6 row: the run and old CAS-bound event survive, but
+        # no historical command can safely backfill a completion receipt.
+        with contextlib.closing(self.fixture.db()) as connection:
+            connection.execute(
+                "UPDATE agent_runs SET completion_receipt_version=NULL, "
+                "completion_experience_event_id=NULL WHERE run_id=?",
+                (self.request["run_id"],),
+            )
+            connection.commit()
         before = self.snapshot()
-        replay = self.registry.complete_run(**self.request)
         self.assertEqual(recorded["experience_event_id"], legacy_id)
-        self.assertEqual(replay["experience_event_id"], legacy_id)
-        self.assertEqual(replay["action"], "completion_already_recorded")
+        omitted_original = dict(self.request)
+        omitted_original.pop("lesson")
+        current = dict(self.request, expected_sha256=recorded["sha256"])
+        omitted_current = dict(self.request, expected_sha256=recorded["sha256"])
+        omitted_current.pop("lesson")
+        for replay in (self.request, omitted_original, current, omitted_current):
+            with self.subTest(replay_has_lesson="lesson" in replay), self.assertRaisesRegex(
+                self.agents.SpecialistError,
+                "cannot prove.*recorded by complete-run",
+            ):
+                self.registry.complete_run(**replay)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_migrated_unknown_run_rejects_a_separately_appended_stable_event(self):
+        run_id = str(uuid.uuid4())
+        self.registry.record_run(
+            name=self.created["name"], expected_sha256=self.created["sha256"],
+            run_id=run_id, invocation_kind="spawn_agent", outcome="success",
+        )
+        event_id = str(uuid.uuid5(uuid.UUID(run_id), "retained-completion:v2"))
+        saved = self.fixture.improve_with_lesson(
+            name=self.created["name"], expected_sha256=self.created["sha256"],
+            lesson=self.request["lesson"], event_id=event_id,
+        )
+        with contextlib.closing(self.fixture.db()) as connection:
+            connection.execute(
+                "UPDATE agent_runs SET completion_receipt_version=NULL "
+                "WHERE run_id=?",
+                (run_id,),
+            )
+            connection.commit()
+        before = self.snapshot()
+
+        with self.assertRaisesRegex(
+            self.agents.SpecialistError,
+            "cannot prove.*recorded by complete-run",
+        ):
+            self.registry.complete_run(
+                name=self.created["name"], expected_sha256=saved["sha256"],
+                run_id=run_id, invocation_kind="spawn_agent", outcome="success",
+                lesson=self.request["lesson"], origin_terms=("fixture-project",),
+            )
         self.assertEqual(self.snapshot(), before)
 
 

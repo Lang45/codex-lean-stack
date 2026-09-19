@@ -1755,6 +1755,41 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
         self.assertIn("complete-run", self.memory)
         self.assertIn("improve` 不能代替本次完成收据", self.memory)
 
+    def test_completion_receipt_contract_keeps_unknown_legacy_rows_fail_closed(self) -> None:
+        compact_memory = re.sub(r"\s+", "", self.memory)
+        required_memory = (
+            "当前 v7 尝试、经验结果关联与完成收据结构",
+            "普通兼容 `record-run`、明确完成但无经验的 `complete-run`",
+            "绑定该 `run_id`派生的具体经验 event",
+            "不得从同一子代理的无关经验事件推断当前运行使用或产生了经验",
+            "只有当前 v7 行的 `completion_receipt_version=0` 才支持 ordinary `record-run` 幂等重放",
+            "只有当前 v7 行的 `completion_receipt_version=1` 才支持 `complete-run` 幂等重放",
+            "v4/v5/v6 迁移行的 `completion_receipt_version=NULL`",
+            "`record-run` 与 `complete-run` 两类重放一律 fail-closed",
+            "stable v2、legacy CAS 派生或同一代理的event 都不能证明历史 run 到 operation 或 experience 的关联",
+            "独立 `improve` 可以构造相同 event_id",
+            "普通命令拒绝继续使用旧结构",
+        )
+        for required in required_memory:
+            self.assertIn(re.sub(r"\s+", "", required), compact_memory)
+        self.assertNotIn(
+            "稳定v2`run_id`派生event，只有在精确验证该event时才可证明经验关联并支持重放",
+            compact_memory,
+        )
+        self.assertIn("v4/v5/v6 只走显式", self.anti_overengineering)
+        self.assertIn("旧行迁为 `completion_receipt_version=NULL`", self.anti_overengineering)
+        self.assertIn("`record-run` 与 `complete-run` 重放均 fail-closed", self.anti_overengineering)
+        for required in (
+            "初始化当前 v7 全局领域、尝试、经验关联与完成收据结构",
+            "精确 v4、v5 或 v6",
+            "迁为 receipt=NULL，完成收据与经验 event 关联保持 unknown",
+            "record-run 与 complete-run 重放均 fail-closed",
+        ):
+            self.assertIn(required, self.flowcharts)
+        self.assertIn("SCHEMA_VERSION = 7", self.agents_source)
+        self.assertIn("completion_receipt_version", self.agents_source)
+        self.assertIn("completion_experience_event_id", self.agents_source)
+
     def test_playbooks_keep_real_task_and_permission_boundaries(self) -> None:
         self.assertIn("证明根因", self.bug_fix)
         self.assertIn("真实表面", self.bug_fix)
