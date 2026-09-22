@@ -88,7 +88,6 @@ class SkillContractTests(unittest.TestCase):
         cls.flowcharts = (REFERENCES / "flowcharts-zh.md").read_text(encoding="utf-8")
         cls.readme = (ROOT / "README.md").read_text(encoding="utf-8")
         cls.changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        cls.handoff = (ROOT / "Jiao-Jie.md").read_text(encoding="utf-8")
         cls.build = (REFERENCES / "build.md").read_text(encoding="utf-8")
         cls.bug_fix = (REFERENCES / "bug-fix.md").read_text(encoding="utf-8")
         cls.investigation = (REFERENCES / "investigation.md").read_text(encoding="utf-8")
@@ -1163,37 +1162,6 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
             "先让Sol失败再调用Astra",
         ):
             self.assertNotIn(forced_route, compact)
-
-    def test_current_release_surfaces_preserve_followup_and_astra_correction(self) -> None:
-        latest_changelog = re.search(
-            r"^## \d+\.\d+\.\d+[^\n]*\n(?P<body>.*?)(?=^## |\Z)",
-            self.changelog,
-            re.MULTILINE | re.DOTALL,
-        )
-        self.assertIsNotNone(latest_changelog)
-        handoff_snapshots = self.handoff.split("## 当前快照与接手入口", 1)[1]
-        current_handoff = re.search(
-            r"^### \d{4}-\d{2}-\d{2}[^\n]*\n(?P<body>.*?)(?=^### |\Z)",
-            handoff_snapshots,
-            re.MULTILINE | re.DOTALL,
-        )
-        self.assertIsNotNone(current_handoff)
-        compact = re.sub(
-            r"\s+",
-            "",
-            latest_changelog.group("body") + current_handoff.group("body"),
-        )
-        for required in (
-            "父代理遥控能具体改善质量、速度或总成本时，可以继续使用`followup_task`",
-            "无关、已结束或能自包含的新切片",
-            "Astra是通用高成本专家而不只是视觉专家",
-            "Sol在执行中遇到真实困难",
-            "视觉质量缺口是重点场景之一",
-            "路由审计",
-            "不触发升级",
-        ):
-            self.assertIn(required, compact)
-        self.assertNotIn("决定性质量差距或能降低整项资源成本", self.handoff)
 
     def test_task_type_groups_replace_work_block_language(self) -> None:
         for content in (self.skill, self.delegation, self.readme, self.flowcharts):

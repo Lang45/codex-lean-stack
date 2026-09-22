@@ -1,6 +1,6 @@
 {
   "name": "codex-lean-stack",
-  "version": "5.3.3+codex.20260919164148",
+  "version": "5.4.0+codex.20260922095136",
   "description": "\u4e24\u4e2a\u5e73\u884c\u5165\u53e3\u5148\u5b8c\u6210\u5feb\u901f\u5224\u65ad\uff0c\u518d\u968f\u5b9e\u9645\u52a8\u4f5c\u4f9d\u6b21\u8bfb\u53d6\u547d\u4e2d\u5206\u652f\uff1a$lean-simplify \u6301\u7eed\u7cbe\u7b80\u4e3b\u4efb\u52a1\uff0c$lean-stack \u53ca\u65f6\u9009\u62e9\u5e76\u8c03\u7528\u5b50\u4ee3\u7406\uff1b\u4e92\u4e0d\u524d\u7f6e\u3002",
   "author": {
     "name": "Lang45",
