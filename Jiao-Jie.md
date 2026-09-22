@@ -457,7 +457,12 @@ SQLite v5 经验与任务结果体系只保留：
   0；随后的本交接更新只使 `Jiao-Jie.md` 出现预期差异，运行技能与 reference 仍一致。安装器
   识别既有全局调用规则并返回 `modified: false`，全局 `AGENTS.md` 安装前后 SHA-256 均为
   `CDE4E5F127B0424A032B3109440370A5038FA5BED3B0B19F2E356358211900C7`。这些证据不证明当前已运行
-  会话热加载新规则。发布提交、推送与远端 CI 待本轮收口。
+  会话热加载新规则。功能提交 `add7c49cd63c8ba14a9233dc5f7df6a7be2385e6` 已推送到 `origin/main`；
+  [Full-chain audit 35713759311](https://github.com/Lang45/codex-lean-stack/actions/runs/35713759311)
+  的 Ubuntu 与 Windows job 均成功，Linux 的重复归档、自校验和上传步骤也成功。工件
+  `audit-source-add7c49cd63c8ba14a9233dc5f7df6a7be2385e6` 未过期，GitHub 工件包 digest 为
+  `sha256:5f4ccf6f9181823f33dfce6c93d6973969ff20353d55cb7d2957cc4d6f4c4a33`。本次交接收口不改变
+  插件行为，不重复升版、安装或代码测试；推送后只需确认本交接提交自身的远端审计转绿即停止。
 
 ### 2026-09-20 5.3.3 条件路由与保留子代理术语
 
