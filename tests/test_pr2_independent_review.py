@@ -32,7 +32,23 @@ class PersistentBoundaryReviewTests(unittest.TestCase):
         self.agents = registry_fixture.agents
 
     def snapshot(self):
-        return self.fixture.registry_rows(), {
+        with contextlib.closing(sqlite3.connect(self.registry.db_path)) as connection:
+            schema = tuple(connection.execute(
+                "SELECT type,name,sql FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+            ))
+            tables = tuple(
+                row[1] for row in schema if row[0] == "table"
+            )
+            database = {
+                "user_version": connection.execute("PRAGMA user_version").fetchone()[0],
+                "schema": schema,
+                "rows": {
+                    table: tuple(connection.execute(f'SELECT * FROM "{table}"'))
+                    for table in tables
+                },
+            }
+        return database, {
             p.name: p.read_bytes() for p in self.registry.agents_dir.glob("*.toml")
         }
 

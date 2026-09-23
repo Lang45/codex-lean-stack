@@ -78,7 +78,7 @@ description: 非平凡主任务或可选准备将先于实际推进时读取；�
 | 准备新增抽象、兼容层、流程或文件，或需要证明现实消费者 | [反 AI 过度工程](../lean-stack/references/anti-overengineering.md) |
 | 用户明确要求执行正式消融，而不只是普通精简 | [消融反馈循环](../lean-stack/references/ablation-loop.md) |
 | 已获授权且下一步确实要升版、安装、发布或维护发布文档 | [版本与发布](../lean-stack/references/versioning.md) |
-| 只需解释现有执行链，不执行上述动作 | [中文链路图](../lean-stack/references/flowcharts-zh.md) |
+| 用户明确调用流程图并要求检查或解释，不执行上述动作 | [中文链路图](../lean-stack/references/flowcharts-zh.md) |
 
 测试只运行与当前改动、风险和用户要求相称的最窄检查；安全、权限、数据完整性、外部副作用或公共
 合同风险所需检查不得省略。来源与风险未变时复用通过证据；失败只修真实根因并重跑失败项与受

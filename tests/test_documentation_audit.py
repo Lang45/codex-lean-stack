@@ -38,19 +38,20 @@ def heading_ids(text):
 
 
 class DocumentationAuditTests(unittest.TestCase):
-    def test_local_markdown_fragments_reach_existing_headings(self):
+    def test_local_markdown_links_resolve_and_fragments_reach_existing_headings(self):
         documents = [ROOT / "README.md", *sorted((ROOT / "skills").rglob("*.md"))]
         headings = {p.resolve(): heading_ids(p.read_text(encoding="utf-8")) for p in documents}
         for path in documents:
             for target in re.findall(r"\[[^]]*\]\(([^)]+)\)", path.read_text(encoding="utf-8")):
-                if "://" in target or "#" not in target:
+                if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target) or target.startswith("//"):
                     continue
-                local, fragment = target.split("#", 1)
+                local, separator, fragment = target.partition("#")
+                local = unquote(local)
                 destination = (path.parent / local).resolve() if local else path.resolve()
-                if destination not in headings:
-                    continue  # Existing file-link tests cover the other destinations.
                 with self.subTest(source=str(path.relative_to(ROOT)), target=target):
-                    self.assertIn(unquote(fragment), headings[destination])
+                    self.assertTrue(destination.is_file(), f"missing Markdown target: {destination}")
+                    if separator:
+                        self.assertIn(unquote(fragment), headings.get(destination, set()))
 
     def test_release_helper_documents_its_actual_activation_line(self):
         path = ROOT / "skills/lean-stack/scripts/install_plugin.py"
@@ -62,7 +63,7 @@ class DocumentationAuditTests(unittest.TestCase):
         self.assertIn(module.DEFAULT_INVOCATION_LINE, versioning)
         self.assertIn("AGENTS.override.md", versioning)
         self.assertIn("--codex-home", versioning)
-        # Correct the stale API explanation without permitting full-history forks.
+        # Native calls must carry bounded history; task text cannot replace the parameters.
         for relative in (
             "SKILL.md",
             "references/dispatch-start.md",
@@ -70,7 +71,13 @@ class DocumentationAuditTests(unittest.TestCase):
         ):
             source = (ROOT / "skills/lean-stack" / relative).read_text(encoding="utf-8")
             self.assertNotRegex(source, r"因(?:无法|不能)\s*同时显式覆盖")
-            self.assertIn('fork_turns="all"', source)
+        native_contract = "\n".join(
+            (ROOT / "skills/lean-stack" / relative).read_text(encoding="utf-8")
+            for relative in ("SKILL.md", "references/dispatch-start.md")
+        )
+        self.assertIn('fork_turns="none"', native_contract)
+        self.assertIn('禁止 `fork_turns="all"`', native_contract)
+        self.assertIn("原生参数", native_contract)
 
 
 if __name__ == "__main__":

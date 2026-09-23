@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import hmac
 import importlib.util
 import contextlib
 import io
@@ -8,6 +10,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -49,7 +53,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         display_name: str | None = None,
         description: str = "重复完成一个范围清晰、可复核的专门工作。",
         role_instructions: str = "交付直接可消费的结果和必要证据。",
-        model: str = "gpt-5.6-terra",
+        model: str = "gpt-6-sol",
         effort: str = "high",
         speed: str | None = None,
         expected_sha256: str | None = None,
@@ -77,6 +81,28 @@ class SpecialistRegistryTests(unittest.TestCase):
         connection = sqlite3.connect(self.registry.db_path)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def mark_legacy_configuration(self, created: dict[str, object]) -> str:
+        """Represent an already owned pre-policy role without calling ensure."""
+        path = Path(str(created["path"]))
+        current = path.read_bytes()
+        self.assertIn(b"gpt-6-sol", current)
+        self.assertIn(b'model_reasoning_effort = "high"', current)
+        legacy = (
+            current.replace(b"gpt-6-sol", b"gpt-5.6-terra")
+            .replace(b'model_reasoning_effort = "high"', b'model_reasoning_effort = "low"')
+            .replace("思考程度：high".encode("utf-8"), "思考程度：low".encode("utf-8"))
+        )
+        self.assertNotEqual(legacy, current)
+        path.write_bytes(legacy)
+        legacy_sha256 = agents.sha256_bytes(legacy)
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE agents SET expected_sha256 = ? WHERE agent_id = ?",
+                (legacy_sha256, created["agent_id"]),
+            )
+            connection.commit()
+        return legacy_sha256
 
     def remove_canonical_contract_instruction(self, created: dict[str, object]) -> str:
         path = Path(str(created["path"]))
@@ -140,7 +166,8 @@ class SpecialistRegistryTests(unittest.TestCase):
             return {
                 table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
                 for table in (
-                    "agents", "agent_runs", "experience_events", "experience_summaries"
+                    "agents", "agent_runs", "experience_events", "experience_summaries",
+                    "experience_recall_receipts",
                 )
             }
 
@@ -159,6 +186,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             rows = [dict(row) for row in connection.execute("SELECT * FROM agents")]
             connection.execute("PRAGMA foreign_keys = OFF")
             connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TABLE experience_recall_receipts")
             connection.execute("DROP TABLE agents")
             connection.execute(agents.SCHEMA_V2_TABLE_SQL["agents"])
             for row in rows:
@@ -229,7 +257,8 @@ class SpecialistRegistryTests(unittest.TestCase):
             connection.execute("PRAGMA foreign_keys = OFF")
             connection.execute("BEGIN IMMEDIATE")
             for table in (
-                "experience_summaries", "experience_events", "agent_runs", "agents"
+                "experience_recall_receipts", "experience_summaries",
+                "experience_events", "agent_runs", "agents",
             ):
                 connection.execute(f"DROP TABLE {table}")
             for statement in agents.SCHEMA_V4_TABLE_SQL.values():
@@ -272,6 +301,7 @@ class SpecialistRegistryTests(unittest.TestCase):
     def downgrade_experience_schema(self) -> None:
         with contextlib.closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TABLE experience_recall_receipts")
             connection.execute(
                 "ALTER TABLE agent_runs DROP COLUMN completion_experience_event_id"
             )
@@ -290,6 +320,7 @@ class SpecialistRegistryTests(unittest.TestCase):
     def downgrade_completion_receipt_schema(self) -> None:
         with contextlib.closing(self.db()) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TABLE experience_recall_receipts")
             connection.execute(
                 "ALTER TABLE agent_runs DROP COLUMN completion_experience_event_id"
             )
@@ -302,6 +333,18 @@ class SpecialistRegistryTests(unittest.TestCase):
             self.assertEqual(
                 agents.exact_schema(connection),
                 agents.expected_schema(agents.SCHEMA_V6_TABLE_SQL),
+            )
+
+    def downgrade_recall_receipt_schema(self) -> None:
+        with contextlib.closing(self.db()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DROP TABLE experience_recall_receipts")
+            connection.execute("PRAGMA user_version = 7")
+            connection.execute("COMMIT")
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                agents.exact_schema(connection),
+                agents.expected_schema(agents.SCHEMA_V7_TABLE_SQL),
             )
 
     def write_migration_plan(
@@ -365,16 +408,16 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("交付直接可消费的结果和必要证据", first_paragraph)
         self.assertIn("保持只读", first_paragraph)
         opening = (
-            "子代理名称：QML 绑定诊断员\n"
-            "模型：gpt-5.6-terra\n"
+            "子代理名称：QML 绑定诊断员（复用）\n"
+            "模型：gpt-6-sol\n"
             "思考程度：high\n"
         )
         self.assertIn(opening, instructions)
         self.assertNotIn("角色名称：", instructions)
         role = instructions.index(role_paragraph)
-        communication = instructions.index("第一条可见 commentary 必须原样输出任务卡开头五行", role)
+        communication = instructions.index("首次 spawn_agent 或 followup_task 明确开始新当前子任务时", role)
         declaration = instructions.index(opening, communication)
-        status = instructions.index("任务卡后两行必须提供存活轮次和经验的实际值", declaration)
+        status = instructions.index("后两行只采用父代理对本保留身份执行单角色 recall", declaration)
         execution = instructions.index("只完成任务卡分配的当前子任务", status)
         final_result = instructions.index("最终回复顶部原样写当前任务卡前三行实际值", execution)
         final_task = instructions.index("子任务：<当前子任务>", final_result)
@@ -385,11 +428,16 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(status, execution)
         self.assertLess(final_result, final_task)
         for child_contract in (
-            "第一条可见 commentary 必须原样输出任务卡开头五行",
+            "任务卡必须提供五行实际值",
+            "第一条可见进展说明必须原样以这五行开头",
+            "新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理",
+            "报告具体缺失字段并暂停该子任务，由父代理补齐或改派运行时子代理",
+            "不得在用户可见进展中展示“任务卡未提供”“未核验”等占位语",
+            "只发送增量信息，不要求重复任务卡，也不重复开场",
             "该固定配置只约束当前保留身份",
-            "下游子代理按自己任务卡的五行开场",
+            "下游保留身份按自己的五行实际值开场",
             "继承到下游的上级保留身份固定配置不得覆盖下游任务卡",
-            "运行时子代理显示 0 轮和未加载保留经验",
+            "不可自估或编造",
             "不得声明经验适用性",
             "run_id 即使出现在输入中也不得回显",
             "只按职责和具名缺口有限读取",
@@ -405,9 +453,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         ):
             self.assertIn(child_contract, instructions)
         self.assertLess(
-            instructions.index("第一条可见 commentary 必须原样输出任务卡开头五行"),
+            instructions.index("首次 spawn_agent 或 followup_task 明确开始新当前子任务时"),
             instructions.index(opening),
         )
+        self.assertNotIn("commentary", instructions)
         self.assertNotIn("你的第一动作必须", instructions)
         self.assertNotIn("显示前不得读取、分析或调用其他工具", instructions)
         self.assertIn("QML 绑定诊断员", instructions)
@@ -423,6 +472,49 @@ class SpecialistRegistryTests(unittest.TestCase):
             "普通文件精确送入 Windows 回收站",
         ):
             self.assertNotIn(parent_owned_contract, instructions)
+
+    def test_retained_role_new_task_requires_five_recalled_opening_lines(self) -> None:
+        created = self.ensure()
+        recalled = self.registry.recall(name=created["name"])
+        opening_lines = (
+            recalled["opening_declaration"] + recalled["opening_status"]
+        ).splitlines()
+        self.assertEqual(len(opening_lines), 5)
+        self.assertEqual(opening_lines[:3], [
+            "子代理名称：QML 绑定诊断员（复用）", "模型：gpt-6-sol", "思考程度：high"
+        ])
+        self.assertTrue(opening_lines[3].startswith("存活轮次："))
+        self.assertTrue(opening_lines[4].startswith("经验："))
+        self.assertEqual(
+            agents.opening_configuration_declaration(
+                display_name="QML 绑定诊断员（复用）",
+                model="gpt-6-sol", effort="high",
+            ),
+            recalled["opening_declaration"],
+        )
+        with self.assertRaisesRegex(agents.SpecialistError, "cannot use the new-agent"):
+            agents.opening_configuration_declaration(
+                display_name="QML 绑定诊断员（新建）",
+                model="gpt-6-sol", effort="high",
+            )
+
+        instructions = tomllib.loads(
+            Path(created["path"]).read_text(encoding="utf-8")
+        )["developer_instructions"]
+        self.assertIn("首次 spawn_agent 或 followup_task 明确开始新当前子任务时", instructions)
+        self.assertIn("第一条可见进展说明必须原样以这五行开头", instructions)
+        self.assertIn("名称第一行须带真实调用类型标记", instructions)
+        self.assertIn("选中本保留身份并经单角色 recall 后使用“（复用）”", instructions)
+        self.assertIn("运行时新角色由父代理填写“（新建）”", instructions)
+        self.assertIn("同一个 live child 明确开始新子任务时使用“（复用）”", instructions)
+        self.assertIn("其中名称标记与首条进展保持一致", instructions)
+        self.assertIn("后两行只采用父代理对本保留身份执行单角色 recall", instructions)
+        self.assertIn("新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理", instructions)
+        self.assertIn("报告具体缺失字段并暂停该子任务", instructions)
+        self.assertIn("不得在用户可见进展中展示“任务卡未提供”“未核验”等占位语", instructions)
+        self.assertIn("同一当前子任务", instructions)
+        self.assertIn("最终回复只重复当前任务卡前三行实际值", instructions)
+        self.assertNotIn("存活轮次和经验是保留角色的可选状态", instructions)
 
     def test_role_instructions_cannot_collide_with_internal_memory_heading(self) -> None:
         with self.assertRaisesRegex(
@@ -446,7 +538,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             display_name="长说明核对员",
             role_key="long-instruction-review",
             role_instructions="逐项核对输入范围和决定性证据。" * 55,
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             authority="read",
             global_contract=self.contract(),
@@ -459,7 +551,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "name": "lean_long_instruction_review_00000000",
             "display_name": "长说明核对员",
             "description": "重复审查长说明。",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "effort": "medium",
             "authority": "read",
             "instruction_base": base,
@@ -497,7 +589,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "name": "lean_capacity_review_00000000",
             "display_name": "容量核对员",
             "description": "核对容量。",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "effort": "medium",
             "authority": "read",
             "instruction_base": "中" * 20000,
@@ -536,14 +628,14 @@ class SpecialistRegistryTests(unittest.TestCase):
         instructions = payload["developer_instructions"]
         self.assertTrue(instructions.startswith("你是专门负责“快速来源核对员”的子代理"))
         opening = (
-            "子代理名称：快速来源核对员\n"
-            "模型：gpt-5.6-terra\n"
+            "子代理名称：快速来源核对员（复用）\n"
+            "模型：gpt-6-sol\n"
             "思考程度：medium\n"
         )
         self.assertEqual(instructions.count(opening), 1)
         self.assertLess(instructions.index("你是专门负责"), instructions.index(opening))
         self.assertLess(
-            instructions.index("第一条可见 commentary 必须原样输出任务卡开头五行"),
+            instructions.index("首次 spawn_agent 或 followup_task 明确开始新当前子任务时"),
             instructions.index("只完成任务卡分配的当前子任务"),
         )
         self.assertLess(
@@ -555,19 +647,19 @@ class SpecialistRegistryTests(unittest.TestCase):
         luna = self.ensure(
             role_key="luna-default-speed-review",
             global_domain_key="luna-default-speed-review",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
         )
         terra = self.ensure(
             role_key="terra-default-speed-review",
             global_domain_key="terra-default-speed-review",
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             effort="medium",
         )
         explicit_standard = self.ensure(
             role_key="luna-explicit-standard-review",
             global_domain_key="luna-explicit-standard-review",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             speed="standard",
         )
@@ -587,7 +679,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         created = self.ensure(
             role_key="luna-default-reconfiguration",
             global_domain_key="luna-default-reconfiguration",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             speed="fast",
         )
@@ -603,7 +695,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         preview = self.ensure(
             role_key="luna-default-reconfiguration",
             global_domain_key="luna-default-reconfiguration",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
         )
         self.assertEqual(preview["action"], "reconfiguration_required")
@@ -612,7 +704,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         reconfigured = self.ensure(
             role_key="luna-default-reconfiguration",
             global_domain_key="luna-default-reconfiguration",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             expected_sha256=improved["sha256"],
         )
@@ -628,7 +720,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         repeated = self.ensure(
             role_key="luna-default-reconfiguration",
             global_domain_key="luna-default-reconfiguration",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
         )
         self.assertEqual(repeated["action"], "reused")
@@ -675,7 +767,10 @@ class SpecialistRegistryTests(unittest.TestCase):
                 )
         self.assertEqual(
             tables,
-            {"agents", "experience_events", "experience_summaries", "agent_runs"},
+            {
+                "agents", "experience_events", "experience_summaries", "agent_runs",
+                "experience_recall_receipts",
+            },
         )
         self.assertEqual(version, agents.SCHEMA_VERSION)
         for removed in (
@@ -822,7 +917,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             display_name="QML 绑定诊断员",
             role_key=role_key,
             role_instructions="交付直接可消费的结果和必要证据。",
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             effort="high",
             authority="read",
         )
@@ -833,7 +928,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             name=name,
             display_name="QML 绑定诊断员",
             description="模拟文件落盘后、ledger 提交前的进程崩溃。",
-            model="gpt-5.6-terra",
+            model="gpt-6-sol",
             effort="high",
             authority="read",
             instruction_base=base,
@@ -854,7 +949,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 0)
 
     def test_ensure_reconfigures_one_role_with_cas_and_preserves_experience(self) -> None:
-        created = self.ensure()
+        created = self.ensure(authority="write")
         lesson = "验证后的联合胜出配置必须保留已有经验。"
         improved = self.improve_with_lesson(
             name=created["name"],
@@ -869,7 +964,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             display_name="QML 根因核对员",
             description="采用验证后胜出的配置重复诊断 QML 根因。",
             role_instructions="先核对实际依赖图，再返回最小可复核修法。",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             speed="fast",
             authority="write",
@@ -882,7 +977,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             display_name="QML 根因核对员",
             description="采用验证后胜出的配置重复诊断 QML 根因。",
             role_instructions="先核对实际依赖图，再返回最小可复核修法。",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             speed="fast",
             authority="write",
@@ -895,7 +990,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(reconfigured["path"], created["path"])
         self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 1)
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["model"], "gpt-5.6-luna")
+        self.assertEqual(payload["model"], "gpt-6-luna")
         self.assertEqual(payload["model_reasoning_effort"], "medium")
         self.assertEqual(payload["service_tier"], "fast")
         self.assertNotIn("features", payload)
@@ -908,12 +1003,46 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(instructions.index("你是专门负责"), instructions.index("子代理名称：QML 根因核对员"))
         self.assertIn("实际依赖图", instructions)
         self.assertIn(lesson, instructions)
-        self.assertIn("第一条可见 commentary 必须原样输出任务卡开头五行", instructions)
+        self.assertIn("任务卡必须提供五行实际值", instructions)
+        self.assertIn("只发送增量信息，不要求重复任务卡，也不重复开场", instructions)
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
                 1,
             )
+
+    def test_ensure_reconfiguration_never_upgrades_read_authority(self) -> None:
+        reader = self.ensure()
+        path = Path(reader["path"])
+        original = path.read_bytes()
+        with contextlib.closing(self.db()) as connection:
+            original_row = tuple(connection.execute(
+                "SELECT * FROM agents WHERE agent_id = ?", (reader["agent_id"],)
+            ).fetchone())
+
+        for expected_sha256 in (None, reader["sha256"]):
+            with self.subTest(expected_sha256=expected_sha256):
+                with self.assertRaisesRegex(
+                    agents.SpecialistError, "cannot be reconfigured with write authority"
+                ):
+                    self.ensure(authority="write", expected_sha256=expected_sha256)
+                self.assertEqual(path.read_bytes(), original)
+                with contextlib.closing(self.db()) as connection:
+                    row = tuple(connection.execute(
+                        "SELECT * FROM agents WHERE agent_id = ?", (reader["agent_id"],)
+                    ).fetchone())
+                self.assertEqual(row, original_row)
+
+        writer = self.ensure(role_key="permission-downgrade", authority="write")
+        preview = self.ensure(role_key="permission-downgrade", authority="read")
+        self.assertEqual(preview["action"], "reconfiguration_required")
+        downgraded = self.ensure(
+            role_key="permission-downgrade", authority="read",
+            expected_sha256=writer["sha256"],
+        )
+        self.assertEqual(downgraded["action"], "reconfigured")
+        payload = tomllib.loads(Path(writer["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(payload["sandbox_mode"], "read-only")
 
     def test_current_schema_missing_contract_instruction_requires_cas_refresh_and_preserves_state(self) -> None:
         created = self.ensure(speed="fast")
@@ -971,7 +1100,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "--display-name", "QML 绑定诊断员",
             "--description", "重复完成一个范围清晰、可复核的专门工作。",
             "--instructions", "交付直接可消费的结果和必要证据。",
-            "--model", "gpt-5.6-terra",
+            "--model", "gpt-6-sol",
             "--reasoning-effort", "high",
             "--speed", "fast",
             "--authority", "read",
@@ -1042,7 +1171,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             role_key="legacy-fast-opening",
             global_domain_key="legacy-fast-opening",
             display_name="快速配置核对员",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             speed="fast",
         )
@@ -1069,7 +1198,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             role_key="legacy-fast-opening",
             global_domain_key="legacy-fast-opening",
             display_name="快速配置核对员",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             speed="fast",
         )
@@ -1083,7 +1212,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             role_key="legacy-fast-opening",
             global_domain_key="legacy-fast-opening",
             display_name="快速配置核对员",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             speed="fast",
             expected_sha256=legacy_sha256,
@@ -1173,6 +1302,401 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(Path(created["path"]).read_bytes(), before)
         self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 1)
 
+    def test_ensure_reports_failed_file_restoration_after_sql_commit_failure(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        original = path.read_bytes()
+        real_replace = agents.replace_exact_file
+        real_connection = self.registry.connect()
+
+        class FailingCommitConnection:
+            def execute(self, sql, parameters=()):
+                if sql == "COMMIT":
+                    raise sqlite3.OperationalError("forced ensure commit failure")
+                return real_connection.execute(sql, parameters)
+
+            def close(self):
+                real_connection.close()
+
+        calls = 0
+
+        def fail_restore(target, *, expected, replacement):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("forced TOML restoration failure")
+            return real_replace(target, expected=expected, replacement=replacement)
+
+        with mock.patch.object(self.registry, "connect", return_value=FailingCommitConnection()), \
+                mock.patch.object(agents, "replace_exact_file", side_effect=fail_restore):
+            with self.assertRaisesRegex(
+                agents.SpecialistError,
+                "managed TOML recovery is incomplete: forced TOML restoration failure",
+            ) as caught:
+                self.ensure(description="重配后触发提交失败。", expected_sha256=created["sha256"])
+
+        self.assertIsInstance(caught.exception.__cause__, sqlite3.OperationalError)
+        self.assertEqual(calls, 2)
+        self.assertNotEqual(path.read_bytes(), original)
+        with contextlib.closing(self.db()) as connection:
+            row = connection.execute(
+                "SELECT expected_sha256 FROM agents WHERE agent_id=?", (created["agent_id"],)
+            ).fetchone()
+        self.assertEqual(row["expected_sha256"], created["sha256"])
+
+    def test_ensure_preserves_external_file_change_during_failed_reconfiguration(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        external = b"external writer data; preserve for manual review"
+        real_replace = agents.replace_exact_file
+        real_connection = self.registry.connect()
+
+        class FailingCommitConnection:
+            def execute(self, sql, parameters=()):
+                if sql == "COMMIT":
+                    raise sqlite3.OperationalError("forced ensure commit failure")
+                return real_connection.execute(sql, parameters)
+
+            def close(self):
+                real_connection.close()
+
+        def external_edit(target, *, expected, replacement):
+            real_replace(target, expected=expected, replacement=replacement)
+            target.write_bytes(external)
+
+        with mock.patch.object(self.registry, "connect", return_value=FailingCommitConnection()), \
+                mock.patch.object(agents, "replace_exact_file", side_effect=external_edit):
+            with self.assertRaisesRegex(
+                agents.SpecialistError, "changed externally; current file was preserved"
+            ):
+                self.ensure(description="重配遇到外部修改。", expected_sha256=created["sha256"])
+        self.assertEqual(path.read_bytes(), external)
+
+    def test_ensure_created_file_cleanup_preserves_external_change(self) -> None:
+        real_connection = self.registry.connect()
+        changed_path = None
+        external = b"external writer data; preserve for manual review"
+
+        class FailingInsertConnection:
+            def execute(self, sql, parameters=()):
+                nonlocal changed_path
+                if sql.startswith("INSERT INTO agents("):
+                    changed_path = Path(parameters[3])
+                    changed_path.write_bytes(external)
+                    raise sqlite3.OperationalError("forced ensure insert failure")
+                return real_connection.execute(sql, parameters)
+
+            def close(self):
+                real_connection.close()
+
+        with mock.patch.object(self.registry, "connect", return_value=FailingInsertConnection()):
+            with self.assertRaisesRegex(
+                agents.SpecialistError, "new specialist changed externally; current file was preserved"
+            ) as caught:
+                self.ensure()
+        self.assertIsInstance(caught.exception.__cause__, sqlite3.OperationalError)
+        self.assertIsNotNone(changed_path)
+        self.assertEqual(changed_path.read_bytes(), external)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 0)
+
+    def test_new_file_write_failure_preserves_changed_path_and_cleans_own_bytes(self) -> None:
+        path = Path(self.temporary.name) / "failed-new-file.toml"
+        data = b"created by this write"
+        external = b"external replacement; preserve"
+
+        def overwrite_and_fail(_descriptor):
+            if os.name == "nt":
+                with self.assertRaises(PermissionError):
+                    path.write_bytes(external)
+            else:
+                path.write_bytes(external)
+            raise OSError("forced fsync failure")
+
+        with mock.patch.object(agents.os, "fsync", side_effect=overwrite_and_fail):
+            if os.name == "nt":
+                with self.assertRaisesRegex(OSError, "forced fsync failure"):
+                    agents.write_new_file(path, data)
+                self.assertFalse(path.exists())
+            else:
+                with self.assertRaisesRegex(
+                    agents.SpecialistError,
+                    "new specialist file changed externally; current file was preserved",
+                ) as caught:
+                    agents.write_new_file(path, data)
+                self.assertIsInstance(caught.exception.__cause__, OSError)
+                self.assertEqual(path.read_bytes(), external)
+                path.unlink()
+        with mock.patch.object(agents.os, "fsync", side_effect=OSError("forced fsync failure")):
+            with self.assertRaisesRegex(OSError, "forced fsync failure"):
+                agents.write_new_file(path, data)
+        self.assertFalse(path.exists())
+
+    def assert_windows_competitor_blocked(self, path: Path) -> None:
+        """A real process ignores our SQLite/ Python locks and attacks the path."""
+        competitor = """
+import json, os, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+other = p.with_name(p.name + '.competitor')
+other.write_bytes(b'external replacement')
+results = {}
+for name, operation in (
+    ('write', lambda: p.write_bytes(b'external write')),
+    ('unlink', lambda: p.unlink()),
+    ('replace', lambda: os.replace(other, p)),
+    ('rename', lambda: p.rename(p.with_name(p.name + '.stolen'))),
+    ('parent_rename', lambda: p.parent.rename(p.parent.with_name(p.parent.name + '.stolen'))),
+):
+    try:
+        operation()
+    except OSError as error:
+        results[name] = error.winerror or -error.errno
+    else:
+        results[name] = 'UNEXPECTED_SUCCESS'
+if other.exists():
+    other.unlink()
+print(json.dumps(results))
+"""
+        result = subprocess.run([sys.executable, "-B", "-c", competitor, str(path)],
+                                check=True, capture_output=True, text=True, timeout=15)
+        outcomes = json.loads(result.stdout)
+        self.assertEqual(set(outcomes), {"write", "unlink", "replace", "rename", "parent_rename"})
+        # Python's CRT-backed open maps sharing violations to errno EACCES (13)
+        # without winerror; native path operations preserve Windows codes.
+        self.assertTrue(all(value in {5, 32, -13} for value in outcomes.values()), outcomes)
+
+    @unittest.skipUnless(os.name == "nt", "Windows mandatory sharing semantics")
+    def test_windows_fdopen_failure_closes_transferred_handle(self) -> None:
+        for create in (False, True):
+            with self.subTest(create=create):
+                path = self.registry.agents_dir / f"fdopen-failure-{create}.toml"
+                if not create:
+                    path.write_bytes(b"original")
+                with mock.patch.object(agents.os, "fdopen", side_effect=OSError("forced stream failure")), \
+                        mock.patch.object(agents.os, "close", wraps=os.close) as close:
+                    with self.assertRaisesRegex(OSError, "forced stream failure"):
+                        with agents._windows_managed_file(path, create=create):
+                            self.fail("failed fdopen must not yield a stream")
+                close.assert_called_once()
+                with self.assertRaises(OSError):
+                    os.fstat(close.call_args.args[0])
+                if create:
+                    self.assertFalse(path.exists())
+                else:
+                    self.assertEqual(path.read_bytes(), b"original")
+                # Reopening would fail if the exclusive native handle leaked.
+                path.write_bytes(b"reopened after failure")
+
+    @unittest.skipUnless(os.name == "nt", "Windows directory handle sharing semantics")
+    def test_windows_parent_guard_alone_blocks_directory_replacement(self) -> None:
+        directory = Path(self.temporary.name) / "directory-guard-only"
+        directory.mkdir()
+        path = directory / "plain.txt"
+        path.write_bytes(b"before")
+        competitor = """
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+p.write_bytes(b'child file was writable')
+try:
+    p.parent.rename(p.parent.with_name('directory-was-stolen'))
+except OSError as error:
+    print(json.dumps({'blocked': error.winerror or -error.errno}))
+else:
+    print(json.dumps({'blocked': False}))
+"""
+        with agents._windows_parent_guard(path):
+            result = subprocess.run([sys.executable, "-B", "-c", competitor, str(path)],
+                                    check=True, capture_output=True, text=True, timeout=15)
+        self.assertIn(json.loads(result.stdout)["blocked"], {5, 32, -13})
+        self.assertEqual(path.read_bytes(), b"child file was writable")
+        directory.rename(directory.with_name("guard-released"))
+
+    @unittest.skipUnless(os.name == "nt", "Windows mandatory sharing semantics")
+    def test_windows_migration_move_rejects_changed_source_and_existing_destination(self) -> None:
+        source = self.registry.agents_dir / "source.toml"
+        destination = self.registry.state_dir / "moved.toml"
+        source.write_bytes(b"owned")
+        subprocess.run([sys.executable, "-B", "-c",
+                        "import os,pathlib,sys; p=pathlib.Path(sys.argv[1]); "
+                        "q=p.with_suffix('.external'); q.write_bytes(b'outside'); os.replace(q,p)",
+                        str(source)], check=True, timeout=15)
+        with self.assertRaisesRegex(agents.SpecialistError, "source changed immediately"):
+            agents.rename_exact_file_no_replace(source, destination, expected=b"owned")
+        self.assertEqual(source.read_bytes(), b"outside")
+        self.assertFalse(destination.exists())
+        source.write_bytes(b"owned")
+        destination.write_bytes(b"existing destination")
+        with self.assertRaises(OSError):
+            agents.rename_exact_file_no_replace(source, destination, expected=b"owned")
+        self.assertEqual(source.read_bytes(), b"owned")
+        self.assertEqual(destination.read_bytes(), b"existing destination")
+
+    @unittest.skipUnless(os.name == "nt", "Windows mandatory sharing semantics")
+    def test_windows_reconfigure_blocks_process_after_final_verification(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        original = path.read_bytes()
+        real_rename = agents._windows_rename_file
+        attempts = 0
+
+        def compete_then_rename(handle, destination):
+            nonlocal attempts
+            if attempts == 0:
+                attempts += 1
+                self.assert_windows_competitor_blocked(path)
+            return real_rename(handle, destination)
+
+        with mock.patch.object(agents, "_windows_rename_file", side_effect=compete_then_rename):
+            result = self.ensure(description="句柄保护的重配。", expected_sha256=created["sha256"])
+        self.assertEqual(attempts, 1)
+        self.assertEqual(result["action"], "reconfigured")
+        self.assertNotEqual(path.read_bytes(), original)
+        self.assertEqual(agents.sha256_bytes(path.read_bytes()), result["sha256"])
+        self.assertEqual(list(path.parent.iterdir()), [path])
+
+    @unittest.skipUnless(os.name == "nt", "Windows mandatory sharing semantics")
+    def test_windows_removals_block_process_after_final_verification(self) -> None:
+        for second_failure in (False, True):
+            with self.subTest(second_failure=second_failure):
+                created = self.ensure(role_key="second-failure" if second_failure else "manual-removal")
+                path = Path(created["path"])
+                if second_failure:
+                    self.registry.record_run(name=created["name"], expected_sha256=created["sha256"],
+                                             run_id=str(uuid.uuid4()), invocation_kind="spawn_agent",
+                                             outcome="failure")
+                real_delete = agents._windows_delete_file
+
+                def compete_then_delete(handle):
+                    self.assert_windows_competitor_blocked(path)
+                    return real_delete(handle)
+
+                with mock.patch.object(agents, "_windows_delete_file", side_effect=compete_then_delete) as deletion:
+                    if second_failure:
+                        result = self.registry.record_run(
+                            name=created["name"], expected_sha256=created["sha256"],
+                            run_id=str(uuid.uuid4()), invocation_kind="followup_task", outcome="failure")
+                    else:
+                        result = self.registry.delete(name=created["name"],
+                                                      expected_sha256=created["sha256"],
+                                                      owner_token=created["owner_token"])
+                deletion.assert_called_once()
+                self.assertFalse(path.exists())
+                self.assertTrue(result["all_persisted_agent_data_removed"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows mandatory sharing semantics")
+    def test_windows_create_failure_cleanup_blocks_competing_process(self) -> None:
+        path = self.registry.agents_dir / "failed-write.toml"
+
+        def fail_after_competition(_descriptor):
+            self.assert_windows_competitor_blocked(path)
+            raise OSError("forced write failure")
+
+        with mock.patch.object(agents.os, "fsync", side_effect=fail_after_competition):
+            with self.assertRaisesRegex(OSError, "forced write failure"):
+                agents.write_new_file(path, b"owned partial creation")
+        self.assertFalse(path.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows mandatory sharing semantics")
+    def test_windows_ensure_failed_insert_cleanup_blocks_competing_process(self) -> None:
+        connection = self.registry.connect()
+        path = None
+
+        class FailingInsert:
+            def execute(inner, sql, parameters=()):
+                nonlocal path
+                if sql.startswith("INSERT INTO agents("):
+                    path = Path(parameters[3])
+                    raise sqlite3.OperationalError("forced insert failure")
+                return connection.execute(sql, parameters)
+
+            def close(inner):
+                connection.close()
+
+        real_delete = agents._windows_delete_file
+
+        def compete_then_delete(handle):
+            self.assertIsNotNone(path)
+            self.assert_windows_competitor_blocked(path)
+            return real_delete(handle)
+
+        with mock.patch.object(self.registry, "connect", return_value=FailingInsert()), \
+                mock.patch.object(agents, "_windows_delete_file", side_effect=compete_then_delete):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "forced insert failure"):
+                self.ensure()
+        self.assertFalse(path.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle rename recovery")
+    def test_windows_publication_collision_preserves_both_objects_and_reports_recovery(self) -> None:
+        path = self.registry.agents_dir / "owned.toml"
+        path.write_bytes(b"original owned data")
+        real_rename = agents._windows_rename_file
+        calls = 0
+
+        def occupy_publication_name(handle, destination):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                subprocess.run([sys.executable, "-B", "-c",
+                                "import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b'external winner')",
+                                str(path)], check=True, timeout=15)
+            return real_rename(handle, destination)
+
+        with mock.patch.object(agents, "_windows_rename_file", side_effect=occupy_publication_name):
+            with self.assertRaisesRegex(agents.SpecialistError, "recovery is incomplete"):
+                agents.replace_exact_file(path, expected=b"original owned data", replacement=b"planned")
+        self.assertEqual(path.read_bytes(), b"external winner")
+        previous = list(path.parent.glob("*.previous"))
+        self.assertEqual(len(previous), 1)
+        self.assertEqual(previous[0].read_bytes(), b"original owned data")
+
+    @unittest.skipUnless(os.name == "nt", "Windows handle rename recovery")
+    def test_windows_old_file_cleanup_failure_restores_original_before_returning_error(self) -> None:
+        path = self.registry.agents_dir / "owned.toml"
+        path.write_bytes(b"original")
+        real_delete = agents._windows_delete_file
+        calls = 0
+
+        def fail_old_cleanup(handle):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("forced previous-file cleanup failure")
+            return real_delete(handle)
+
+        with mock.patch.object(agents, "_windows_delete_file", side_effect=fail_old_cleanup):
+            with self.assertRaisesRegex(OSError, "forced previous-file cleanup failure"):
+                agents.replace_exact_file(path, expected=b"original", replacement=b"replacement")
+        self.assertEqual(path.read_bytes(), b"original")
+        self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_ensure_reports_sqlite_rollback_failure_even_when_file_is_restored(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        original = path.read_bytes()
+        real_connection = self.registry.connect()
+
+        class FailingCommitAndRollbackConnection:
+            def execute(self, sql, parameters=()):
+                if sql == "COMMIT":
+                    raise sqlite3.OperationalError("forced ensure commit failure")
+                if sql == "ROLLBACK":
+                    real_connection.execute(sql)
+                    raise sqlite3.OperationalError("forced rollback reporting failure")
+                return real_connection.execute(sql, parameters)
+
+            def close(self):
+                real_connection.close()
+
+        with mock.patch.object(
+            self.registry, "connect", return_value=FailingCommitAndRollbackConnection()
+        ):
+            with self.assertRaisesRegex(
+                agents.SpecialistError,
+                "SQLite rollback failed: forced rollback reporting failure",
+            ):
+                self.ensure(description="回滚报告失败。", expected_sha256=created["sha256"])
+        self.assertEqual(path.read_bytes(), original)
+
     def test_old_lifecycle_database_is_never_opened_migrated_or_deleted(self) -> None:
         old = self.registry.old_db_path
         old.write_bytes(b"opaque-old-lifecycle-data")
@@ -1194,6 +1718,19 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(first["sha256"], second["sha256"])
         before = path.read_bytes()
 
+        for effort in ("medium", "high"):
+            with self.subTest(effort=effort, route="accepted"):
+                accepted = self.ensure(
+                    role_key=f"astra-{effort}-accepted",
+                    global_domain_key=f"astra-{effort}-accepted",
+                    model="gpt-6-astra",
+                    effort=effort,
+                )
+                accepted_payload = tomllib.loads(
+                    Path(accepted["path"]).read_text(encoding="utf-8")
+                )
+                self.assertEqual(accepted_payload["model_reasoning_effort"], effort)
+
         for effort in ("max", "ultra"):
             with self.subTest(effort=effort, route="create"):
                 with self.assertRaisesRegex(
@@ -1206,7 +1743,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                         model="gpt-6-astra",
                         effort=effort,
                     )
-                self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 1)
+                self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 3)
 
             with self.subTest(effort=effort, route="reconfigure"):
                 with self.assertRaisesRegex(
@@ -1224,12 +1761,79 @@ class SpecialistRegistryTests(unittest.TestCase):
         created = self.ensure(
             role_key="sol-max-supported",
             global_domain_key="sol-max-supported",
-            model="gpt-5.6-sol",
+            model="gpt-6-sol",
             effort="max",
         )
         payload = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
-        self.assertEqual(payload["model"], "gpt-5.6-sol")
+        self.assertEqual(payload["model"], "gpt-6-sol")
         self.assertEqual(payload["model_reasoning_effort"], "max")
+
+    def test_ensure_accepts_only_current_models_with_medium_or_higher_effort(self) -> None:
+        for model in ("gpt-6-luna", "gpt-6-sol", "gpt-6-astra"):
+            with self.subTest(model=model):
+                created = self.ensure(
+                    role_key=f"current-{model}",
+                    global_domain_key=f"current-{model}",
+                    model=model,
+                    effort="medium",
+                )
+                self.assertEqual(created["action"], "created")
+
+        for model in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5"):
+            with self.subTest(model=model, operation="create"):
+                with self.assertRaisesRegex(agents.SpecialistError, "require one of"):
+                    self.ensure(
+                        role_key="rejected-old-model",
+                        model=model,
+                    )
+        for model in ("gpt-6-luna", "gpt-6-sol", "gpt-6-astra"):
+            with self.subTest(model=model, operation="low"):
+                with self.assertRaisesRegex(agents.SpecialistError, "cannot use low"):
+                    self.ensure(role_key="rejected-low-effort", model=model, effort="low")
+        with self.assertRaisesRegex(agents.SpecialistError, "at most max"):
+            self.ensure(role_key="rejected-luna-ultra", model="gpt-6-luna", effort="ultra")
+        self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 3)
+
+        existing = self.ensure()
+        original = Path(existing["path"]).read_bytes()
+        for model, effort, error in (
+            ("gpt-5.6-terra", "high", "require one of"),
+            ("gpt-6-sol", "low", "cannot use low"),
+        ):
+            with self.subTest(model=model, effort=effort, operation="reconfigure"):
+                with self.assertRaisesRegex(agents.SpecialistError, error):
+                    self.ensure(
+                        model=model, effort=effort,
+                        expected_sha256=existing["sha256"],
+                    )
+                self.assertEqual(Path(existing["path"]).read_bytes(), original)
+
+    def test_legacy_owned_role_remains_readable_and_requires_explicit_current_reconfiguration(self) -> None:
+        created = self.ensure()
+        legacy_sha256 = self.mark_legacy_configuration(created)
+        path = Path(created["path"])
+        before = path.read_bytes()
+
+        status = self.registry.status()
+        self.assertEqual(status["registered_agents"][0]["model"], "gpt-5.6-terra")
+        recalled = self.registry.recall(name=created["name"], expected_sha256=legacy_sha256)
+        self.assertEqual(recalled["model"], "gpt-5.6-terra")
+        self.assertEqual(recalled["reasoning_effort"], "low")
+
+        with self.assertRaisesRegex(agents.SpecialistError, "require one of"):
+            self.ensure(model="gpt-5.6-terra", effort="low", expected_sha256=legacy_sha256)
+        self.assertEqual(path.read_bytes(), before)
+        preview = self.ensure(model="gpt-6-sol", effort="high")
+        self.assertEqual(preview["action"], "reconfiguration_required")
+        self.assertEqual(path.read_bytes(), before)
+        updated = self.ensure(
+            model="gpt-6-sol", effort="high", expected_sha256=legacy_sha256
+        )
+        self.assertEqual(updated["action"], "reconfigured")
+        self.assertEqual(updated["agent_id"], created["agent_id"])
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["model"], "gpt-6-sol")
+        self.assertEqual(payload["model_reasoning_effort"], "high")
 
     def test_configuration_evidence_boundary_survives_experience_rewrite(self) -> None:
         for speed in ("standard", "fast"):
@@ -1248,9 +1852,11 @@ class SpecialistRegistryTests(unittest.TestCase):
                 after = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
                 for payload in (before, after):
                     instructions = payload["developer_instructions"]
-                    self.assertIn("模型：gpt-5.6-terra", instructions)
+                    self.assertIn("模型：gpt-6-sol", instructions)
                     self.assertIn("思考程度：high", instructions)
-                    self.assertIn("缺少任一行时父代理不得启动该子任务", instructions)
+                    self.assertIn("任务卡必须提供五行实际值", instructions)
+                    self.assertIn("新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理", instructions)
+                    self.assertNotIn("缺少任一行时父代理不得启动该子任务", instructions)
                     self.assertNotIn("MODEL_ROUTE", instructions)
                     self.assertNotIn("可接受成本带", instructions)
                 self.assertEqual(before.get("service_tier"), after.get("service_tier"))
@@ -1486,6 +2092,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             lesson=lesson,
             event_id=str(uuid.uuid4()),
         )
+        self.mark_legacy_configuration(created)
         rows = self.downgrade_registry(1)
         with self.assertRaisesRegex(agents.AuxiliarySkipped, "explicit migrate-global"):
             self.ensure()
@@ -1503,6 +2110,9 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(row["lesson"], lesson)
         self.assertIsNone(row["retracts_event_id"])
         self.assertEqual(run_count, 0)
+        retained = self.registry.recall(name=created["name"])
+        self.assertEqual(retained["model"], "gpt-5.6-terra")
+        self.assertEqual(retained["reasoning_effort"], "low")
 
     def test_exact_schema_two_requires_explicit_global_migration_without_backfilling_runs(self) -> None:
         created = self.ensure()
@@ -1930,30 +2540,39 @@ class SpecialistRegistryTests(unittest.TestCase):
             event_id=str(uuid.uuid4()),
             lesson="适用情境：已有定位；做法：复用证据包；证据：一次采用结果；例外：来源变化。",
         )
+        success_id = str(uuid.uuid4())
         recalled = self.registry.recall(
             name=created["name"], expected_sha256=improved["sha256"],
+            run_id=success_id,
         )
         digest = recalled["retention_state"]["experience_digest"]
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
         self.assertIn("当前配置 1 条", recalled["opening_status"])
         self.assertIn("尚无关联的后续结果记录", recalled["opening_status"])
 
-        success_id = str(uuid.uuid4())
+        with self.assertRaisesRegex(agents.SpecialistError, "database-issued"):
+            self.registry.record_run(
+                name=created["name"], expected_sha256=improved["sha256"],
+                run_id=str(uuid.uuid4()), invocation_kind="spawn_agent",
+                loaded_experience_digest=digest,
+            )
         recorded = self.registry.record_run(
             name=created["name"], expected_sha256=improved["sha256"],
             run_id=success_id, invocation_kind="spawn_agent",
             loaded_experience_digest=digest,
+            experience_receipt=recalled["experience_receipt"],
         )
         replay = self.registry.record_run(
             name=created["name"], expected_sha256=improved["sha256"],
             run_id=success_id, invocation_kind="spawn_agent",
             loaded_experience_digest=digest,
+            experience_receipt=recalled["experience_receipt"],
         )
         self.assertTrue(recorded["experience_outcome_association_persisted"])
         self.assertEqual(replay["action"], "survival_round_already_recorded")
         self.assertEqual(recorded["experience_successful_attempt_count"], 1)
 
-        with self.assertRaisesRegex(agents.SpecialistError, "verified current role memory"):
+        with self.assertRaisesRegex(agents.SpecialistError, "database-issued"):
             self.registry.record_run(
                 name=created["name"], expected_sha256=improved["sha256"],
                 run_id=str(uuid.uuid4()), invocation_kind="spawn_agent",
@@ -1974,15 +2593,171 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(state["experience_failed_attempt_count"], 0)
         self.assertIn("此版本关联的后续结果 1 成功、0 失败", recalled["opening_status"])
 
-    def test_record_run_rejects_experience_digest_when_no_experience_is_loaded(self) -> None:
+    def test_stale_experience_digest_requires_run_bound_recall_receipt(self) -> None:
         created = self.ensure()
-        with self.assertRaisesRegex(agents.SpecialistError, "verified current role memory"):
-            self.registry.record_run(
-                name=created["name"], expected_sha256=created["sha256"],
-                run_id=str(uuid.uuid4()), invocation_kind="spawn_agent",
+        first = self.improve_with_lesson(
+            name=created["name"],
+            expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()),
+            lesson="适用情境：并发调用；做法：保留调用时摘要；证据：首次召回。",
+        )
+        first_run_id = str(uuid.uuid4())
+        old_thread_run_id = str(uuid.uuid4())
+        first_recall = self.registry.recall(
+            name=created["name"], expected_sha256=first["sha256"],
+            run_id=first_run_id,
+        )
+        old_thread_recall = self.registry.recall(
+            name=created["name"], expected_sha256=first["sha256"],
+            run_id=old_thread_run_id,
+        )
+        repeated_old_thread_recall = self.registry.recall(
+            name=created["name"], expected_sha256=first["sha256"],
+            run_id=old_thread_run_id,
+        )
+        old_digest = first_recall["retention_state"]["experience_digest"]
+        self.assertEqual(
+            old_thread_recall["retention_state"]["experience_digest"], old_digest
+        )
+        self.assertRegex(first_recall["experience_receipt"], r"^[0-9a-f]{64}$")
+        self.assertRegex(old_thread_recall["experience_receipt"], r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            repeated_old_thread_recall["experience_receipt"],
+            old_thread_recall["experience_receipt"],
+        )
+        self.assertNotEqual(
+            first_recall["experience_receipt"], old_thread_recall["experience_receipt"]
+        )
+
+        first_completion = self.registry.complete_run(
+            name=created["name"],
+            expected_sha256=first["sha256"],
+            run_id=first_run_id,
+            invocation_kind="spawn_agent",
+            outcome="success",
+            loaded_experience_digest=old_digest,
+            experience_receipt=first_recall["experience_receipt"],
+            lesson="适用情境：先完成的并发调用；做法：追加已采用经验；证据：完成收据。",
+            origin_terms=("当前任务来源",),
+        )
+        current_recall = self.registry.recall(
+            name=created["name"], expected_sha256=first_completion["sha256"]
+        )
+        current_digest = current_recall["retention_state"]["experience_digest"]
+        self.assertNotEqual(current_digest, old_digest)
+
+        before_stale_cas = self.registry.db_path.read_bytes()
+        with self.assertRaisesRegex(agents.SpecialistError, "expected SHA-256"):
+            self.registry.complete_run(
+                name=created["name"],
+                expected_sha256=first["sha256"],
+                run_id=old_thread_run_id,
+                invocation_kind="followup_task",
+                outcome="success",
+                loaded_experience_digest=old_digest,
+                experience_receipt=old_thread_recall["experience_receipt"],
+            )
+        self.assertEqual(self.registry.db_path.read_bytes(), before_stale_cas)
+
+        old_thread = self.registry.complete_run(
+            name=created["name"],
+            expected_sha256=first_completion["sha256"],
+            run_id=old_thread_run_id,
+            invocation_kind="followup_task",
+            outcome="success",
+            loaded_experience_digest=old_digest,
+            experience_receipt=old_thread_recall["experience_receipt"],
+        )
+        replay = self.registry.complete_run(
+            name=created["name"],
+            expected_sha256=first_completion["sha256"],
+            run_id=old_thread_run_id,
+            invocation_kind="followup_task",
+            outcome="success",
+            loaded_experience_digest=old_digest,
+            experience_receipt=old_thread_recall["experience_receipt"],
+        )
+        self.assertEqual(old_thread["action"], "completion_recorded")
+        self.assertEqual(replay["action"], "completion_already_recorded")
+        self.assertEqual(old_thread["loaded_experience_digest"], old_digest)
+        self.assertEqual(old_thread["experience_successful_attempt_count"], 2)
+
+        before = self.registry.db_path.read_bytes()
+        with self.assertRaisesRegex(
+            agents.SpecialistError, "database-issued"
+        ):
+            self.registry.complete_run(
+                name=created["name"],
+                expected_sha256=first_completion["sha256"],
+                run_id=str(uuid.uuid4()),
+                invocation_kind="spawn_agent",
+                outcome="success",
                 loaded_experience_digest="0" * 64,
             )
+        self.assertEqual(self.registry.db_path.read_bytes(), before)
+
+        later_run_id = str(uuid.uuid4())
+        later_recall = self.registry.recall(
+            name=created["name"], expected_sha256=first_completion["sha256"],
+            run_id=later_run_id,
+        )
+        with self.assertRaisesRegex(
+            agents.SpecialistError, "database-issued"
+        ):
+            self.registry.complete_run(
+                name=created["name"],
+                expected_sha256=first_completion["sha256"],
+                run_id=later_run_id,
+                invocation_kind="spawn_agent",
+                outcome="success",
+                loaded_experience_digest=old_digest,
+                experience_receipt=later_recall["experience_receipt"],
+            )
+
+        other = self.ensure(
+            role_key="other-digest-identity",
+            global_domain_key="other-digest-identity",
+        )
+        with self.assertRaisesRegex(
+            agents.SpecialistError, "database-issued"
+        ):
+            self.registry.record_run(
+                name=other["name"],
+                expected_sha256=other["sha256"],
+                run_id=str(uuid.uuid4()),
+                invocation_kind="spawn_agent",
+                loaded_experience_digest=old_digest,
+                experience_receipt=old_thread_recall["experience_receipt"],
+            )
+
+    def test_record_run_rejects_experience_digest_when_no_experience_is_loaded(self) -> None:
+        created = self.ensure()
+        run_id = str(uuid.uuid4())
+        fabricated_digest = "0" * 64
+        old_hmac_payload = (
+            "codex-lean-stack:experience-recall:v1\0"
+            f"{created['agent_id']}\0{run_id}\0{fabricated_digest}"
+        ).encode("utf-8")
+        forged_with_real_owner_token = hmac.new(
+            created["owner_token"].encode("ascii"),
+            old_hmac_payload,
+            hashlib.sha256,
+        ).hexdigest()
+        with self.assertRaisesRegex(agents.SpecialistError, "database-issued"):
+            self.registry.record_run(
+                name=created["name"], expected_sha256=created["sha256"],
+                run_id=run_id, invocation_kind="spawn_agent",
+                loaded_experience_digest=fabricated_digest,
+                experience_receipt=forged_with_real_owner_token,
+            )
         self.assertEqual(self.registry.status()["recorded_attempt_count"], 0)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM experience_recall_receipts"
+                ).fetchone()[0],
+                0,
+            )
 
     def test_attempts_distinguish_never_invoked_from_success_and_failure(self) -> None:
         created = self.ensure()
@@ -2031,6 +2806,10 @@ class SpecialistRegistryTests(unittest.TestCase):
             name=created["name"], expected_sha256=first_event["sha256"],
             event_id=str(uuid.uuid4()), retracts_event_id=first_event_id,
             lesson="适用情境：初始结论；做法：采用纠正；证据：已验证；例外：无。",
+        )
+        self.registry.recall(
+            name=created["name"], expected_sha256=correction["sha256"],
+            run_id=str(uuid.uuid4()),
         )
         with contextlib.closing(self.db()) as connection:
             connection.execute(
@@ -2081,7 +2860,8 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(dashboard["retired_retained_agent_count"], 0)
         with contextlib.closing(self.db()) as connection:
             for table in (
-                "agents", "agent_runs", "experience_events", "experience_summaries"
+                "agents", "agent_runs", "experience_events", "experience_summaries",
+                "experience_recall_receipts",
             ):
                 self.assertEqual(
                     connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0],
@@ -2351,6 +3131,46 @@ class SpecialistRegistryTests(unittest.TestCase):
                 run_id=no_experience_run_id, invocation_kind="spawn_agent", outcome="success",
             )
 
+    def test_explicit_v7_migration_never_backfills_recall_issuance(self) -> None:
+        created = self.ensure()
+        improved = self.improve_with_lesson(
+            name=created["name"], expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()),
+            lesson="适用情境：迁移；做法：保留真实签发边界；证据：v7 行。",
+        )
+        run_id = str(uuid.uuid4())
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=improved["sha256"], run_id=run_id,
+        )
+        digest = recalled["retention_state"]["experience_digest"]
+        recorded = self.registry.record_run(
+            name=created["name"], expected_sha256=improved["sha256"],
+            run_id=run_id, invocation_kind="spawn_agent",
+            loaded_experience_digest=digest,
+            experience_receipt=recalled["experience_receipt"],
+        )
+        self.downgrade_recall_receipt_schema()
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "migrate-attempts"):
+            self.registry.status()
+
+        migrated = self.registry.migrate_attempts()
+        self.assertEqual(migrated["source_schema_version"], 7)
+        self.assertFalse(migrated["historical_recall_receipt_backfill"])
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM experience_recall_receipts"
+                ).fetchone()[0],
+                0,
+            )
+        with self.assertRaisesRegex(agents.SpecialistError, "database-issued"):
+            self.registry.record_run(
+                name=created["name"], expected_sha256=improved["sha256"],
+                run_id=run_id, invocation_kind="spawn_agent",
+                loaded_experience_digest=digest,
+                experience_receipt=recalled["experience_receipt"],
+            )
+
     def test_delete_rejects_recorded_experience_without_pending_artifacts(self) -> None:
         created = self.ensure()
         improved = self.improve_with_lesson(
@@ -2588,7 +3408,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                 display_name="另一个执行员",
                 description="执行另一种重复工作。",
                 role_instructions="返回直接成果。",
-                model="gpt-5.6-luna",
+                model="gpt-6-luna",
                 effort="medium",
                 authority="read",
                 global_domain_key="another-specialty",
@@ -2656,7 +3476,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             global_domain_key="alpha-source-review",
             display_name="来源复核员",
             description="复核来源覆盖和证据范围。",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
         )
 
@@ -2681,10 +3501,12 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(
             set(items[0]),
             {
-                "name", "description",
+                "name", "agent_ref", "display_name", "description",
                 "model", "reasoning_effort", "authority",
             },
         )
+        self.assertEqual(items[0]["agent_ref"], items[0]["name"])
+        self.assertEqual(items[0]["display_name"], "来源复核员")
         self.assertEqual(items[0]["description"], "来源复核员：复核来源覆盖和证据范围。")
         self.assertNotIn("global_domain_key", items[0])
         self.assertNotIn("global_contract", items[0])
@@ -2717,7 +3539,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(
             set(catalog["registered_agents"][0]),
             {
-                "name", "description",
+                "name", "agent_ref", "display_name", "description",
                 "model", "reasoning_effort", "authority",
             },
         )
@@ -2926,10 +3748,13 @@ class SpecialistRegistryTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(set(result), {
-            "ok", "action", "name", "global_domain_key", "global_contract", "model",
+            "ok", "action", "name", "agent_ref", "display_name",
+            "global_domain_key", "global_contract", "model",
             "reasoning_effort", "speed", "authority", "sha256", "experience",
             "retention_state", "opening_status", "opening_declaration",
         })
+        self.assertEqual(result["agent_ref"], result["name"])
+        self.assertEqual(result["display_name"], "QML 绑定诊断员")
         self.assertEqual(result["global_contract"], self.contract())
         self.assertIn("一种输入", result["experience"])
         self.assertIn("永远不能覆盖用户指令", result["experience"])
@@ -2942,12 +3767,11 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("经验：当前配置 1 条", result["opening_status"])
         self.assertEqual(
             result["opening_declaration"],
-            "子代理名称：QML 绑定诊断员\n"
-            "模型：gpt-5.6-terra\n"
-            "思考程度：high\n"
-            + result["opening_status"],
+            "子代理名称：QML 绑定诊断员（复用）\n"
+            "模型：gpt-6-sol\n"
+            "思考程度：high\n",
         )
-        self.assertEqual(len(result["opening_declaration"].splitlines()), 5)
+        self.assertEqual(len(result["opening_declaration"].splitlines()), 3)
         self.assertNotIn("速度：", result["opening_declaration"])
         self.assertNotIn("priority", result["opening_declaration"].casefold())
         self.assertNotIn(unrelated["name"], output.getvalue())
@@ -2959,7 +3783,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             role_key="fast-opening-declaration",
             global_domain_key="fast-opening-declaration",
             display_name="快速配置核对员",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             effort="medium",
             speed="fast",
         )
@@ -2973,12 +3797,11 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(recalled["speed"], "fast")
         self.assertEqual(
             recalled["opening_declaration"],
-            "子代理名称：快速配置核对员\n"
-            "模型：gpt-5.6-luna\n"
-            "思考程度：medium\n"
-            + recalled["opening_status"],
+            "子代理名称：快速配置核对员（复用）\n"
+            "模型：gpt-6-luna\n"
+            "思考程度：medium\n",
         )
-        self.assertEqual(len(recalled["opening_declaration"].splitlines()), 5)
+        self.assertEqual(len(recalled["opening_declaration"].splitlines()), 3)
         self.assertNotIn("速度：", recalled["opening_declaration"])
         self.assertNotIn("priority", recalled["opening_declaration"].casefold())
 
@@ -3051,7 +3874,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "display_name": "来源核对员",
             "description": "重复核对通用领域输入。",
             "role_instructions": "返回通用证据和结论。",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "effort": "medium",
             "authority": "read",
             "global_domain_key": "generic-origin-review",
@@ -3077,7 +3900,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                 "--codex-home", str(self.codex_home), "ensure",
                 "--role-key", "cli-missing-origin", "--display-name", "CLI 来源核对员",
                 "--description", "核对通用输入。", "--instructions", "返回通用证据。",
-                "--model", "gpt-5.6-luna", "--reasoning-effort", "medium",
+                "--model", "gpt-6-luna", "--reasoning-effort", "medium",
                 "--authority", "read", "--global-domain-key", "cli-origin-review",
                 "--global-contract", json.dumps(self.contract("CLI 通用审核"), ensure_ascii=False),
             ])
@@ -3260,19 +4083,76 @@ class SpecialistRegistryTests(unittest.TestCase):
             def close(self):
                 real_connection.close()
 
+        checked_moves = []
+        real_move = agents.rename_exact_file_no_replace
+        real_native_rename = agents._windows_rename_file
+
+        def compete_during_move(source, destination, *, expected):
+            def compete_after_verification(handle, target):
+                checked_moves.append((source, destination))
+                self.assert_windows_competitor_blocked(source)
+                return real_native_rename(handle, target)
+
+            with mock.patch.object(agents, "_windows_rename_file", side_effect=compete_after_verification):
+                return real_move(source, destination, expected=expected)
+
+        move_check = (mock.patch.object(agents, "rename_exact_file_no_replace",
+                                       side_effect=compete_during_move)
+                      if os.name == "nt" else contextlib.nullcontext())
         with mock.patch.object(
             self.registry,
             "_legacy_connection",
             return_value=(FailingCommitConnection(), version),
-        ):
+        ), move_check:
             with self.assertRaisesRegex(sqlite3.OperationalError, "forced global migration commit failure"):
                 self.registry.migrate_global(plan_path=plan)
+        if os.name == "nt":
+            # Old source -> backup; new source -> failed-new; backup -> old name.
+            self.assertEqual(len(checked_moves), 3)
         self.assertEqual(self.registry.db_path.read_bytes(), before_db)
         self.assertEqual({path: Path(path).read_bytes() for path in before_files}, before_files)
         self.assertEqual(
             json.loads(self.registry._migration_journal_path().read_text(encoding="utf-8"))["status"],
             "rolled_back",
         )
+
+    def test_same_path_migration_recovery_never_accepts_a_second_unverified_read(self) -> None:
+        self.ensure(role_key="same-path-recovery-review")
+        rows = self.downgrade_registry(3)
+        path = Path(rows[0]["path"])
+        plan = self.write_migration_plan(rows)
+        connection, version = self.registry._legacy_connection()
+        recovering = False
+        recovery_reads = 0
+        real_read = Path.read_bytes
+
+        class FailingCommit:
+            def execute(inner, sql, parameters=()):
+                nonlocal recovering
+                if sql == "COMMIT":
+                    recovering = True
+                    raise sqlite3.OperationalError("forced recovery race")
+                return connection.execute(sql, parameters)
+
+            def close(inner):
+                connection.close()
+
+        def replace_after_checked_read(target):
+            nonlocal recovery_reads
+            data = real_read(target)
+            if recovering and target == path:
+                recovery_reads += 1
+                if recovery_reads == 2:
+                    target.write_bytes(b"external edit during recovery")
+            return data
+
+        with mock.patch.object(self.registry, "_legacy_connection", return_value=(FailingCommit(), version)), \
+                mock.patch.object(Path, "read_bytes", new=replace_after_checked_read):
+            with self.assertRaisesRegex(agents.AuxiliarySkipped, "recovery is incomplete"):
+                self.registry.migrate_global(plan_path=plan)
+        self.assertEqual(path.read_bytes(), b"external edit during recovery")
+        with contextlib.closing(self.db()) as probe:
+            self.assertEqual(probe.execute("PRAGMA user_version").fetchone()[0], 3)
 
     def test_committed_migration_recovers_interrupted_backup_receipt_finalization(self) -> None:
         self.ensure(role_key="cleanup-interruption-review")
@@ -3382,7 +4262,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                     "--instructions",
                     "完成任务",
                     "--model",
-                    "gpt-5.6-luna",
+                    "gpt-6-luna",
                     "--reasoning-effort",
                     "medium",
                     "--authority",
@@ -3407,6 +4287,21 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("omitted roles default to standard", help_output.getvalue())
         self.assertNotIn("omitted Luna roles default to fast", help_output.getvalue())
 
+    def test_agent_ref_cli_alias_is_explicit_and_name_remains_compatible(self) -> None:
+        help_output = io.StringIO()
+        with contextlib.redirect_stdout(help_output):
+            with self.assertRaises(SystemExit) as exited:
+                agents.build_parser().parse_args(["recall", "--help"])
+        self.assertEqual(exited.exception.code, 0)
+        self.assertIn("--name, --agent-ref NAME", help_output.getvalue())
+        self.assertIn("lean_* machine identity returned as agent_ref", help_output.getvalue())
+
+        agent_ref = "lean_source_review_12345678"
+        by_name = agents.build_parser().parse_args(["recall", "--name", agent_ref])
+        by_alias = agents.build_parser().parse_args(["recall", "--agent-ref", agent_ref])
+        self.assertEqual(by_name.name, agent_ref)
+        self.assertEqual(by_alias.name, agent_ref)
+
     def test_cli_ensure_record_status_improve_and_permanent_delete_round_trip(self) -> None:
         ensure_output = io.StringIO()
         with contextlib.redirect_stdout(ensure_output):
@@ -3424,7 +4319,7 @@ class SpecialistRegistryTests(unittest.TestCase):
                     "--instructions",
                     "返回精确来源覆盖和证据缺口。",
                     "--model",
-                    "gpt-5.6-luna",
+                    "gpt-6-luna",
                     "--reasoning-effort",
                     "medium",
                     "--authority",

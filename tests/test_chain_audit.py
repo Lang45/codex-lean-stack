@@ -159,7 +159,7 @@ class RegistryChainTests(unittest.TestCase):
         return self.registry.ensure(
             role_key="evidence-review", display_name="证据复核员",
             description="核对已定位证据并保留适用边界。", role_instructions="交付可核验的复核结论。",
-            model="gpt-5.6-terra", effort="high", authority="read",
+            model="gpt-6-sol", effort="high", authority="read",
             global_domain_key="evidence-review",
             global_contract={
                 "domain": "证据复核", "input_shapes": ["已定位证据"],
@@ -222,13 +222,17 @@ class RegistryChainTests(unittest.TestCase):
             covered_through=batch["covered_through"], source_digest=batch["source_digest"],
             origin_terms=("audit-fixture-project",),
         )
-        recalled = self.registry.recall(name=created["name"])
+        run_id = str(uuid.uuid4())
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=compacted["sha256"], run_id=run_id,
+        )
         self.assertTrue(recalled["retention_state"]["experience_loaded"])
         digest = recalled["retention_state"]["experience_digest"]
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
         run = dict(name=created["name"], expected_sha256=compacted["sha256"],
-                   run_id=str(uuid.uuid4()), invocation_kind="spawn_agent", outcome="success",
-                   loaded_experience_digest=digest)
+                   run_id=run_id, invocation_kind="spawn_agent", outcome="success",
+                   loaded_experience_digest=digest,
+                   experience_receipt=recalled["experience_receipt"])
         self.registry.complete_run(**run)
         self.registry.complete_run(**run)
         self.assertEqual(self.registry.recall(name=created["name"])["retention_state"]["survival_rounds"], 2)

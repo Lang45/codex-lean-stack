@@ -6,13 +6,13 @@
 
 | 当前实际动作 | 唯一细则 |
 | --- | --- |
-| 第一次 `spawn_agent`，或用 `followup_task` 启动新子任务 | [首次派发执行分支](dispatch-start.md) |
+| 第一次 `spawn_agent`，或让现有子代理承担新相关任务 | [首次派发](dispatch-start.md) |
 | 长来源的唯一所有者、覆盖范围或结果复用 | [来源所有权与结果收据](source-results.md) |
-| 任务类型组、复制、变体、竞争或用户否定 | [任务类型组、复制与变体](agent-groups.md) |
-| 子代理关键消息、最终结果、父代理采用或停止 | [子代理结果与汇合](agent-results.md) |
-| 两个或更多子代理写文件或共享状态 | [可写子代理并行](write-parallelism.md) |
+| 运行时复制、配置变体、结果比较或用户否定 | [任务类型组、复制与变体](agent-groups.md) |
+| 子代理进展说明、关键消息、最终结果、父代理采用或停止 | [子代理结果与汇合](agent-results.md) |
+| 两个或更多执行者写文件或共享状态 | [可写子代理并行](write-parallelism.md) |
 | 协作父代理或其他 Codex 任务 | [协作父代理](collaboration.md) |
-| 保留配置、经验、迁移或删除 | [全局领域保留子代理经验](specialist-memory.md) |
+| 保留身份、经验、迁移或删除 | [保留子代理身份与经验](specialist-memory.md) |
 | Windows exec 或 PowerShell 表达 | [Windows exec 与 PowerShell](windows-exec.md) |
 | 迭代检查、语义验收或最窄重验 | [条件性验证与最窄重验](verification.md) |
 | 成本基线维护 | [成本预估](cost-baseline.md) |
