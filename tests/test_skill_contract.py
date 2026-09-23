@@ -55,6 +55,15 @@ class SkillContractTests(unittest.TestCase):
         for term in ("质量", "成本", "时间", "安全", "权限", "数据完整性"):
             self.assertIn(term, decision)
         self.assertIn("调用数量本身不是目标", decision)
+        for principle in (
+            "高价值工作质量优先，守住正确性；当遇到困难时派遣专家协助。",
+            "普通工作可靠性相当后，总成本优先。",
+            "总成本处于可接受成本带时，为加快父任务完成速度，增加或并发派遣子代理来节省时间是可取的。",
+        ):
+            self.assertIn(principle, decision)
+        self.assertIn("提速也不是每次委派的必要条件", decision)
+        self.assertNotIn("并同时满足以下条件", decision)
+        self.assertNotIn("成本或速度有一项实际收益即可委派", decision)
         self.assertNotRegex(decision, r"最多\s*[0-9一二三四五六七八九十]+\s*个子代理")
 
     def test_same_capability_family_has_one_reuse_order(self) -> None:
@@ -99,8 +108,9 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(model, selection)
             self.assertIn(model, self.dispatch)
         self.assertNotIn("gpt-5.6-", selection + self.dispatch + self.openai_yaml)
+        self.assertIn("真实模型", self.stack)
+        self.assertIn("实际模型", self.dispatch)
         for text in (self.stack, self.dispatch):
-            self.assertIn("实际模型", text)
             self.assertIn("当前宿主已加载", text)
             self.assertIn("新任务验证", text)
         self.assertIn("运行时子代理", self.dispatch)
@@ -133,12 +143,13 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不声称复用了保留类型", self.dispatch)
         self.assertIn("状态无法确认时改派", self.dispatch)
         self.assertIn("五行", self.stack)
-        self.assertIn("最终回复顶部再次\n展示含相同名称标记的前三行", self.stack)
+        self.assertIn("五行真实开场与 final 三行的唯一详细规则见", self.stack)
+        self.assertIn("最终回复顶部重复前三行实际配置", self.dispatch)
         self.assertIn("最终回复顶部保留三行实际配置", self.results)
         self.assertIn("只对该身份做一次有界", self.memory)
-        self.assertIn("当前可复用子代理和已选中且召回成功的保留 `agent_type` 为复用", self.stack)
-        self.assertIn("最小运行时新角色为新建", self.stack)
-        self.assertIn("不能仅凭候选匹配就标复用", self.stack)
+        self.assertIn("复用当前 live child 或已选中且召回成功的保留 `agent_type` 用 `（复用）`", self.dispatch)
+        self.assertIn("最小运行时新角色用 `（新建）`", self.dispatch)
+        self.assertIn("候选匹配但未成功派发不得预标复用", self.dispatch)
         self.assertIn("名称标 `（新建）`", self.memory)
         self.assertIn("最终回复顶部保留三行实际配置，第一行沿用开场的同一名称标记", self.results)
         self.assertIn("缺少实际状态时先向父代理内部报告", self.results)
@@ -156,34 +167,36 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不构成交付", self.results)
 
     def test_missing_child_progress_has_evidence_based_fallback(self) -> None:
-        section = self.stack.split("子代理在自己的第一条", 1)[1].split("## 执行", 1)[0]
+        section = self.dispatch.split("这条随卡执行句是输出合同", 1)[1].split(
+            "独立窄任务优先", 1
+        )[0]
         self.assertIn("宿主没有向用户显示", section)
         self.assertIn("原生调用回执", section)
+        self.assertIn("已核验召回状态", section)
         self.assertIn("不得猜测", section)
 
     def test_retention_is_optional_and_not_a_dispatch_gate(self) -> None:
-        combined = self.stack + self.memory + self.results
-        self.assertIn("普通临时", combined)
-        self.assertIn("不生成 UUID", self.stack)
-        self.assertIn("需要记录时才生成", self.memory)
-        self.assertIn("不进入本分支", self.memory)
+        self.assertIn("结果核验后主任务立即继续", self.stack)
+        self.assertIn("普通派发不进行成本、迁移或摘要巡检", self.stack)
+        self.assertIn("选中已加载保留类型时，仅对该身份定向召回", self.memory)
+        self.assertIn("临时角色不触发写入", self.memory)
         self.assertIn("不能成为派发前置", self.memory)
-        self.assertIn("不阻塞主任务交付", combined)
+        self.assertIn("不能延迟主任务动作或交付", re.sub(r"\s+", "", self.memory))
+        self.assertIn("需要记录时才生成", self.memory)
 
     def test_retained_failure_record_and_loaded_script_path_contract(self) -> None:
-        self.assertIn("没有新增可复用经验的成功结果不生成 UUID，也不执行 `complete-run`", self.stack)
-        self.assertIn("新能力族已核验具有跨任务价值且身份、权限可安全绑定时，可按需 `ensure`", self.stack)
-        self.assertIn("即便没有新增 `--lesson`；这一步无需 `run_id`", self.stack)
+        self.assertIn("新能力族的跨任务价值经核验后可按需 `ensure`", self.stack)
+        self.assertIn("无新增经验", self.stack)
+        self.assertIn("也无需 `run_id`", self.stack)
         self.assertIn("即便没有新增 `--lesson` 也可按需 `ensure`", self.memory)
-        self.assertIn("保留身份本身无需旧经验、数据库签发收据或 `run_id`，不因此执行 `complete-run`", self.memory)
+        self.assertIn("保留身份本身无需旧经验、数据库签发收据或`run_id`，不因此执行`complete-run`", re.sub(r"\s+", "", self.memory))
         self.assertIn("跳过完成记账，但不影响符合上述条件的 `ensure`", self.memory)
-        self.assertIn("保留身份的明确失败可不带 `--lesson` 记录", self.stack)
-        self.assertIn("运行中、中断或结果未定不记失败", self.stack)
-        self.assertIn("只有新增一条去敏、带适用范围和证据限制的跨任务经验时才调用 `complete-run`", self.memory)
+        self.assertIn("只有新增一条去敏、带适用范围和证据限制的跨任务经验时才调用`complete-run`", re.sub(r"\s+", "", self.memory))
         self.assertIn("`--outcome failure` 且不附 `--lesson`", self.memory)
+        self.assertIn("运行中、中断、未采用或结果未定均不算失败", self.memory)
         for part in ("情境", "停止依据", "重开条件"):
             self.assertIn(part, self.memory)
-        self.assertIn("从当前已加载的 `lean-stack/SKILL.md` 的绝对路径取得技能目录", self.memory)
+        self.assertIn("从当前已加载的`lean-stack/SKILL.md`的绝对路径取得技能目录", re.sub(r"\s+", "", self.memory))
         self.assertIn("$leanStackScript = Join-Path (Split-Path -Parent $leanStackSkillPath) 'scripts/agents.py'", self.memory)
         self.assertIn("相对脚本路径示例只适用于本插件源码仓库根", self.memory)
         self.assertIn("无新增经验的成功结果不执行 `complete-run`", self.flowcharts)
@@ -191,21 +204,41 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("complete-run failure 不附 lesson", self.flowcharts)
 
     def test_dispatch_and_ensure_do_not_require_auxiliary_preflight(self) -> None:
-        self.assertIn("只对该身份做一次有界 `recall`", self.stack)
-        self.assertIn("成功后立即原生派发", self.stack)
-        self.assertIn("子代理读一遍已提供的经验便开始任务", self.dispatch)
-        self.assertIn("`ensure` 不依赖旧经验、收据或完成记账", self.stack)
-        self.assertIn("CAS、事务和 TOML 文件竞争由 `agents.py` 执行并以回执判定", self.stack)
-        self.assertIn("成本基线只在独立维护动作明确触发时核对，不随每次子代理调用查询", self.stack)
-        self.assertIn("普通子代理调用、复用、召回、`ensure` 和 `complete-run` 不触发成本状态查询", self.cost)
-        self.assertIn("旧经验与当前技能冲突时按当前技能执行", self.stack)
-        self.assertIn("健康结构下新增经验直接按需记账，不等待版本维护或旧摘要纠错", self.stack)
+        self.assertIn("只对该身份做一次有界 `recall`", self.dispatch)
+        self.assertIn("成功后立即派发", self.dispatch)
+        self.assertIn("TOML 的 `developer_instructions` 已原生注入经验", self.dispatch)
+        self.assertIn("任务卡只传五行真实状态，不复制经验正文", self.dispatch)
+        self.assertIn("子代理读已注入经验一次即开始任务", self.dispatch)
+        self.assertIn("结果已有可复用能力族、已核验并采用", self.memory)
+        self.assertIn("父代理按 `ensure` 返回的成功或冲突回执决定是否保留", self.memory)
         self.assertIn("健康结构下新增经验直接按需保存，不等待历史", self.memory)
         self.assertIn("复用或派发前不核验旧经验签发收据、文件句柄或成本基线到期状态", self.dispatch)
         self.assertIn("只有需要声称某版旧经验参与该次并发完成结果时", self.memory)
-        self.assertIn("父代理按 `ensure` 返回的成功或冲突回执决定是否保留", self.memory)
         self.assertIn("由 `agents.py` 执行并以成功、冲突或跳过回执判定", self.memory)
+        self.assertIn("普通子代理调用、复用、召回、`ensure` 和 `complete-run` 不触发成本状态查询", self.cost)
         self.assertIn("不阻塞派发或 ensure", self.flowcharts)
+
+    def test_ensure_create_and_reconfigure_have_distinct_safe_triggers(self) -> None:
+        section = self.memory.split("## 创建或重配身份", 1)[1].split(
+            "## 按需记录完成与经验", 1
+        )[0]
+        compact = re.sub(r"\s+", "", section)
+        for condition in (
+            "原生目录无同能力族、权限及证据边界兼容的身份",
+            "仅在已有证据提示存在未加载身份时定向核查受管台账",
+            "确认没有兼容身份后，才`ensure`",
+            "已有同身份且能力族、权限、证据边界兼容",
+            "先核验并采用配置胜者",
+            "当前可用SHA执行`--expected-sha256`CAS",
+            "权限不扩大",
+            "没有新增`--lesson`也可按需`ensure`",
+            "无需旧经验、数据库签发收据或`run_id`",
+            "若已有竞争变更，重新判断胜者",
+        ):
+            self.assertIn(re.sub(r"\s+", "", condition), compact)
+        long_running = re.sub(r"\s+", "", read(REFS / "long-running.md"))
+        self.assertIn("可按需首次`ensure`，依据脚本的创建或冲突回执判定", long_running)
+        self.assertIn("已有身份重配和`complete-run`才要求身份及当前CAS快照", long_running)
 
     def test_machine_identity_and_display_name_are_distinct(self) -> None:
         for term in ("agent_ref", "display_name", "lean_*", "中文展示名"):
@@ -214,6 +247,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("稳定机器身份", self.memory)
 
     def test_persistence_safety_boundaries_remain_authoritative(self) -> None:
+        compact = re.sub(r"\s+", "", self.memory)
         for boundary in (
             "单硬链接",
             "owner token",
@@ -227,12 +261,12 @@ class SkillContractTests(unittest.TestCase):
             "POSIX 仍依赖合作写者",
             "SQLite 与文件系统不是共同原子事务",
             "进程崩溃后的跨存储恢复仍有缺口",
-            "不能依据相同正文",
+            "不得依据相同正文",
             "第二次明确失败",
             "format_version",
             "experience_corrections",
         ):
-            self.assertIn(boundary, self.memory)
+            self.assertIn(re.sub(r"\s+", "", boundary), compact)
         for receipt_boundary in ("机器身份", "同一 `run_id`", "随机收据", "数据库签发"):
             self.assertIn(receipt_boundary, self.memory)
         self.assertIn("global_contract", self.memory)

@@ -2,13 +2,12 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **7.0.1**
+Current version: **7.1.0**
 
-This patch restores the five-line opening for subagents: name, model, reasoning effort, retained
-success count, and experience status. A reused retained type receives its verified single-role
-status; if that read fails, a runtime subagent continues with truthful runtime values. On Windows,
-managed role file changes now keep handles to the checked file and its parent directories through
-replacement or deletion, preventing an external process from swapping the checked path in between.
+Delegation follows three priorities: protect quality on high-value work, prefer lower total cost
+when ordinary options are equally reliable, and add parallel help for speed when the total cost is
+acceptable. A retained type reuses its loaded experience without copying it into the task card;
+new reusable capability families can be retained after adoption even without a new lesson.
 
 Codex Lean Stack provides two independent skills:
 
@@ -22,8 +21,8 @@ evidence required to support a conclusion.
 
 ## How delegation works
 
-- **Quality, cost, then time.** A delegated slice must meet the required quality, use a proportionate model and
-  reasoning effort, and help the parent task finish sooner.
+- **Quality, cost, and time by context.** Use expert help for difficult high-value work; compare total cost
+  after ordinary options meet the same reliability bar; add parallel help for speed within an acceptable cost range.
 - **Tools first.** Deterministic work goes directly to tools.
 - **Reuse one capability family.** Continue a compatible live child with a supported actual configuration when its context remains useful; otherwise use
   a compatible loaded `agent_type`; create a runtime role when neither fits.
@@ -31,9 +30,9 @@ evidence required to support a conclusion.
   configuration variants only when comparable evidence can answer a real routing question.
 - **Explicit native configuration.** Every `spawn_agent` supplies the actual model, reasoning effort, and bounded
   history. A task card or retained profile does not replace native parameters.
-- **Small task cards.** New children receive their visible name, actual model, actual reasoning effort, the
-  instruction to show those values in their first progress note and final, one goal, the needed evidence,
-  ownership, success conditions, and stop conditions.
+- **Small task cards.** New children receive five verified opening lines, the instruction to display them in
+  the first progress note and repeat the first three in the final, one goal, needed evidence, ownership,
+  success conditions, and stop conditions. Retained experience stays in the loaded role instructions.
 - **Optional retention.** Profiles and experience are recorded only when a result is reusable across tasks. The
   local registry does not launch agents or keep live threads running.
 
@@ -60,7 +59,7 @@ Use $lean-simplify to implement this change with the smallest complete solution 
 ```
 
 ```text
-Use $lean-stack to delegate independent work where it improves completion time, reusing the same capability family when possible.
+Use $lean-stack to delegate independent work under the quality, total cost, and time principles, reusing the same capability family when possible.
 ```
 
 ## Scope and evidence
@@ -82,7 +81,8 @@ The parent adopts a child result only from its final response or an equivalent r
 
 ### 子代理选择
 
-确定性工作直接用工具。需要持续模型判断时，按质量、成本、时间决定是否委派。决定委派后依次
+确定性工作直接用工具。高价值难题先守正确性并派专家；普通工作可靠性相当后比较总成本；
+总成本可接受时可增派子代理提速。三项无需每次同时获益。决定委派后依次
 选择：
 
 1. 同一能力族、实际模型和思考程度合规、权限和证据边界兼容，且上下文仍有价值的 live child；
@@ -99,12 +99,13 @@ The parent adopts a child result only from its final response or an equivalent r
 新子代理任务卡写五行真实配置与状态，名称后按实际派发标一次“（复用）”或“（新建）”，并把
 “首条用户可见进展说明展示五行、最终回复顶部重复前三行”的执行句直接交给子代理，再写唯一
 目标、必要来源、权限或写入所有权、成功条件和停止
-条件。选中已加载保留类型后，只对该身份召回一次，子代理读完已有经验便开始任务；召回失败
+条件。选中已加载保留类型后，只对该身份召回一次；保留经验已在角色指令中，任务卡只传五行
+状态，子代理读完经验便开始任务。召回失败
 就改派运行时子代理，后两行写 0 轮和未加载保留经验。每次调用不触发成本核对，健康台账保存
 新经验也不等待旧摘要纠错或版本维护；写入失败由父代理保留具名事项并在主任务推进后修复。
 
-子代理完成后，父代理核验结果并继续主任务。只有形成跨任务可复用能力或经验时才按需记录保留
-身份和完成收据；普通调用不进入额外的角色维护流程。
+子代理完成后，父代理核验结果并继续主任务。已采用的新能力族可无新增经验而单独保留身份；
+只有新增可复用经验或已采用保留身份的明确失败才按需记录完成。普通调用不进入额外维护流程。
 
 ## Documentation
 

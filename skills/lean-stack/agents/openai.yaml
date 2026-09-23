@@ -1,4 +1,4 @@
 interface:
   display_name: "子代理调用"
   short_description: "按质量、成本、时间选择工具、GPT-6 三模型子代理与思考程度。"
-  default_prompt: "出现具体委派候选并首次准备 spawn_agent 或让现有子代理承担新相关任务时，读取或复用 $lean-stack。先按质量、成本、时间判断；新调用只选 gpt-6-luna、gpt-6-sol、gpt-6-astra，思考程度从 medium 起。决定委派后优先续用同能力族、实际配置和开场状态已确认且上下文有益的 live child，其次复用配置兼容的已加载 agent_type，否则创建最小运行时子代理。命中保留类型时只对该身份有界 recall，将 opening_declaration 三行与 opening_status 两行用于任务卡；召回失败改派最小合规运行时子代理，不声称复用了保留类型。运行时新子代理写存活轮次 0、经验未加载保留经验。live child 新任务的状态无法确认时同样改派运行时子代理。每次 spawn_agent 显式传 model、reasoning_effort 和非全量 fork_turns。Astra 的 xhigh 只是上限。新子代理任务卡写五行开场，第一行名称按实际派发标一次（复用）或（新建）：live child 和已选中且成功召回的保留 agent_type 为复用，运行时新角色为新建；首条用户可见进展说明展示五行，最终回复顶部重复前三行和相同标记。缺少实际状态先向父代理内部报告，不向用户显示占位语；随后写唯一目标、必要来源、所有权、成功条件和停止条件。结果核验后立即继续主任务，仅在有跨任务复用价值时按需维护保留身份或经验。$lean-stack 不等待或阻断 $lean-simplify。"
+  default_prompt: "首次准备真实委派时读取或复用 $lean-stack；高价值难题质量优先并派专家；普通工作可靠性相当后总成本优先；总成本可接受时可为提速增派。新调用只选 GPT-6 三模型且思考程度从 medium 起，Astra 的 xhigh 只是上限。按 live child、已加载 agent_type、运行时新建的顺序复用同能力族，细则见 dispatch-start。任务卡只传五行真实状态，第一行名称按实际派发标一次（复用）或（新建）；首条进展说明展示五行，final 顶部重复三行。状态缺失先内部补齐，不显示占位语。结果核验后按需维护保留身份或经验，主任务继续。"
