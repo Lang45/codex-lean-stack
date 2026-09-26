@@ -71,7 +71,12 @@ UUID_RE = re.compile(
 TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
-NEW_SUBAGENT_MODELS = {"gpt-6-luna", "gpt-6-sol", "gpt-6-astra"}
+NEW_SUBAGENT_MODELS = (
+    "gpt-5.6-luna",
+    "gpt-6-sol",
+    "gpt-5.6-sol",
+    "gpt-6-astra",
+)
 AUTHORITIES = {"read", "write"}
 SPEEDS = {"standard", "fast"}
 INVOCATION_KINDS = {"spawn_agent", "followup_task"}
@@ -446,12 +451,12 @@ def validate_ensure_model_effort(model: str, effort: str) -> tuple[str, str]:
     model, effort = validate_subagent_model_effort(model, effort)
     if model not in NEW_SUBAGENT_MODELS:
         raise SpecialistError(
-            f"new or reconfigured specialists require one of {sorted(NEW_SUBAGENT_MODELS)}"
+            f"new or reconfigured specialists require one of {list(NEW_SUBAGENT_MODELS)}"
         )
     if effort == "low":
         raise SpecialistError("new or reconfigured specialists cannot use low reasoning effort")
-    if model == "gpt-6-luna" and effort == "ultra":
-        raise SpecialistError("gpt-6-luna subagents support at most max reasoning effort")
+    if model == "gpt-5.6-luna" and effort == "ultra":
+        raise SpecialistError("gpt-5.6-luna subagents support at most max reasoning effort")
     return model, effort
 
 
@@ -744,7 +749,8 @@ def base_instructions(
         + "后两行只采用父代理对本保留身份执行单角色 recall 得到的存活轮次和经验实际值，"
         "不可自估或编造。新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理"
         "报告具体缺失字段并暂停该子任务，由父代理补齐或改派运行时子代理。"
-        "不得在用户可见进展中展示“任务卡未提供”“未核验”等占位语，也不得为凑五行而推断状态。"
+        "任务卡后两行包含“任务卡未提供”“未核验”或“未核验持久化经验”时同样视为缺失，"
+        "不得在用户可见进展中展示；先按上述内部消息流程补齐，也不得为凑五行而推断状态。"
         "followup_task 若只补问同一当前子任务，"
         "沿用本线程已经确认的五行，只发送增量信息，不要求重复任务卡，也不重复开场。"
         "不得声明经验适用性，也不得把保存、注入或摘要称作学习。该固定配置只约束当前保留身份，"

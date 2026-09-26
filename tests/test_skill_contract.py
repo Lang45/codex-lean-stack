@@ -102,12 +102,27 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不得因为模型是Astra就固定选`xhigh`", compact)
         self.assertIn("`max`和`ultra`不用于Astra子代理", compact)
 
-    def test_new_dispatch_uses_only_three_gpt6_models_and_checks_legacy_reuse(self) -> None:
+    def test_new_dispatch_uses_four_current_models_and_checks_legacy_reuse(self) -> None:
         selection = self.stack.split("## 模型与思考程度", 1)[1].split("## 原生调用与任务卡", 1)[0]
-        for model in ("gpt-6-luna", "gpt-6-sol", "gpt-6-astra"):
+        models = ("gpt-5.6-luna", "gpt-6-sol", "gpt-5.6-sol", "gpt-6-astra")
+        manifest_surface = (
+            self.manifest["interface"]["longDescription"]
+            + self.manifest["interface"]["defaultPrompt"][0]
+        )
+        for model in models:
             self.assertIn(model, selection)
             self.assertIn(model, self.dispatch)
-        self.assertNotIn("gpt-5.6-", selection + self.dispatch + self.openai_yaml)
+        for surface in (
+            selection,
+            self.dispatch,
+            self.readme,
+            self.openai_yaml,
+            manifest_surface,
+        ):
+            positions = [surface.index(model) for model in models]
+            self.assertEqual(positions, sorted(positions))
+        for historical_model in ("gpt-6-luna", "gpt-5.6-terra"):
+            self.assertNotIn(historical_model, selection)
         self.assertIn("真实模型", self.stack)
         self.assertIn("实际模型", self.dispatch)
         for text in (self.stack, self.dispatch):
@@ -128,7 +143,7 @@ class SkillContractTests(unittest.TestCase):
         ])
         self.assertEqual(lines[3:], [
             "存活轮次：<保留召回状态或运行时 0>",
-            "经验：<保留召回状态或运行时未加载保留经验>",
+            "经验：<保留召回状态、复用当前线程上下文或运行时未加载保留经验>",
         ])
         self.assertEqual(len(lines), 5)
         self.assertIn("执行句", self.dispatch)
@@ -137,8 +152,14 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("opening_status", self.dispatch)
         self.assertNotIn("存活轮次：未核验", self.dispatch + self.stack + self.openai_yaml)
         self.assertNotIn("经验：未核验", self.dispatch + self.stack + self.openai_yaml)
+        self.assertNotRegex(
+            self.dispatch + self.stack + self.openai_yaml,
+            r"(?m)^经验：未核验持久化经验",
+        )
+        self.assertIn("不得显示“未核验持久化经验”", self.dispatch + self.stack + self.openai_yaml)
         self.assertIn("存活轮次：0", self.dispatch)
         self.assertIn("经验：未加载保留经验", self.dispatch)
+        self.assertIn("经验：复用当前线程上下文", self.dispatch + self.stack + self.openai_yaml)
         self.assertIn("召回失败时改派最小合规运行时子代理", self.dispatch)
         self.assertIn("不声称复用了保留类型", self.dispatch)
         self.assertIn("状态无法确认时改派", self.dispatch)
@@ -156,6 +177,22 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("final 保持相同标记", read(REFS / "collaboration.md"))
         self.assertIn("名称标新建", self.flowcharts)
         self.assertIn("第一行名称按实际派发标一次（复用）或（新建）", self.openai_yaml)
+
+    def test_only_astra_is_the_expert_route(self) -> None:
+        manifest_surface = (
+            self.manifest["interface"]["longDescription"]
+            + self.manifest["interface"]["defaultPrompt"][0]
+        )
+        for surface in (
+            self.stack,
+            self.dispatch,
+            self.readme,
+            self.openai_yaml,
+            manifest_surface,
+        ):
+            compact = surface.replace("`", "")
+            self.assertIn("前三档都是常规子代理路线", compact)
+            self.assertIn("只有 gpt-6-astra 是专家路线", compact)
 
     def test_user_facing_progress_term_is_chinese(self) -> None:
         active = "\n".join(

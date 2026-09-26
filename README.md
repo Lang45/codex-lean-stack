@@ -2,7 +2,7 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **7.1.0**
+Current version: **7.2.1**
 
 Delegation follows three priorities: protect quality on high-value work, prefer lower total cost
 when ordinary options are equally reliable, and add parallel help for speed when the total cost is
@@ -21,7 +21,8 @@ evidence required to support a conclusion.
 
 ## How delegation works
 
-- **Quality, cost, and time by context.** Use expert help for difficult high-value work; compare total cost
+- **Quality, cost, and time by context.** Use the Astra expert route for difficult high-value work when it has a
+  decision-changing quality advantage; compare total cost
   after ordinary options meet the same reliability bar; add parallel help for speed within an acceptable cost range.
 - **Tools first.** Deterministic work goes directly to tools.
 - **Reuse one capability family.** Continue a compatible live child with a supported actual configuration when its context remains useful; otherwise use
@@ -32,12 +33,15 @@ evidence required to support a conclusion.
   history. A task card or retained profile does not replace native parameters.
 - **Small task cards.** New children receive five verified opening lines, the instruction to display them in
   the first progress note and repeat the first three in the final, one goal, needed evidence, ownership,
-  success conditions, and stop conditions. Retained experience stays in the loaded role instructions.
+  success conditions, and stop conditions. Retained experience stays in the loaded role instructions. A reused
+  live child without verified retained recall says only `经验：复用当前线程上下文`; unverified persistence
+  placeholders are forbidden.
 - **Optional retention.** Profiles and experience are recorded only when a result is reusable across tasks. The
   local registry does not launch agents or keep live threads running.
 
-A new child uses `gpt-6-luna`, `gpt-6-sol`, or `gpt-6-astra`, with reasoning effort from `medium` upward.
-Astra is selected only when the strongest suitable `gpt-6-sol` option still has a decision-changing quality gap.
+A new child uses `gpt-5.6-luna`, `gpt-6-sol`, `gpt-5.6-sol`, or `gpt-6-astra`, in that order of capability, with reasoning effort from `medium` upward.
+The first three are ordinary subagent routes; only `gpt-6-astra` is the expert route.
+Astra is selected only when the strongest suitable `gpt-5.6-sol` option still has a decision-changing quality gap.
 Its reasoning effort is chosen per task from `medium`, `high`, or `xhigh`; `xhigh` is the upper bound,
 not the default.
 
@@ -92,7 +96,8 @@ The parent adopts a child result only from its final response or an equivalent r
 同一能力族有多个独立已就绪切片时，可以按各自任务卡创建运行时复制；只有存在真实选配疑问并
 且结果可比较时才形成配置变体。两者都只属于当前运行；比较、采用和未来保留仍走原有权威分支。
 
-新调用只选 `gpt-6-luna`、`gpt-6-sol`、`gpt-6-astra`，思考程度从 `medium` 起。旧保留类型配置不合规时，本次调用可用运行时角色；确需跨任务复用时才按 CAS 重配，新任务验证宿主加载。
+新调用按能力顺序选 `gpt-5.6-luna`、`gpt-6-sol`、`gpt-5.6-sol`、`gpt-6-astra`，思考程度从 `medium` 起。Astra 仅在最强可行 `gpt-5.6-sol` 仍有决定性质量差距时使用。旧保留类型配置不合规时，本次调用可用运行时角色；确需跨任务复用时才按 CAS 重配，新任务验证宿主加载。
+前三档都是常规子代理路线；只有 `gpt-6-astra` 是专家路线。
 模型和思考程度分别按任务选择。Astra 可以使用 `medium`、`high`、`xhigh`，不能每次固定
 为 `xhigh`。每次 `spawn_agent` 都显式传入真实模型、思考程度和非全量历史。
 
@@ -103,6 +108,8 @@ The parent adopts a child result only from its final response or an equivalent r
 状态，子代理读完经验便开始任务。召回失败
 就改派运行时子代理，后两行写 0 轮和未加载保留经验。每次调用不触发成本核对，健康台账保存
 新经验也不等待旧摘要纠错或版本维护；写入失败由父代理保留具名事项并在主任务推进后修复。
+复用当前子代理但没有已核验的保留召回状态时，经验行只写“经验：复用当前线程上下文”，不得
+显示“未核验持久化经验”或其他占位语。
 
 子代理完成后，父代理核验结果并继续主任务。已采用的新能力族可无新增经验而单独保留身份；
 只有新增可复用经验或已采用保留身份的明确失败才按需记录完成。普通调用不进入额外维护流程。
