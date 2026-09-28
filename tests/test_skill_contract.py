@@ -66,35 +66,40 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("成本或速度有一项实际收益即可委派", decision)
         self.assertNotRegex(decision, r"最多\s*[0-9一二三四五六七八九十]+\s*个子代理")
 
-    def test_same_capability_family_has_one_reuse_order(self) -> None:
+    def test_same_capability_family_reuses_without_forcing_a_thread_switch(self) -> None:
         section = self.stack.split("## 同一能力族优先复用", 1)[1].split(
             "## 原生调用与任务卡", 1
         )[0]
-        positions = [section.index(term) for term in ("live child", "agent_type", "运行时角色")]
-        self.assertEqual(positions, sorted(positions))
+        for term in ("live child", "agent_type", "运行时角色"):
+            self.assertIn(term, section)
+        compact = re.sub(r"\s+", "", section)
         for boundary in ("权限", "安全风险", "证据要求", "完成状态本身不妨碍续用"):
-            self.assertIn(boundary, section)
+            self.assertIn(boundary, compact)
         self.assertIn("只发送新增目标、证据或纠偏", section)
+        self.assertIn("同一任务的小补充直接继续", compact)
+        self.assertIn("不为统计台账复用强制换线程", compact)
 
     def test_retained_catalog_type_precedes_generic_runtime_routes(self) -> None:
         section = self.dispatch.split("## 选择同一能力族的执行者", 1)[1].split(
             "## 任务卡、上下文与所有权", 1
         )[0]
         compact = re.sub(r"\s+", "", section)
-        for term in ("具名保留`lean_*`类型", "generic`explorer`/`worker`/default", "运行时角色"):
+        for term in ("具名保留`lean_*``agent_type`", "generic`explorer`/`worker`/default", "运行时角色"):
             self.assertIn(re.sub(r"\s+", "", term), compact)
-        self.assertLess(compact.index("具名保留`lean_*`类型"), compact.index("generic`explorer`/`worker`/default"))
+        self.assertLess(compact.index("具名保留`lean_*``agent_type`"), compact.index("generic`explorer`/`worker`/default"))
         for boundary in ("职责", "输入", "交付", "权限", "模型能力", "安全", "证据边界"):
             self.assertIn(boundary, section)
         self.assertIn("不能因项目名不同跳过保留类型", compact)
-        self.assertIn("必须先定向`recall`", compact)
+        self.assertIn("只对最相关身份定向`recall`", compact)
         self.assertIn("召回成功后，将该机器身份真实传入`spawn_agent.agent_type`调用", compact)
+        self.assertIn("当前原生工具目录中已加载的具名保留`lean_*``agent_type`取交集", compact)
+        self.assertIn("结果只用于候选短名单", compact)
         self.assertIn("具体边界不兼容", compact)
         self.assertIn("定向召回明确失败", compact)
         for invalid_reason in ("没想到", "名称不同", "未查"):
             self.assertIn(invalid_reason, compact)
-        self.assertIn("候选目录及当前切片的职责、权限和证据要求未变化时复用", compact)
-        self.assertIn("不重复扫描", compact)
+        self.assertIn("查询结果和候选条件未变化时复用本轮结果", compact)
+        self.assertIn("不重复查", compact)
         self.assertIn("真实传入", compact)
         self.assertIn("不能因为generic更顺手而跳过", compact)
 
@@ -105,42 +110,47 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("`followup_task`", combined)
         self.assertIn("不得计入台账复用", combined)
 
-    def test_retention_metrics_use_honest_distinct_denominators(self) -> None:
+    def test_retention_metrics_are_observations_not_targets(self) -> None:
         combined = re.sub(r"\s+", "", self.memory + self.readme)
-        for metric in (
-            "retained-spawnshare",
-            "真实机会复用率",
-            "合格建档率",
-            "ensure尝试率",
-            "持久化成功率",
-        ):
+        for metric in ("retained-spawnshare", "真实机会复用率", "合格建档率"):
             self.assertIn(metric, combined)
         self.assertIn("`retained-spawnshare`只是描述性比例", combined)
         self.assertIn("不能据此推断真实机会复用率", combined)
-        self.assertIn("目标为100%", combined)
+        self.assertIn("只作为观察结果", combined)
+        self.assertIn("不设固定百分比", combined)
+        self.assertNotIn("目标为100%", combined)
         self.assertIn("不能伪造分母", combined)
-        self.assertIn("实际调用兼容已加载保留身份", combined)
-        self.assertIn("确需新spawn且存在已加载、同族兼容、`recall`成功保留身份的机会", combined)
-        self.assertIn("成功建档的独立新能力族", combined)
-        self.assertIn("被采用且满足稳定跨任务职责", combined)
         self.assertIn("不得虚构宿主指标", combined)
         self.assertIn("没有派发钩子", combined)
-        for coverage_rule in (
-            "每个必要新spawn都有候选评估记录",
-            "机会未核实",
-            "路由遗漏",
-            "不能排除出分母",
-            "分子必须来自同一已核实机会集合",
-            "零机会写“不适用”",
-            "证据缺失写“未知”",
+        self.assertIn("不能为提高数字过度保留、重复建档或制造调用", combined)
+
+    def test_active_consumers_do_not_restore_mechanical_retention_or_followup_rules(self) -> None:
+        prompt = self.manifest["interface"]["defaultPrompt"][0]
+        active = "\n".join(
+            (
+                self.stack,
+                self.dispatch,
+                self.memory,
+                self.cost,
+                self.results,
+                self.collaboration,
+                read(REFS / "agent-groups.md"),
+                read(REFS / "long-running.md"),
+                self.readme,
+                self.openai_yaml,
+                prompt,
+            )
+        )
+        for forbidden in (
+            "目标为 100%",
+            "目标为100%",
+            "合格新能力族必须尝试",
+            "必须尝试一次 `ensure`",
+            "必须尝试一次 ensure",
+            "每个新的 `followup_task` 增量切片都",
+            "每个新的 followup_task 增量切片",
         ):
-            self.assertIn(coverage_rule, combined)
-        for dedupe_rule in (
-            "按独立能力族去重",
-            "CAS确认不是第二次尝试单位",
-            "`reused`或`reconfigured`不能算成功创建新身份",
-        ):
-            self.assertIn(dedupe_rule, combined)
+            self.assertNotIn(forbidden, active)
 
     def test_runtime_copy_and_variant_keep_their_existing_authoritative_branch(self) -> None:
         groups_path = REFS / "agent-groups.md"
@@ -278,31 +288,34 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("已核验召回状态", section)
         self.assertIn("不得猜测", section)
 
-    def test_qualified_runtime_family_must_attempt_retention_after_adoption(self) -> None:
+    def test_adopted_runtime_family_is_retained_only_when_benefit_exceeds_burden(self) -> None:
         self.assertIn("结果核验后主任务立即继续", self.stack)
         self.assertIn("普通派发不进行成本、迁移或摘要巡检", self.stack)
-        self.assertIn("选中已加载保留类型时，仅对该身份定向召回", self.memory)
+        self.assertIn(
+            "命中当前可调用的兼容保留类型后，仅对该身份定向召回",
+            re.sub(r"\s+", "", self.memory),
+        )
         self.assertIn("不能成为派发前置", self.memory)
         self.assertIn("不能延迟主任务动作或交付", re.sub(r"\s+", "", self.memory))
         self.assertIn("需要记录时才生成", self.memory)
         compact = re.sub(r"\s+", "", self.stack + self.memory)
         for condition in (
-            "运行时角色首次产生已核验且被父任务实际采用的结果后逐项收口",
+            "运行时角色首次产生已核验且被父任务实际采用的结果后",
             "职责去除项目、文件和来源身份后仍稳定",
-            "有具体跨任务复用价值",
+            "稳定跨任务复用价值明确",
+            "预计后续复用收益高于维护和检索负担",
             "权限与证据边界可稳定描述",
             "台账无兼容同族",
-            "全部满足时必须尝试一次`ensure`",
         ):
             self.assertIn(re.sub(r"\s+", "", condition), compact)
         retention_sections = (
             self.stack.split("## 执行、结果和保留", 1)[1].split("## 条件路由", 1)[0]
             + self.memory.split("## 创建或重配身份", 1)[1].split("## 按需记录完成与经验", 1)[0]
         )
-        self.assertIn("逐项收口", retention_sections)
-        self.assertNotIn("全部满足时才可执行 `ensure`", retention_sections)
-        self.assertNotIn("可按需 `ensure`", retention_sections)
-        self.assertIn("不合格必须记录具体排除原因", retention_sections)
+        self.assertIn("选择性建档", retention_sections)
+        self.assertIn("才建档", retention_sections)
+        self.assertNotIn("必须尝试一次 `ensure`", retention_sections)
+        self.assertNotIn("全部满足时必须", retention_sections)
 
     def test_retention_skip_reasons_are_closed_and_do_not_create_quotas(self) -> None:
         section = self.memory.split("## 创建或重配身份", 1)[1].split(
@@ -322,17 +335,15 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(reason, compact)
         combined = self.stack + self.dispatch + self.memory
         self.assertNotRegex(combined, r"每\s*\d+\s*(?:次|个).{0,12}(?:保留|ensure)")
-        self.assertIn("目标不是配额", combined)
+        self.assertIn("不设固定建档率、配额或强制百分比", combined)
         self.assertIn("不回填历史运行", self.memory)
         self.assertIn("同族已存在就复用或按 CAS 重配，绝不新建", self.memory)
 
     def test_retained_failure_record_and_loaded_script_path_contract(self) -> None:
-        self.assertIn("全部满足时必须尝试一次 `ensure`", self.stack)
         self.assertIn("无新增经验", self.stack)
         self.assertIn("也无需 `run_id`", self.stack)
-        self.assertIn("即便没有新增 `--lesson` 也必须尝试 `ensure`", self.memory)
         self.assertIn("保留身份本身无需旧经验、数据库签发收据或`run_id`，不因此执行`complete-run`", re.sub(r"\s+", "", self.memory))
-        self.assertIn("跳过完成记账，但不影响符合上述条件的 `ensure`", self.memory)
+        self.assertIn("无新增经验的成功结果跳过完成记账", self.memory)
         self.assertIn("只有新增一条去敏、带适用范围和证据限制的跨任务经验时才调用`complete-run`", re.sub(r"\s+", "", self.memory))
         self.assertIn("`--outcome failure` 且不附 `--lesson`", self.memory)
         self.assertIn("运行中、中断、未采用或结果未定均不算失败", self.memory)
@@ -375,20 +386,20 @@ class SkillContractTests(unittest.TestCase):
         compact = re.sub(r"\s+", "", section)
         for condition in (
             "原生目录无同能力族、权限及证据边界兼容的身份",
-            "本轮没有有效台账目录时，先只读一次 `status --for-routing`",
+            "只有候选条件实质变化或本轮没有有效结果时，才只读一次 `status --for-routing`",
             "定向 `recall` 最相关候选",
             "确认没有兼容身份后，才`ensure`",
             "已有同身份且能力族、权限、证据边界兼容",
             "先核验并采用配置胜者",
             "当前可用SHA执行`--expected-sha256`CAS",
             "权限不扩大",
-            "没有新增`--lesson`也必须尝试`ensure`",
+            "选择性条件成立并决定新建时，即便没有新增`--lesson`也可执行`ensure`",
             "无需旧经验、数据库签发收据或`run_id`",
             "若已有竞争变更，重新判断胜者",
         ):
             self.assertIn(re.sub(r"\s+", "", condition), compact)
         long_running = re.sub(r"\s+", "", read(REFS / "long-running.md"))
-        self.assertIn("全部合格时必须尝试一次`ensure`，依据脚本的创建、冲突或跳过回执判定", long_running)
+        self.assertIn("满足选择性建档条件时才执行`ensure`", long_running)
         self.assertIn("已有身份重配和`complete-run`才要求身份及当前CAS快照", long_running)
 
     def test_qualified_retention_failure_stays_visible_without_blocking_mainline(self) -> None:
@@ -405,12 +416,13 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(phrase, compact)
 
-    def test_each_followup_slice_reselects_model_and_stops_finished_astra(self) -> None:
+    def test_followup_reselects_only_after_material_change_and_stops_finished_astra(self) -> None:
         combined = re.sub(r"\s+", "", self.dispatch + self.results + self.cost)
         for phrase in (
-            "每个新的`followup_task`增量切片",
-            "当前最小能力",
-            "质量、总边际成本和时间",
+            "任务类型、质量门槛、权限或证据边界、专家必要性、预计成本",
+            "发生实质变化",
+            "同一任务的小补充直接继续",
+            "不重复评估",
             "已完成且采用、验收满足的Astra",
             "无新要求、新证据、未满足验收或明确纠错时停止",
             "第一阶段",
@@ -424,6 +436,28 @@ class SkillContractTests(unittest.TestCase):
             "历史使用Astra不锁定未来模型",
         ):
             self.assertIn(phrase, combined)
+        self.assertNotIn("每个新的`followup_task`增量切片都", combined)
+
+    def test_new_capability_does_one_bounded_registry_lookup_and_reuses_unchanged_result(self) -> None:
+        combined = re.sub(r"\s+", "", self.dispatch + self.memory + self.stack)
+        for phrase in (
+            "决定为一个新的能力类型调用子代理",
+            "没有适合继续使用的当前子代理",
+            "一次快速、有界台账查询",
+            "当前工具目录已加载",
+            "经单个身份`recall`取得完整合同",
+            "本次改用最小运行时子代理",
+            "查询结果和候选条件未变化时复用本轮结果",
+            "不重复查",
+        ):
+            self.assertIn(phrase, combined)
+
+    def test_live_child_and_retained_candidate_compare_total_cost_after_quality(self) -> None:
+        combined = re.sub(r"\s+", "", self.dispatch + self.stack + self.cost)
+        self.assertIn("当前子代理与台账保留子代理都可用", combined)
+        self.assertIn("质量达到要求后比较父子合计总成本", combined)
+        self.assertIn("选择更低成本的一条", combined)
+        self.assertIn("不为统计台账复用强制换线程", combined)
 
     def test_retained_reuse_cost_advantage_never_overrides_hard_boundaries(self) -> None:
         compact = re.sub(r"\s+", "", self.cost + self.dispatch)
@@ -440,14 +474,16 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("Controlled registry growth", self.readme)
         self.assertNotIn("Qualified retention without registry growth", self.readme)
 
-    def test_routing_status_is_only_for_first_ensure_without_a_valid_catalog(self) -> None:
+    def test_routing_status_is_one_bounded_lookup_for_a_new_capability(self) -> None:
         combined = re.sub(r"\s+", "", self.dispatch + self.memory)
-        self.assertIn("派发前不执行`status--for-routing`", combined)
-        self.assertIn("拟首次`ensure`新身份", combined)
-        self.assertIn("本轮没有有效台账目录", combined)
+        self.assertIn("新的能力类型", combined)
+        self.assertIn("没有适合继续使用的当前子代理", combined)
         self.assertIn("只读一次`status--for-routing`", combined)
         self.assertIn("未加载身份不能冒充当前可调用", combined)
-        self.assertIn("避免未加载同族重复建档", combined)
+        self.assertIn("查询失败不得当成空台账", combined)
+        self.assertIn("查询失败时不能确认“没有兼容身份”", combined)
+        self.assertIn("本轮跳过`ensure`", combined)
+        self.assertIn("查询结果和候选条件未变化时", combined)
         self.assertNotIn("每次派发前执行`status--for-routing`", combined)
 
     def test_cheap_model_is_limited_to_bounded_fact_work(self) -> None:
@@ -462,6 +498,9 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(term, self.memory + self.dispatch)
         self.assertIn("只用于用户界面", self.memory)
         self.assertIn("稳定机器身份", self.memory)
+        combined = re.sub(r"\s+", "", self.dispatch + self.memory + self.readme)
+        self.assertIn("用户可见说明使用中文展示名", combined)
+        self.assertIn("机器名只在命令或核验证据中出现", combined)
 
     def test_persistence_safety_boundaries_remain_authoritative(self) -> None:
         compact = re.sub(r"\s+", "", self.memory)
@@ -544,11 +583,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("xhigh 只是上限", prompt)
         for surface in (prompt, self.openai_yaml):
             self.assertIn("保留类型优先", surface)
-            self.assertIn("采用后判断保留", surface)
+            self.assertIn("采用后选择性判断保留", surface)
             self.assertIn("运行时经验行写“本次任务上下文”", surface)
-            self.assertIn("增量切片", surface)
-            self.assertIn("必须尝试", surface)
-        self.assertNotIn("选择性保留", manifest_summary)
+            self.assertIn("实质变化", surface)
+            self.assertNotIn("必须尝试", surface)
+        self.assertIn("选择性保留", manifest_summary)
 
     def test_standard_install_does_not_require_global_instruction_edits(self) -> None:
         self.assertIn("Standard plugin installation does not edit global instructions", self.readme)

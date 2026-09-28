@@ -2,13 +2,13 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **7.4.0**
+Current version: **7.4.1**
 
 Delegation follows three priorities: protect quality on high-value work, prefer lower total cost
 when ordinary options are equally reliable, and add parallel help for speed when the total cost is
-acceptable. A compatible loaded `lean_*` retained type is recalled and used before generic or runtime roles;
-after an adopted runtime result, every independently reusable new capability family that passes the retention
-criteria must make one safe `ensure` attempt.
+acceptable. When a new capability has no suitable current child, one bounded registry lookup prefers a compatible
+retained type over generic or runtime roles. Adopted runtime roles are retained selectively only when expected future
+reuse exceeds maintenance and lookup burden.
 
 Codex Lean Stack provides two independent skills:
 
@@ -26,9 +26,11 @@ evidence required to support a conclusion.
   decision-changing quality advantage; compare total cost
   after ordinary options meet the same reliability bar; add parallel help for speed within an acceptable cost range.
 - **Tools first.** Deterministic work goes directly to tools.
-- **Reuse one capability family.** Continue a compatible live child when its context remains useful; otherwise a
-  compatible loaded `lean_*` `agent_type` must be recalled and used before generic `explorer`/`worker`/default or
-  a runtime role. Runtime fallback records the concrete incompatibility.
+- **Reuse one capability family.** Small follow-ups on the same task continue a compatible live child without a new
+  routing pass. For a new capability with no suitable current child, perform one bounded registry lookup and recall a
+  compatible loaded `lean_*` `agent_type` before generic or runtime fallback. Reuse an unchanged lookup result instead
+  of querying again. If both a current child and a retained child meet the quality bar, choose the lower combined
+  parent-child cost; do not switch threads merely to improve a reuse statistic.
 - **Conditional runtime copies.** Use isolated copies for separate ready slices in one capability family, and use
   configuration variants only when comparable evidence can answer a real routing question.
 - **Explicit native configuration.** Every `spawn_agent` supplies the actual model, reasoning effort, and bounded
@@ -38,16 +40,13 @@ evidence required to support a conclusion.
   success conditions, and stop conditions. Retained experience stays in the loaded role instructions. A reused
   live child without verified retained recall says only `经验：复用当前线程上下文`; a new runtime role says
   `经验：本次任务上下文`; unverified persistence placeholders are forbidden.
-- **Controlled registry growth.** An adopted runtime result is evaluated once. If it has a stable
-  cross-task role, safely describable authority and evidence boundaries, and no compatible family, one `ensure`
-  attempt is mandatory; otherwise the concrete exclusion is recorded. Existing families are reused or
-  CAS-reconfigured; one-off, duplicate, and project-bound roles are not retained. The local registry does not launch
-  agents or keep live threads running.
-- **Honest metrics.** `retained-spawn share` is descriptive only. Opportunity reuse and qualified retention each use
-  their own evidence-backed denominators and target 100%; ensure attempts and persistence successes are reported
-  separately. Every necessary spawn has a candidate assessment; unverified opportunities remain unknown rather than
-  disappearing from the denominator. Qualified retention is deduplicated by capability family, and reuse or CAS
-  reconfiguration is not a newly created identity. A low retained-spawn share cannot establish a missed reuse opportunity.
+- **Controlled registry growth.** An adopted runtime result is retained only when its cross-task role is stable,
+  expected future reuse clearly exceeds maintenance and lookup burden, authority and evidence boundaries are safe,
+  and no compatible family exists. Existing families are reused or CAS-reconfigured; one-off, duplicate,
+  project-bound, and low-reuse roles are not retained. There is no fixed retention rate or quota.
+- **Honest metrics.** `retained-spawn share`, opportunity reuse, and qualified retention are observations, not targets.
+  They have no fixed percentage. Never create calls, over-retain roles, or duplicate identities to improve a number.
+  A low retained-spawn share cannot establish a missed reuse opportunity.
 
 A new child uses `gpt-5.6-luna`, `gpt-6-sol`, `gpt-5.6-sol`, or `gpt-6-astra`, in that order of capability, with reasoning effort from `medium` upward.
 The first three are ordinary subagent routes; only `gpt-6-astra` is the expert route.
@@ -56,8 +55,9 @@ trade-offs, compliance judgments, review conclusions, and other sustained judgme
 Astra is selected only when the strongest suitable `gpt-5.6-sol` option still has a decision-changing quality gap.
 Its reasoning effort is chosen per task from `medium`, `high`, or `xhigh`; `xhigh` is the upper bound,
 not the default.
-Every new `followup_task` slice first reselects the minimum sufficient capability from current quality, marginal total
-cost, and time. If Astra is still required, a separate second decision chooses the old Astra thread or another
+Routing is reconsidered only when the task type, quality threshold, authority or evidence boundary, expert necessity,
+or expected cost changes materially; a small follow-up on the same task continues directly. If Astra is still required,
+a separate second decision chooses the old Astra thread or another
 compatible Astra route; low context value ends the old thread but does not downgrade the task. A completed, adopted
 Astra whose acceptance criteria are satisfied stops unless new requirements, evidence, an unmet acceptance condition,
 or an explicit correction justifies more work; historical Astra use does not lock the next slice to Astra.
@@ -106,10 +106,12 @@ The parent adopts a child result only from its final response or an equivalent r
 总成本可接受时可增派子代理提速。三项无需每次同时获益。决定委派后依次
 选择：
 
-1. 同一能力族、实际模型和思考程度合规、权限和证据边界兼容，且上下文仍有价值的 live child；
-2. 当前原生工具目录中职责、输入、交付、权限、模型能力、安全与证据边界兼容的具名保留
-   `lean_*` `agent_type`；兼容时必须定向召回并真实调用；
-3. 没有兼容保留类型时，写明具体不兼容点后再选 generic 或满足当前切片的最小运行时子代理。
+1. 同一任务、澄清、纠错或紧密相关的小补充，直接继续使用质量和边界兼容的当前子代理；
+2. 新的能力类型没有适合继续使用的当前子代理时，只做一次快速、有界台账查询；只有当前工具目录
+   已加载、并经单个身份读取确认同能力族且质量、权限、安全和证据边界兼容的保留子代理才召回使用；
+   查询失败、没有已加载兼容候选或读取失败时，本次才新建运行时子代理，查询失败不得当成空台账建档；
+3. 查询结果和候选条件未变化时复用本轮结果，不重复查；当前子代理与保留子代理都可用时，在质量
+   达标后比较父子合计总成本，选更低成本的一条，不为统计台账复用强制换线程。
 
 同一能力族有多个独立已就绪切片时，可以按各自任务卡创建运行时复制；只有存在真实选配疑问并
 且结果可比较时才形成配置变体。两者都只属于当前运行；比较、采用和未来保留仍走原有权威分支。
@@ -128,15 +130,17 @@ The parent adopts a child result only from its final response or an equivalent r
 新经验也不等待旧摘要纠错或版本维护；写入失败由父代理保留具名事项并在主任务推进后修复。
 复用当前子代理但没有已核验的保留召回状态时，经验行只写“经验：复用当前线程上下文”，不得
 显示“未核验持久化经验”或其他占位语。
+用户可见说明使用中文展示名，必要代码标识紧邻中文解释；机器名只在命令或核验证据中出现。
 
-每个新的 `followup_task` 增量切片都按当前最小能力重新比较质量、总边际成本和时间；历史使用
-Astra 不锁定未来模型。若当前质量仍需 Astra，再独立决定续用旧线程或改派兼容 Astra；旧线程
+只有任务类型、质量门槛、权限或证据边界、专家必要性、预计成本发生实质变化时才重新选路；同一
+任务的小补充直接继续，不重复评估。历史使用 Astra 不锁定未来模型。若当前质量仍需 Astra，再独立决定续用旧线程或改派兼容 Astra；旧线程
 上下文无边际价值只决定停止旧线程，不能据此降到 Sol/Luna。已完成且采用、验收满足的 Astra
 无新增依据时停止。
 
-子代理完成后，父代理核验结果并继续主任务。运行时新角色首次被采用后逐项收口；稳定、具备明确
-跨任务价值、权限和证据边界可安全描述且台账无兼容能力族时，必须尝试一次 `ensure`。同族已存在
-就复用或按 CAS 重配，一次性、重复和项目绑定角色不保留，并记录具体排除原因。
+子代理完成后，父代理核验结果并继续主任务。运行时新角色首次被采用后选择性判断保留；只有稳定
+跨任务复用价值明确、预计后续复用收益高于维护和检索负担、无兼容同族、可安全去敏且权限和证据
+边界稳定时才建档。同族已存在就复用或按 CAS 重配，一次性、重复、项目绑定和低复用预期角色不保留；
+不设固定建档率、配额或强制百分比。
 只有新增可复用经验或已采用保留身份的明确失败才按需记录完成。
 
 ## Documentation
