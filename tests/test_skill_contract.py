@@ -70,10 +70,15 @@ class SkillContractTests(unittest.TestCase):
         section = self.stack.split("## 同一能力族优先复用", 1)[1].split(
             "## 原生调用与任务卡", 1
         )[0]
-        for term in ("live child", "agent_type", "运行时角色"):
+        for term in ("当前子代理", "agent_type", "运行时角色"):
             self.assertIn(term, section)
         compact = re.sub(r"\s+", "", section)
-        for boundary in ("权限", "安全风险", "证据要求", "完成状态本身不妨碍续用"):
+        for boundary in (
+            "职责和预期交付",
+            "输入形式与证据使用规则写进任务卡",
+            "模型档位按本次任务的质量、成本和时间选择，不另设复用条件",
+            "完成状态本身不妨碍续用",
+        ):
             self.assertIn(boundary, compact)
         self.assertIn("只发送新增目标、证据或纠偏", section)
         self.assertIn("同一任务的小补充直接继续", compact)
@@ -84,24 +89,40 @@ class SkillContractTests(unittest.TestCase):
             "## 任务卡、上下文与所有权", 1
         )[0]
         compact = re.sub(r"\s+", "", section)
-        for term in ("具名保留`lean_*``agent_type`", "generic`explorer`/`worker`/default", "运行时角色"):
-            self.assertIn(re.sub(r"\s+", "", term), compact)
-        self.assertLess(compact.index("具名保留`lean_*``agent_type`"), compact.index("generic`explorer`/`worker`/default"))
-        for boundary in ("职责", "输入", "交付", "权限", "模型能力", "安全", "证据边界"):
+        for term in ("保留子代理", "通用角色", "运行时角色"):
+            self.assertIn(term, section)
+        self.assertIn("符合上述三项的保留子代理优先于通用角色和运行时路线", compact)
+        for boundary in (
+            "当前会话已经加载",
+            "属于同一能力族",
+            "质量兼容",
+        ):
             self.assertIn(boundary, section)
+        for removed_gate in (
+            "输入形式兼容",
+            "模型档位兼容",
+            "权限兼容",
+            "安全边界兼容",
+            "证据边界兼容",
+        ):
+            self.assertNotIn(removed_gate, section)
         self.assertIn("不能因项目名不同跳过保留类型", compact)
-        self.assertIn("只对最相关身份定向`recall`", compact)
-        self.assertIn("召回成功后，将该机器身份真实传入`spawn_agent.agent_type`调用", compact)
-        self.assertIn("当前原生工具目录中已加载的具名保留`lean_*``agent_type`取交集", compact)
+        self.assertIn("只读取最相关的保留子代理", compact)
+        self.assertIn("读取成功后，将该机器身份真实传入`spawn_agent.agent_type`调用", compact)
         self.assertIn("结果只用于候选短名单", compact)
-        self.assertIn("具体边界不兼容", compact)
-        self.assertIn("定向召回明确失败", compact)
+        self.assertIn("质量不兼容", compact)
+        self.assertIn("读取保留子代理明确失败", compact)
         for invalid_reason in ("没想到", "名称不同", "未查"):
             self.assertIn(invalid_reason, compact)
         self.assertIn("查询结果和候选条件未变化时复用本轮结果", compact)
         self.assertIn("不重复查", compact)
+        self.assertIn(
+            "目录查询失败但当前会话已加载类型中已有符合三项条件的明确候选时，仍只读取该候选一次",
+            compact,
+        )
+        self.assertIn("不要求所有无关保留身份都健康", compact)
         self.assertIn("真实传入", compact)
-        self.assertIn("不能因为generic更顺手而跳过", compact)
+        self.assertIn("不能因为通用角色更顺手而跳过", compact)
 
     def test_live_child_reuse_is_not_retained_catalog_reuse(self) -> None:
         combined = self.stack + self.dispatch + self.memory
@@ -199,8 +220,8 @@ class SkillContractTests(unittest.TestCase):
             self.assertEqual(positions, sorted(positions))
         for historical_model in ("gpt-6-luna", "gpt-5.6-terra"):
             self.assertNotIn(historical_model, selection)
-        self.assertIn("真实模型", self.stack)
-        self.assertIn("实际模型", self.dispatch)
+        self.assertIn("显式传实际`model`", re.sub(r"\s+", "", self.stack))
+        self.assertIn("显式传入实际`model`", re.sub(r"\s+", "", self.dispatch))
         for text in (self.stack, self.dispatch):
             self.assertIn("当前宿主已加载", text)
             self.assertIn("新任务验证", text)
@@ -218,8 +239,8 @@ class SkillContractTests(unittest.TestCase):
             "思考程度：<具体等级>",
         ])
         self.assertEqual(lines[3:], [
-            "存活轮次：<保留召回状态或运行时 0>",
-            "经验：<保留召回状态、复用当前线程上下文或本次任务上下文>",
+            "存活轮次：<保留子代理读取状态或运行时 0>",
+            "经验：<保留子代理读取状态、复用当前线程上下文或本次任务上下文>",
         ])
         self.assertEqual(len(lines), 5)
         self.assertIn("执行句", self.dispatch)
@@ -236,21 +257,21 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("存活轮次：0", self.dispatch)
         self.assertIn("经验：本次任务上下文", self.dispatch)
         self.assertIn("经验：复用当前线程上下文", self.dispatch + self.stack + self.openai_yaml)
-        self.assertIn("召回失败时改派最小合规运行时子代理", self.dispatch)
+        self.assertIn("读取保留子代理失败时改派最小合规运行时子代理", self.dispatch)
         self.assertIn("不声称复用了保留类型", self.dispatch)
         self.assertIn("状态无法确认时改派", self.dispatch)
         self.assertIn("五行", self.stack)
-        self.assertIn("五行真实开场与 final 三行的唯一详细规则见", self.stack)
+        self.assertIn("五行真实开场与最终回复三行的唯一详细规则见", self.stack)
         self.assertIn("最终回复顶部重复前三行实际配置", self.dispatch)
         self.assertIn("最终回复顶部保留三行实际配置", self.results)
-        self.assertIn("只对该身份做一次有界", self.memory)
-        self.assertIn("复用当前 live child 或已选中且召回成功的保留 `agent_type` 用 `（复用）`", self.dispatch)
+        self.assertIn("只读取该保留子代理一次", self.memory)
+        self.assertIn("复用当前子代理或已选中且读取成功的保留子代理用 `（复用）`", self.dispatch)
         self.assertIn("最小运行时新角色用 `（新建）`", self.dispatch)
         self.assertIn("候选匹配但未成功派发不得预标复用", self.dispatch)
         self.assertIn("名称标 `（新建）`", self.memory)
         self.assertIn("最终回复顶部保留三行实际配置，第一行沿用开场的同一名称标记", self.results)
         self.assertIn("缺少实际状态时先向父代理内部报告", self.results)
-        self.assertIn("final 保持相同标记", read(REFS / "collaboration.md"))
+        self.assertIn("最终回复保持相同标记", read(REFS / "collaboration.md"))
         self.assertIn("名称标新建", self.flowcharts)
         self.assertIn("第一行名称按实际派发标一次（复用）或（新建）", self.openai_yaml)
 
@@ -276,7 +297,7 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertIn("进展说明", active)
         self.assertNotIn("commentary", active)
-        self.assertIn("final", self.results)
+        self.assertIn("最终回复", self.results)
         self.assertIn("不构成交付", self.results)
 
     def test_missing_child_progress_has_evidence_based_fallback(self) -> None:
@@ -285,14 +306,14 @@ class SkillContractTests(unittest.TestCase):
         )[0]
         self.assertIn("宿主没有向用户显示", section)
         self.assertIn("原生调用回执", section)
-        self.assertIn("已核验召回状态", section)
+        self.assertIn("已核验的保留子代理读取状态", section)
         self.assertIn("不得猜测", section)
 
-    def test_adopted_runtime_family_is_retained_only_when_benefit_exceeds_burden(self) -> None:
+    def test_adopted_runtime_family_uses_the_bounded_retention_conditions(self) -> None:
         self.assertIn("结果核验后主任务立即继续", self.stack)
         self.assertIn("普通派发不进行成本、迁移或摘要巡检", self.stack)
         self.assertIn(
-            "命中当前可调用的兼容保留类型后，仅对该身份定向召回",
+            "命中当前可调用的兼容保留类型后，仅读取该保留子代理",
             re.sub(r"\s+", "", self.memory),
         )
         self.assertIn("不能成为派发前置", self.memory)
@@ -300,20 +321,24 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("需要记录时才生成", self.memory)
         compact = re.sub(r"\s+", "", self.stack + self.memory)
         for condition in (
-            "运行时角色首次产生已核验且被父任务实际采用的结果后",
-            "职责去除项目、文件和来源身份后仍稳定",
-            "稳定跨任务复用价值明确",
-            "预计后续复用收益高于维护和检索负担",
-            "权限与证据边界可稳定描述",
-            "台账无兼容同族",
+            "预计以后确实还会遇到同类任务",
+            "预计复用收益高于维护和查找负担",
+            "没有兼容的现有能力族",
         ):
             self.assertIn(re.sub(r"\s+", "", condition), compact)
         retention_sections = (
             self.stack.split("## 执行、结果和保留", 1)[1].split("## 条件路由", 1)[0]
             + self.memory.split("## 创建或重配身份", 1)[1].split("## 按需记录完成与经验", 1)[0]
         )
+        for removed_gate in (
+            "首次产生已核验且被父任务实际采用的结果后",
+            "职责去除项目、文件和来源身份后仍稳定",
+            "稳定跨任务复用价值明确",
+            "权限与证据边界可稳定描述",
+            "可安全去敏且",
+        ):
+            self.assertNotIn(removed_gate, re.sub(r"\s+", "", retention_sections))
         self.assertIn("选择性建档", retention_sections)
-        self.assertIn("才建档", retention_sections)
         self.assertNotIn("必须尝试一次 `ensure`", retention_sections)
         self.assertNotIn("全部满足时必须", retention_sections)
 
@@ -322,17 +347,14 @@ class SkillContractTests(unittest.TestCase):
             "## 按需记录完成与经验", 1
         )[0]
         compact = re.sub(r"\s+", "", section)
-        for reason in (
+        self.assertIn("不满足任一项时记录对应原因并跳过新建", compact)
+        for removed_gate in (
             "未采用或结果未定",
             "失败或中断",
             "一次性数据摘录且无可复用职责",
-            "无法安全去敏",
-            "已有兼容身份",
-            "同族运行时复制",
-            "未选胜者的配置变体",
-            "权限或身份无法安全核对",
+            "低复用预期角色",
         ):
-            self.assertIn(reason, compact)
+            self.assertNotIn(removed_gate, compact)
         combined = self.stack + self.dispatch + self.memory
         self.assertNotRegex(combined, r"每\s*\d+\s*(?:次|个).{0,12}(?:保留|ensure)")
         self.assertIn("不设固定建档率、配额或强制百分比", combined)
@@ -358,7 +380,7 @@ class SkillContractTests(unittest.TestCase):
 
     def test_dispatch_and_ensure_do_not_require_auxiliary_preflight(self) -> None:
         compact_dispatch = re.sub(r"\s+", "", self.dispatch)
-        self.assertIn("只对该身份做一次有界`recall`", compact_dispatch)
+        self.assertIn("只读取该保留子代理一次", compact_dispatch)
         compact_memory = re.sub(r"\s+", "", self.memory)
         for phrase in (
             "成功后立即派发",
@@ -369,14 +391,14 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(phrase, compact_dispatch)
         for phrase in (
-            "运行时角色首次产生已核验且被父任务实际采用的结果后",
+            "运行时子代理结束后只做一次选择性建档判断",
             "父代理按`ensure`返回的成功或冲突回执记录实际结果",
             "健康结构下新增经验直接按需保存，不等待历史",
             "只有需要声称某版旧经验参与该次并发完成结果时",
             "由`agents.py`执行并以成功、冲突或跳过回执判定",
         ):
             self.assertIn(phrase, compact_memory)
-        self.assertIn("普通子代理调用、复用、召回、`ensure` 和 `complete-run` 不触发成本状态查询", self.cost)
+        self.assertIn("普通子代理调用、复用、读取保留子代理、`ensure` 和 `complete-run` 不触发成本状态查询", self.cost)
         self.assertIn("不阻塞派发或 ensure", self.flowcharts)
 
     def test_ensure_create_and_reconfigure_have_distinct_safe_triggers(self) -> None:
@@ -385,9 +407,9 @@ class SkillContractTests(unittest.TestCase):
         )[0]
         compact = re.sub(r"\s+", "", section)
         for condition in (
-            "原生目录无同能力族、权限及证据边界兼容的身份",
+            "没有兼容的现有能力族",
             "只有候选条件实质变化或本轮没有有效结果时，才只读一次 `status --for-routing`",
-            "定向 `recall` 最相关候选",
+            "读取最相关的保留子代理",
             "确认没有兼容身份后，才`ensure`",
             "已有同身份且能力族、权限、证据边界兼容",
             "先核验并采用配置胜者",
@@ -444,13 +466,63 @@ class SkillContractTests(unittest.TestCase):
             "决定为一个新的能力类型调用子代理",
             "没有适合继续使用的当前子代理",
             "一次快速、有界台账查询",
-            "当前工具目录已加载",
-            "经单个身份`recall`取得完整合同",
-            "本次改用最小运行时子代理",
+            "当前会话已经加载",
+            "单个保留子代理读取取得完整合同",
+            "只有没有可核对候选或读取保留子代理失败时，本次才改用最小运行时子代理",
             "查询结果和候选条件未变化时复用本轮结果",
             "不重复查",
         ):
             self.assertIn(phrase, combined)
+
+    def test_public_explanations_use_the_chinese_recall_term(self) -> None:
+        combined = self.stack + self.dispatch + self.memory + self.collaboration + self.readme + self.openai_yaml
+        self.assertIn("读取保留子代理", combined)
+        for untranslated_phrase in (
+            "定向 `recall`",
+            "经单个身份 `recall`",
+            "有界 `recall`",
+            "`recall` 的两行",
+        ):
+            self.assertNotIn(untranslated_phrase, combined)
+
+    def test_active_surfaces_do_not_restore_removed_probability_gates(self) -> None:
+        active = "\n".join((
+            self.stack,
+            self.dispatch,
+            self.memory,
+            self.cost,
+            self.results,
+            self.collaboration,
+            read(REFS / "agent-groups.md"),
+            read(REFS / "long-running.md"),
+            self.readme,
+            self.openai_yaml,
+            self.manifest["interface"]["defaultPrompt"][0],
+        ))
+        for retained_condition in (
+            "当前会话已经加载",
+            "属于同一能力族",
+            "质量兼容",
+        ):
+            self.assertIn(retained_condition, active)
+        for retention_condition in (
+            "预计以后确实还会遇到同类任务",
+            "预计复用收益高于维护和查找负担",
+            "没有兼容的现有能力族",
+        ):
+            self.assertIn(retention_condition, active)
+        for removed_gate in (
+            "按职责、输入、交付、权限、模型能力、安全和证据边界筛选",
+            "同能力族、质量、权限、安全和证据边界兼容",
+            "实际模型属于上述四款、思考程度不低于",
+            "已加载类型的模型属于 `gpt-5.6-luna`",
+            "运行时结果首次被核验采用后只做选择性建档",
+            "稳定跨任务复用价值明确",
+            "权限与证据边界可稳定描述",
+            "可安全去敏且权限与证据边界稳定",
+            "Adopted runtime roles are retained",
+        ):
+            self.assertNotIn(removed_gate, active)
 
     def test_live_child_and_retained_candidate_compare_total_cost_after_quality(self) -> None:
         combined = re.sub(r"\s+", "", self.dispatch + self.stack + self.cost)
@@ -462,12 +534,12 @@ class SkillContractTests(unittest.TestCase):
     def test_retained_reuse_cost_advantage_never_overrides_hard_boundaries(self) -> None:
         compact = re.sub(r"\s+", "", self.cost + self.dispatch)
         self.assertIn("台账复用可减少角色提示重建和重复交接", compact)
-        self.assertIn("注入经验与新spawn仍有成本", compact)
+        self.assertIn("注入经验与新启动一个子代理仍有成本", compact)
         self.assertIn("按当前增量输入判断", compact)
         self.assertIn("可靠性相当时优先", compact)
-        for hard_boundary in ("质量", "权限", "安全", "证据边界"):
+        for hard_boundary in ("质量", "权限", "安全", "数据完整性", "诚实证据"):
             self.assertIn(hard_boundary, compact)
-        self.assertIn("硬条件", compact)
+        self.assertIn("不重复作为复用概率门槛", compact)
         self.assertIn("不逐调用查询价格", compact)
 
     def test_readme_describes_controlled_registry_growth(self) -> None:
@@ -483,8 +555,19 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("查询失败不得当成空台账", combined)
         self.assertIn("查询失败时不能确认“没有兼容身份”", combined)
         self.assertIn("本轮跳过`ensure`", combined)
+        self.assertIn(
+            "目录查询失败但当前会话已加载类型中已有符合三项条件的明确候选时",
+            combined,
+        )
+        self.assertIn("只读取该候选一次", combined)
         self.assertIn("查询结果和候选条件未变化时", combined)
         self.assertNotIn("每次派发前执行`status--for-routing`", combined)
+
+    def test_user_facing_result_and_cost_terms_are_chinese(self) -> None:
+        self.assertNotIn("提交 final", self.results)
+        self.assertNotIn("新 spawn", self.cost)
+        self.assertIn("提交最终回复", self.results)
+        self.assertIn("新启动一个子代理", self.cost)
 
     def test_cheap_model_is_limited_to_bounded_fact_work(self) -> None:
         combined = re.sub(r"\s+", "", self.stack + self.dispatch)
@@ -568,7 +651,7 @@ class SkillContractTests(unittest.TestCase):
         )
         for document in documents:
             self.assertIn("五行", document)
-            self.assertIn("final", document)
+            self.assertIn("最终回复", document)
             self.assertIn("前三行", document)
             self.assertNotRegex(document, r"(?m)^经验：未核验")
             self.assertNotIn("经验：未加载保留经验", document)
@@ -577,17 +660,21 @@ class SkillContractTests(unittest.TestCase):
     def test_manifest_and_skill_prompt_publish_current_behavior(self) -> None:
         prompt = self.manifest["interface"]["defaultPrompt"][0]
         manifest_summary = self.manifest["description"] + self.manifest["interface"]["longDescription"] + prompt
-        for term in ("$lean-stack", "live child", "agent_type", "三行", "进展说明"):
+        for term in ("$lean-stack", "当前子代理", "保留子代理", "三行", "进展说明"):
             self.assertIn(term, prompt)
             self.assertIn(term, self.openai_yaml)
         self.assertIn("xhigh 只是上限", prompt)
         for surface in (prompt, self.openai_yaml):
-            self.assertIn("保留类型优先", surface)
-            self.assertIn("采用后选择性判断保留", surface)
+            self.assertIn("当前会话已经加载、属于同一能力族、质量兼容", surface)
+            self.assertIn(
+                "目录查询失败但当前会话已加载类型中已有符合三项条件的明确候选时",
+                surface,
+            )
+            self.assertIn("运行时子代理在以下条件成立时选择性建档", surface)
             self.assertIn("运行时经验行写“本次任务上下文”", surface)
             self.assertIn("实质变化", surface)
             self.assertNotIn("必须尝试", surface)
-        self.assertIn("选择性保留", manifest_summary)
+        self.assertIn("选择性建档", manifest_summary)
 
     def test_standard_install_does_not_require_global_instruction_edits(self) -> None:
         self.assertIn("Standard plugin installation does not edit global instructions", self.readme)
