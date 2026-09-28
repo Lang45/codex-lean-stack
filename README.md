@@ -2,12 +2,13 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **7.3.0**
+Current version: **7.4.0**
 
 Delegation follows three priorities: protect quality on high-value work, prefer lower total cost
 when ordinary options are equally reliable, and add parallel help for speed when the total cost is
 acceptable. A compatible loaded `lean_*` retained type is recalled and used before generic or runtime roles;
-new capability families are retained selectively only when no compatible family exists and reuse value is clear.
+after an adopted runtime result, every independently reusable new capability family that passes the retention
+criteria must make one safe `ensure` attempt.
 
 Codex Lean Stack provides two independent skills:
 
@@ -37,10 +38,16 @@ evidence required to support a conclusion.
   success conditions, and stop conditions. Retained experience stays in the loaded role instructions. A reused
   live child without verified retained recall says only `经验：复用当前线程上下文`; a new runtime role says
   `经验：本次任务上下文`; unverified persistence placeholders are forbidden.
-- **Selective retention without registry growth.** An adopted runtime result is considered once, but a new profile
-  is created only when the registry has no compatible family and the role has clear cross-task value. Existing
-  families are reused or CAS-reconfigured; one-off, duplicate, and project-bound roles are not retained. The local
-  registry does not launch agents or keep live threads running.
+- **Controlled registry growth.** An adopted runtime result is evaluated once. If it has a stable
+  cross-task role, safely describable authority and evidence boundaries, and no compatible family, one `ensure`
+  attempt is mandatory; otherwise the concrete exclusion is recorded. Existing families are reused or
+  CAS-reconfigured; one-off, duplicate, and project-bound roles are not retained. The local registry does not launch
+  agents or keep live threads running.
+- **Honest metrics.** `retained-spawn share` is descriptive only. Opportunity reuse and qualified retention each use
+  their own evidence-backed denominators and target 100%; ensure attempts and persistence successes are reported
+  separately. Every necessary spawn has a candidate assessment; unverified opportunities remain unknown rather than
+  disappearing from the denominator. Qualified retention is deduplicated by capability family, and reuse or CAS
+  reconfiguration is not a newly created identity. A low retained-spawn share cannot establish a missed reuse opportunity.
 
 A new child uses `gpt-5.6-luna`, `gpt-6-sol`, `gpt-5.6-sol`, or `gpt-6-astra`, in that order of capability, with reasoning effort from `medium` upward.
 The first three are ordinary subagent routes; only `gpt-6-astra` is the expert route.
@@ -49,6 +56,11 @@ trade-offs, compliance judgments, review conclusions, and other sustained judgme
 Astra is selected only when the strongest suitable `gpt-5.6-sol` option still has a decision-changing quality gap.
 Its reasoning effort is chosen per task from `medium`, `high`, or `xhigh`; `xhigh` is the upper bound,
 not the default.
+Every new `followup_task` slice first reselects the minimum sufficient capability from current quality, marginal total
+cost, and time. If Astra is still required, a separate second decision chooses the old Astra thread or another
+compatible Astra route; low context value ends the old thread but does not downgrade the task. A completed, adopted
+Astra whose acceptance criteria are satisfied stops unless new requirements, evidence, an unmet acceptance condition,
+or an explicit correction justifies more work; historical Astra use does not lock the next slice to Astra.
 
 ## Installation
 
@@ -117,8 +129,14 @@ The parent adopts a child result only from its final response or an equivalent r
 复用当前子代理但没有已核验的保留召回状态时，经验行只写“经验：复用当前线程上下文”，不得
 显示“未核验持久化经验”或其他占位语。
 
-子代理完成后，父代理核验结果并继续主任务。运行时新角色只在台账无兼容能力族且有明确跨任务
-复用价值时选择性保留；同族已存在就复用或按 CAS 重配，一次性、重复和项目绑定角色不保留。
+每个新的 `followup_task` 增量切片都按当前最小能力重新比较质量、总边际成本和时间；历史使用
+Astra 不锁定未来模型。若当前质量仍需 Astra，再独立决定续用旧线程或改派兼容 Astra；旧线程
+上下文无边际价值只决定停止旧线程，不能据此降到 Sol/Luna。已完成且采用、验收满足的 Astra
+无新增依据时停止。
+
+子代理完成后，父代理核验结果并继续主任务。运行时新角色首次被采用后逐项收口；稳定、具备明确
+跨任务价值、权限和证据边界可安全描述且台账无兼容能力族时，必须尝试一次 `ensure`。同族已存在
+就复用或按 CAS 重配，一次性、重复和项目绑定角色不保留，并记录具体排除原因。
 只有新增可复用经验或已采用保留身份的明确失败才按需记录完成。
 
 ## Documentation
