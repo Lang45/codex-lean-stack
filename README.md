@@ -2,12 +2,12 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **7.2.1**
+Current version: **7.3.0**
 
 Delegation follows three priorities: protect quality on high-value work, prefer lower total cost
 when ordinary options are equally reliable, and add parallel help for speed when the total cost is
-acceptable. A retained type reuses its loaded experience without copying it into the task card;
-new reusable capability families can be retained after adoption even without a new lesson.
+acceptable. A compatible loaded `lean_*` retained type is recalled and used before generic or runtime roles;
+new capability families are retained selectively only when no compatible family exists and reuse value is clear.
 
 Codex Lean Stack provides two independent skills:
 
@@ -25,8 +25,9 @@ evidence required to support a conclusion.
   decision-changing quality advantage; compare total cost
   after ordinary options meet the same reliability bar; add parallel help for speed within an acceptable cost range.
 - **Tools first.** Deterministic work goes directly to tools.
-- **Reuse one capability family.** Continue a compatible live child with a supported actual configuration when its context remains useful; otherwise use
-  a compatible loaded `agent_type`; create a runtime role when neither fits.
+- **Reuse one capability family.** Continue a compatible live child when its context remains useful; otherwise a
+  compatible loaded `lean_*` `agent_type` must be recalled and used before generic `explorer`/`worker`/default or
+  a runtime role. Runtime fallback records the concrete incompatibility.
 - **Conditional runtime copies.** Use isolated copies for separate ready slices in one capability family, and use
   configuration variants only when comparable evidence can answer a real routing question.
 - **Explicit native configuration.** Every `spawn_agent` supplies the actual model, reasoning effort, and bounded
@@ -34,13 +35,17 @@ evidence required to support a conclusion.
 - **Small task cards.** New children receive five verified opening lines, the instruction to display them in
   the first progress note and repeat the first three in the final, one goal, needed evidence, ownership,
   success conditions, and stop conditions. Retained experience stays in the loaded role instructions. A reused
-  live child without verified retained recall says only `经验：复用当前线程上下文`; unverified persistence
-  placeholders are forbidden.
-- **Optional retention.** Profiles and experience are recorded only when a result is reusable across tasks. The
-  local registry does not launch agents or keep live threads running.
+  live child without verified retained recall says only `经验：复用当前线程上下文`; a new runtime role says
+  `经验：本次任务上下文`; unverified persistence placeholders are forbidden.
+- **Selective retention without registry growth.** An adopted runtime result is considered once, but a new profile
+  is created only when the registry has no compatible family and the role has clear cross-task value. Existing
+  families are reused or CAS-reconfigured; one-off, duplicate, and project-bound roles are not retained. The local
+  registry does not launch agents or keep live threads running.
 
 A new child uses `gpt-5.6-luna`, `gpt-6-sol`, `gpt-5.6-sol`, or `gpt-6-astra`, in that order of capability, with reasoning effort from `medium` upward.
 The first three are ordinary subagent routes; only `gpt-6-astra` is the expert route.
+`gpt-5.6-luna` is limited to bounded reading, structured extraction, and factual summaries. Recommendations,
+trade-offs, compliance judgments, review conclusions, and other sustained judgment use a suitable Sol or higher.
 Astra is selected only when the strongest suitable `gpt-5.6-sol` option still has a decision-changing quality gap.
 Its reasoning effort is chosen per task from `medium`, `high`, or `xhigh`; `xhigh` is the upper bound,
 not the default.
@@ -90,13 +95,14 @@ The parent adopts a child result only from its final response or an equivalent r
 选择：
 
 1. 同一能力族、实际模型和思考程度合规、权限和证据边界兼容，且上下文仍有价值的 live child；
-2. 当前原生工具目录中配置兼容的 `agent_type`；
-3. 满足当前切片的最小运行时子代理。
+2. 当前原生工具目录中职责、输入、交付、权限、模型能力、安全与证据边界兼容的具名保留
+   `lean_*` `agent_type`；兼容时必须定向召回并真实调用；
+3. 没有兼容保留类型时，写明具体不兼容点后再选 generic 或满足当前切片的最小运行时子代理。
 
 同一能力族有多个独立已就绪切片时，可以按各自任务卡创建运行时复制；只有存在真实选配疑问并
 且结果可比较时才形成配置变体。两者都只属于当前运行；比较、采用和未来保留仍走原有权威分支。
 
-新调用按能力顺序选 `gpt-5.6-luna`、`gpt-6-sol`、`gpt-5.6-sol`、`gpt-6-astra`，思考程度从 `medium` 起。Astra 仅在最强可行 `gpt-5.6-sol` 仍有决定性质量差距时使用。旧保留类型配置不合规时，本次调用可用运行时角色；确需跨任务复用时才按 CAS 重配，新任务验证宿主加载。
+新调用按能力顺序选 `gpt-5.6-luna`、`gpt-6-sol`、`gpt-5.6-sol`、`gpt-6-astra`，思考程度从 `medium` 起。Luna 只做有界读取、结构化提取和事实总结；建议、取舍、合规判断、审查结论及其他持续判断至少使用合适的 Sol。Astra 仅在最强可行 `gpt-5.6-sol` 仍有决定性质量差距时使用。旧保留类型配置不合规时，本次调用可用运行时角色；兼容身份需更新时才按 CAS 重配，新任务验证宿主加载。
 前三档都是常规子代理路线；只有 `gpt-6-astra` 是专家路线。
 模型和思考程度分别按任务选择。Astra 可以使用 `medium`、`high`、`xhigh`，不能每次固定
 为 `xhigh`。每次 `spawn_agent` 都显式传入真实模型、思考程度和非全量历史。
@@ -106,13 +112,14 @@ The parent adopts a child result only from its final response or an equivalent r
 目标、必要来源、权限或写入所有权、成功条件和停止
 条件。选中已加载保留类型后，只对该身份召回一次；保留经验已在角色指令中，任务卡只传五行
 状态，子代理读完经验便开始任务。召回失败
-就改派运行时子代理，后两行写 0 轮和未加载保留经验。每次调用不触发成本核对，健康台账保存
+就改派运行时子代理，后两行写 0 轮和“经验：本次任务上下文”。每次调用不触发成本核对，健康台账保存
 新经验也不等待旧摘要纠错或版本维护；写入失败由父代理保留具名事项并在主任务推进后修复。
 复用当前子代理但没有已核验的保留召回状态时，经验行只写“经验：复用当前线程上下文”，不得
 显示“未核验持久化经验”或其他占位语。
 
-子代理完成后，父代理核验结果并继续主任务。已采用的新能力族可无新增经验而单独保留身份；
-只有新增可复用经验或已采用保留身份的明确失败才按需记录完成。普通调用不进入额外维护流程。
+子代理完成后，父代理核验结果并继续主任务。运行时新角色只在台账无兼容能力族且有明确跨任务
+复用价值时选择性保留；同族已存在就复用或按 CAS 重配，一次性、重复和项目绑定角色不保留。
+只有新增可复用经验或已采用保留身份的明确失败才按需记录完成。
 
 ## Documentation
 
