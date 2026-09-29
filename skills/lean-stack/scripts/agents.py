@@ -73,8 +73,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 NEW_SUBAGENT_MODELS = (
     "gpt-5.6-luna",
-    "gpt-6-sol",
-    "gpt-5.6-sol",
+    "gpt-6.1-sol",
     "gpt-6-astra",
 )
 AUTHORITIES = {"read", "write"}

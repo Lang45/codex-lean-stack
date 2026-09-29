@@ -159,7 +159,7 @@ class RegistryChainTests(unittest.TestCase):
         return self.registry.ensure(
             role_key="evidence-review", display_name="证据复核员",
             description="核对已定位证据并保留适用边界。", role_instructions="交付可核验的复核结论。",
-            model="gpt-6-sol", effort="high", authority="read",
+            model="gpt-6.1-sol", effort="high", authority="read",
             global_domain_key="evidence-review",
             global_contract={
                 "domain": "证据复核", "input_shapes": ["已定位证据"],

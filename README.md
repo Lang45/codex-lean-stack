@@ -2,14 +2,13 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **7.4.2**
+Current version: **8.0.0**
 
-Delegation follows three priorities: protect quality on high-value work, prefer lower total cost
-when ordinary options are equally reliable, and add parallel help for speed when the total cost is
-acceptable. When a new capability has no suitable current child, one bounded registry lookup prefers a compatible
-retained type over generic or runtime roles. An unrelated retained-role failure cannot disqualify an already-loaded
-candidate that meets the three reuse conditions and passes its own read. Runtime roles are retained selectively when the same kind of task is
-expected again, expected reuse exceeds maintenance and lookup burden, and no compatible family exists.
+The available routes are `gpt-5.6-luna`, `gpt-6.1-sol`, and `gpt-6-astra`.
+All Sol delegation now uses `gpt-6.1-sol`; Luna and Astra keep their existing roles. Existing owned
+Sol identities can be explicitly CAS-reconfigured while preserving identity, reasoning effort,
+authority, speed, and experience. New or reconfigured identities use the current three-model
+set; historical owned configurations remain readable for migration.
 
 Codex Lean Stack provides two independent skills:
 
@@ -40,7 +39,7 @@ evidence required to support a conclusion.
 - **Explicit native configuration.** Every `spawn_agent` supplies the actual model, reasoning effort, and bounded
   history. A task card or retained profile does not replace native parameters.
 - **Small task cards.** New children receive five verified opening lines, the instruction to display them in
-  the first progress note and repeat the first three in the final, one goal, needed evidence, ownership,
+  the first progress note and repeat the first two in the final, one goal, needed evidence, ownership,
   success conditions, and stop conditions. Retained experience stays in the loaded role instructions. A reused
   live child without verified retained recall says only `经验：复用当前线程上下文`; a new runtime role says
   `经验：本次任务上下文`; unverified persistence placeholders are forbidden.
@@ -51,11 +50,11 @@ evidence required to support a conclusion.
   They have no fixed percentage. Never create calls, over-retain roles, or duplicate identities to improve a number.
   A low retained-spawn share cannot establish a missed reuse opportunity.
 
-A new child uses `gpt-5.6-luna`, `gpt-6-sol`, `gpt-5.6-sol`, or `gpt-6-astra`, in that order of capability, with reasoning effort from `medium` upward.
-The first three are ordinary subagent routes; only `gpt-6-astra` is the expert route.
+A new child uses `gpt-5.6-luna`, `gpt-6.1-sol`, or `gpt-6-astra`, in that order of capability, with reasoning effort from `medium` upward.
+The first two are ordinary subagent routes; only `gpt-6-astra` is the expert route.
 `gpt-5.6-luna` is limited to bounded reading, structured extraction, and factual summaries. Recommendations,
 trade-offs, compliance judgments, review conclusions, and other sustained judgment use a suitable Sol or higher.
-Astra is selected only when the strongest suitable `gpt-5.6-sol` option still has a decision-changing quality gap.
+Astra is selected only when the strongest suitable `gpt-6.1-sol` option still has a decision-changing quality gap.
 Its reasoning effort is chosen per task from `medium`, `high`, or `xhigh`; `xhigh` is the upper bound,
 not the default.
 Routing is reconsidered only when the task type, quality threshold, authority or evidence boundary, expert necessity,
@@ -120,8 +119,8 @@ The parent adopts a child result only from its final response or an equivalent r
 同一能力族有多个独立已就绪切片时，可以按各自任务卡创建运行时复制；只有存在真实选配疑问并
 且结果可比较时才形成配置变体。两者都只属于当前运行；比较、采用和未来保留仍走原有权威分支。
 
-新调用按能力顺序选 `gpt-5.6-luna`、`gpt-6-sol`、`gpt-5.6-sol`、`gpt-6-astra`，思考程度从 `medium` 起。Luna 只做有界读取、结构化提取和事实总结；建议、取舍、合规判断、审查结论及其他持续判断至少使用合适的 Sol。Astra 仅在最强可行 `gpt-5.6-sol` 仍有决定性质量差距时使用。旧保留类型配置不合规时，本次调用可用运行时角色；兼容身份需更新时才按 CAS 重配，新任务验证宿主加载。
-前三档都是常规子代理路线；只有 `gpt-6-astra` 是专家路线。
+新调用按能力顺序选 `gpt-5.6-luna`、`gpt-6.1-sol`、`gpt-6-astra`，思考程度从 `medium` 起。Luna 只做有界读取、结构化提取和事实总结；建议、取舍、合规判断、审查结论及其他持续判断至少使用合适的 Sol。Astra 仅在最强可行 `gpt-6.1-sol` 仍有决定性质量差距时使用。旧保留类型配置不合规时，本次调用可用运行时角色；兼容身份需更新时才按 CAS 重配，新任务验证宿主加载。
+前两档都是常规子代理路线；只有 `gpt-6-astra` 是专家路线。
 模型和思考程度分别按任务选择。Astra 可以使用 `medium`、`high`、`xhigh`，不能每次固定
 为 `xhigh`。每次 `spawn_agent` 都显式传入真实模型、思考程度和非全量历史。
 

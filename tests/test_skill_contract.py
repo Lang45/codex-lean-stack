@@ -199,9 +199,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不得因为模型是Astra就固定选`xhigh`", compact)
         self.assertIn("`max`和`ultra`不用于Astra子代理", compact)
 
-    def test_new_dispatch_uses_four_current_models_and_checks_legacy_reuse(self) -> None:
+    def test_new_dispatch_uses_three_current_models_and_checks_legacy_reuse(self) -> None:
         selection = self.stack.split("## 模型与思考程度", 1)[1].split("## 原生调用与任务卡", 1)[0]
-        models = ("gpt-5.6-luna", "gpt-6-sol", "gpt-5.6-sol", "gpt-6-astra")
+        models = ("gpt-5.6-luna", "gpt-6.1-sol", "gpt-6-astra")
         manifest_surface = (
             self.manifest["interface"]["longDescription"]
             + self.manifest["interface"]["defaultPrompt"][0]
@@ -218,7 +218,7 @@ class SkillContractTests(unittest.TestCase):
         ):
             positions = [surface.index(model) for model in models]
             self.assertEqual(positions, sorted(positions))
-        for historical_model in ("gpt-6-luna", "gpt-5.6-terra"):
+        for historical_model in ("gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"):
             self.assertNotIn(historical_model, selection)
         self.assertIn("显式传实际`model`", re.sub(r"\s+", "", self.stack))
         self.assertIn("显式传入实际`model`", re.sub(r"\s+", "", self.dispatch))
@@ -288,7 +288,7 @@ class SkillContractTests(unittest.TestCase):
             manifest_surface,
         ):
             compact = surface.replace("`", "")
-            self.assertIn("前三档都是常规子代理路线", compact)
+            self.assertIn("前两档都是常规子代理路线", compact)
             self.assertIn("只有 gpt-6-astra 是专家路线", compact)
 
     def test_user_facing_progress_term_is_chinese(self) -> None:

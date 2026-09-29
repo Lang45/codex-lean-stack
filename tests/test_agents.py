@@ -53,7 +53,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         display_name: str | None = None,
         description: str = "重复完成一个范围清晰、可复核的专门工作。",
         role_instructions: str = "交付直接可消费的结果和必要证据。",
-        model: str = "gpt-6-sol",
+        model: str = "gpt-6.1-sol",
         effort: str = "high",
         speed: str | None = None,
         expected_sha256: str | None = None,
@@ -92,10 +92,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         """Represent an already owned pre-policy role without calling ensure."""
         path = Path(str(created["path"]))
         current = path.read_bytes()
-        self.assertIn(b"gpt-6-sol", current)
+        self.assertIn(b"gpt-6.1-sol", current)
         self.assertIn(b'model_reasoning_effort = "high"', current)
         legacy = (
-            current.replace(b"gpt-6-sol", model.encode("utf-8"))
+            current.replace(b"gpt-6.1-sol", model.encode("utf-8"))
             .replace(
                 b'model_reasoning_effort = "high"',
                 f'model_reasoning_effort = "{effort}"'.encode("utf-8"),
@@ -421,7 +421,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("保持只读", first_paragraph)
         opening = (
             "子代理名称：QML 绑定诊断员（复用）\n"
-            "模型：gpt-6-sol\n"
+            "模型：gpt-6.1-sol\n"
             "思考程度：high\n"
         )
         self.assertIn(opening, instructions)
@@ -494,21 +494,21 @@ class SpecialistRegistryTests(unittest.TestCase):
         ).splitlines()
         self.assertEqual(len(opening_lines), 5)
         self.assertEqual(opening_lines[:3], [
-            "子代理名称：QML 绑定诊断员（复用）", "模型：gpt-6-sol", "思考程度：high"
+            "子代理名称：QML 绑定诊断员（复用）", "模型：gpt-6.1-sol", "思考程度：high"
         ])
         self.assertTrue(opening_lines[3].startswith("存活轮次："))
         self.assertTrue(opening_lines[4].startswith("经验："))
         self.assertEqual(
             agents.opening_configuration_declaration(
                 display_name="QML 绑定诊断员（复用）",
-                model="gpt-6-sol", effort="high",
+                model="gpt-6.1-sol", effort="high",
             ),
             recalled["opening_declaration"],
         )
         with self.assertRaisesRegex(agents.SpecialistError, "cannot use the new-agent"):
             agents.opening_configuration_declaration(
                 display_name="QML 绑定诊断员（新建）",
-                model="gpt-6-sol", effort="high",
+                model="gpt-6.1-sol", effort="high",
             )
 
         instructions = tomllib.loads(
@@ -646,7 +646,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertTrue(instructions.startswith("你是专门负责“快速来源核对员”的子代理"))
         opening = (
             "子代理名称：快速来源核对员（复用）\n"
-            "模型：gpt-6-sol\n"
+            "模型：gpt-6.1-sol\n"
             "思考程度：medium\n"
         )
         self.assertEqual(instructions.count(opening), 1)
@@ -670,7 +670,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         terra = self.ensure(
             role_key="terra-default-speed-review",
             global_domain_key="terra-default-speed-review",
-            model="gpt-6-sol",
+            model="gpt-6.1-sol",
             effort="medium",
         )
         explicit_standard = self.ensure(
@@ -934,7 +934,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             display_name="QML 绑定诊断员",
             role_key=role_key,
             role_instructions="交付直接可消费的结果和必要证据。",
-            model="gpt-6-sol",
+            model="gpt-6.1-sol",
             effort="high",
             authority="read",
         )
@@ -945,7 +945,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             name=name,
             display_name="QML 绑定诊断员",
             description="模拟文件落盘后、ledger 提交前的进程崩溃。",
-            model="gpt-6-sol",
+            model="gpt-6.1-sol",
             effort="high",
             authority="read",
             instruction_base=base,
@@ -1117,7 +1117,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "--display-name", "QML 绑定诊断员",
             "--description", "重复完成一个范围清晰、可复核的专门工作。",
             "--instructions", "交付直接可消费的结果和必要证据。",
-            "--model", "gpt-6-sol",
+            "--model", "gpt-6.1-sol",
             "--reasoning-effort", "high",
             "--speed", "fast",
             "--authority", "read",
@@ -1775,7 +1775,7 @@ else:
                 self.assertEqual(path.read_bytes(), before)
 
     def test_sol_subagents_accept_max_and_ultra_reasoning_effort(self) -> None:
-        for model in ("gpt-6-sol", "gpt-5.6-sol"):
+        for model in ("gpt-6.1-sol",):
             for effort in ("max", "ultra"):
                 with self.subTest(model=model, effort=effort):
                     role_key = f"sol-{model.replace('.', '-')}-{effort}-supported"
@@ -1812,8 +1812,7 @@ else:
     def test_ensure_accepts_only_current_models_with_medium_or_higher_effort(self) -> None:
         current_models = (
             "gpt-5.6-luna",
-            "gpt-6-sol",
-            "gpt-5.6-sol",
+            "gpt-6.1-sol",
             "gpt-6-astra",
         )
         self.assertEqual(agents.NEW_SUBAGENT_MODELS, current_models)
@@ -1827,7 +1826,7 @@ else:
                 )
                 self.assertEqual(created["action"], "created")
 
-        for model in ("gpt-6-luna", "gpt-5.6-terra", "gpt-5.5"):
+        for model in ("gpt-6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-6-sol", "gpt-5.6-sol"):
             with self.subTest(model=model, operation="create"):
                 with self.assertRaisesRegex(agents.SpecialistError, "require one of") as caught:
                     self.ensure(
@@ -1846,14 +1845,16 @@ else:
                 model="gpt-5.6-luna",
                 effort="ultra",
             )
-        self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 4)
+        self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 3)
 
         existing = self.ensure()
         original = Path(existing["path"]).read_bytes()
         for model, effort, error in (
             ("gpt-6-luna", "high", "require one of"),
             ("gpt-5.6-terra", "high", "require one of"),
-            ("gpt-6-sol", "low", "cannot use low"),
+            ("gpt-6-sol", "high", "require one of"),
+            ("gpt-5.6-sol", "high", "require one of"),
+            ("gpt-6.1-sol", "low", "cannot use low"),
         ):
             with self.subTest(model=model, effort=effort, operation="reconfigure"):
                 with self.assertRaisesRegex(agents.SpecialistError, error):
@@ -1878,22 +1879,24 @@ else:
         with self.assertRaisesRegex(agents.SpecialistError, "require one of"):
             self.ensure(model="gpt-5.6-terra", effort="low", expected_sha256=legacy_sha256)
         self.assertEqual(path.read_bytes(), before)
-        preview = self.ensure(model="gpt-6-sol", effort="high")
+        preview = self.ensure(model="gpt-6.1-sol", effort="high")
         self.assertEqual(preview["action"], "reconfiguration_required")
         self.assertEqual(path.read_bytes(), before)
         updated = self.ensure(
-            model="gpt-6-sol", effort="high", expected_sha256=legacy_sha256
+            model="gpt-6.1-sol", effort="high", expected_sha256=legacy_sha256
         )
         self.assertEqual(updated["action"], "reconfigured")
         self.assertEqual(updated["agent_id"], created["agent_id"])
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["model"], "gpt-6-sol")
+        self.assertEqual(payload["model"], "gpt-6.1-sol")
         self.assertEqual(payload["model_reasoning_effort"], "high")
 
     def test_rejected_current_creation_models_remain_readable_as_historical_roles(self) -> None:
         for index, (model, effort) in enumerate((
             ("gpt-6-luna", "ultra"),
             ("gpt-5.6-terra", "low"),
+            ("gpt-6-sol", "medium"),
+            ("gpt-5.6-sol", "high"),
         )):
             with self.subTest(model=model, effort=effort):
                 role_key = f"historical-model-{index}"
@@ -1937,7 +1940,7 @@ else:
                 after = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
                 for payload in (before, after):
                     instructions = payload["developer_instructions"]
-                    self.assertIn("模型：gpt-6-sol", instructions)
+                    self.assertIn("模型：gpt-6.1-sol", instructions)
                     self.assertIn("思考程度：high", instructions)
                     self.assertIn("任务卡必须提供五行实际值", instructions)
                     self.assertIn("新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理", instructions)
@@ -3853,7 +3856,7 @@ else:
         self.assertEqual(
             result["opening_declaration"],
             "子代理名称：QML 绑定诊断员（复用）\n"
-            "模型：gpt-6-sol\n"
+            "模型：gpt-6.1-sol\n"
             "思考程度：high\n",
         )
         self.assertEqual(len(result["opening_declaration"].splitlines()), 3)
