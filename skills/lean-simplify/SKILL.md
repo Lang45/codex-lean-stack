@@ -73,7 +73,7 @@ description: 非平凡主任务或可选准备将先于实际推进时读取；�
 | 准备新增或修改实现，或在没有待修失败时重构 | [构建](../lean-stack/references/build.md) |
 | 准备判断需求符合度、工程质量、风险或是否适合合并 | [审查](../lean-stack/references/review.md) |
 | 后续有两个或更多必须按顺序完成、前一步会解锁后一步的阶段 | [长任务](../lean-stack/references/long-running.md) |
-| 下一步要编写 Windows exec、PowerShell、复杂参数或任务脚本 | [Windows exec 与 PowerShell](../lean-stack/references/windows-exec.md) |
+| 下一步要编写 Windows exec、PowerShell、复杂参数或任务脚本，或执行清理、删除文件 | [Windows exec 与 PowerShell](../lean-stack/references/windows-exec.md) |
 | 准备确定检查对象、独立预期或验证范围，或执行条件性验证或最窄重验 | [条件性验证](../lean-stack/references/verification.md) |
 | 准备新增抽象、兼容层、流程或文件，或需要证明现实消费者 | [反 AI 过度工程](../lean-stack/references/anti-overengineering.md) |
 | 用户明确要求执行正式消融，而不只是普通精简 | [消融反馈循环](../lean-stack/references/ablation-loop.md) |

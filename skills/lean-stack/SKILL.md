@@ -99,6 +99,7 @@ Astra 路线，旧线程上下文无边际价值不能触发降级。已完成�
 
 | 下一动作 | 权威入口 |
 | --- | --- |
+| 编写 Windows exec、PowerShell，或准备清理、删除文件 | [Windows exec 与 PowerShell](references/windows-exec.md) |
 | 选择执行者、模型、思考程度、任务卡或调用参数 | [首次派发](references/dispatch-start.md) |
 | 分配长来源、复用证据包或补具名缺口 | [来源所有权与结果收据](references/source-results.md) |
 | 准备运行时复制、配置变体、结果比较或处理用户否定 | [任务类型组、复制与变体](references/agent-groups.md) |

@@ -2,13 +2,12 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.0.0**
+Current version: **8.1.0**
 
-The available routes are `gpt-5.6-luna`, `gpt-6.1-sol`, and `gpt-6-astra`.
-All Sol delegation now uses `gpt-6.1-sol`; Luna and Astra keep their existing roles. Existing owned
-Sol identities can be explicitly CAS-reconfigured while preserving identity, reasoning effort,
-authority, speed, and experience. New or reconfigured identities use the current three-model
-set; historical owned configurations remain readable for migration.
+Both skills now route Windows cleanup and deletion to one shared execution contract: stop on errors,
+use task-specific variables, and verify exact authorized absolute targets and directory boundaries,
+including symbolic links and junctions, before deletion. These are agent execution instructions;
+they do not provide operating-system isolation. See the [Windows cleanup rules](skills/lean-stack/references/windows-exec.md#清理脚本遇错停止与删除路径核验).
 
 Codex Lean Stack provides two independent skills:
 
