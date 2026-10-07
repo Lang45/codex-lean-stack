@@ -2,12 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.1.0**
+Current version: **8.1.1**
 
-Both skills now route Windows cleanup and deletion to one shared execution contract: stop on errors,
-use task-specific variables, and verify exact authorized absolute targets and directory boundaries,
-including symbolic links and junctions, before deletion. These are agent execution instructions;
-they do not provide operating-system isolation. See the [Windows cleanup rules](skills/lean-stack/references/windows-exec.md#清理脚本遇错停止与删除路径核验).
+- Required checks stop dependent synchronization and release on failure; a later successful command cannot hide an earlier failure.
+- Acceptance uses the requested complete workflow, representative data, and the full production application when the user requests its UI.
+- Retained aliases with the same domain, authority, and canonical contract return the existing identity. The routing catalog exposes the existing domain key; semantic overlap still requires a scoped human or parent-agent decision.
 
 Codex Lean Stack provides two independent skills:
 
@@ -38,7 +37,7 @@ evidence required to support a conclusion.
 - **Explicit native configuration.** Every `spawn_agent` supplies the actual model, reasoning effort, and bounded
   history. A task card or retained profile does not replace native parameters.
 - **Small task cards.** New children receive five verified opening lines, the instruction to display them in
-  the first progress note and repeat the first two in the final, one goal, needed evidence, ownership,
+  the first progress note and repeat the first three in the final, one goal, needed evidence, ownership,
   success conditions, and stop conditions. Retained experience stays in the loaded role instructions. A reused
   live child without verified retained recall says only `经验：复用当前线程上下文`; a new runtime role says
   `经验：本次任务上下文`; unverified persistence placeholders are forbidden.

@@ -2597,6 +2597,56 @@ class SpecialistRegistry:
                     f"manual review required: {[str(path) for path in conflicts]}"
                 )
 
+            # A different spelling is not permission to duplicate a retained
+            # capability or rewrite its identity/configuration. Evidence rules
+            # can occur in any free-text contract field, so match the complete
+            # canonical contract rather than infer compatibility from words.
+            candidates = connection.execute(
+                "SELECT name FROM agents WHERE global_domain_key = ? "
+                "AND retired_at IS NULL ORDER BY created_at, name",
+                (global_domain_key,),
+            ).fetchall()
+            for candidate in candidates:
+                row, _, _, payload, _ = self._owned_agent(
+                    connection, name=candidate["name"],
+                )
+                stored_sandbox_mode = payload.get("sandbox_mode")
+                if stored_sandbox_mode not in {"read-only", "workspace-write"}:
+                    raise SpecialistError("owned specialist sandbox_mode is invalid")
+                requested_sandbox_mode = (
+                    "workspace-write" if authority == "write" else "read-only"
+                )
+                if (
+                    stored_sandbox_mode != requested_sandbox_mode
+                    or row["global_contract"] != canonical_contract
+                ):
+                    continue
+                stored_speed = speed_from_payload(payload)
+                configuration_matches = (
+                    payload.get("model") == model
+                    and payload.get("model_reasoning_effort") == effort
+                    and stored_speed == speed
+                )
+                connection.execute("COMMIT")
+                return {
+                    "ok": True,
+                    "action": "reuse_required",
+                    "compatible": configuration_matches,
+                    "configuration_matches": configuration_matches,
+                    "model": payload.get("model"),
+                    "reasoning_effort": payload.get("model_reasoning_effort"),
+                    "speed": stored_speed,
+                    "authority": authority,
+                    "agent_ref": row["name"],
+                    "agent_id": row["agent_id"],
+                    "name": row["name"],
+                    "role_key": row["role_key"],
+                    "requested_role_key": role_key,
+                    "sha256": row["expected_sha256"],
+                    "host_visibility": "use_current_spawn_surface_as_authority",
+                    "internal_message_runtime_route": INTERNAL_MESSAGE_RUNTIME_ROUTE,
+                }
+
             agent_id = str(uuid.uuid4())
             owner_token = uuid.uuid4().hex
             name = specialist_name(role_key, agent_id)
@@ -3781,6 +3831,7 @@ class SpecialistRegistry:
                     routing_catalog.append({
                         "name": row["name"],
                         "agent_ref": row["name"],
+                        "global_domain_key": row["global_domain_key"],
                         "display_name": display_name,
                         "description": description,
                         "model": payload.get("model"),

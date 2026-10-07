@@ -57,7 +57,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         effort: str = "high",
         speed: str | None = None,
         expected_sha256: str | None = None,
-        global_domain_key: str = "interface-binding-diagnostics",
+        global_domain_key: str | None = None,
         global_contract: dict[str, object] | None = None,
         origin_terms: tuple[str, ...] = ("当前任务来源",),
     ):
@@ -72,7 +72,10 @@ class SpecialistRegistryTests(unittest.TestCase):
             authority=authority,
             speed=speed,
             expected_sha256=expected_sha256,
-            global_domain_key=global_domain_key,
+            global_domain_key=global_domain_key or (
+                "interface-binding-diagnostics"
+                if role_key == "qml-binding-diagnostics" else role_key
+            ),
             global_contract=global_contract or self.contract(),
             origin_terms=origin_terms,
         )
@@ -386,6 +389,104 @@ class SpecialistRegistryTests(unittest.TestCase):
             encoding="utf-8",
         )
         return plan
+
+    def test_ensure_alias_requires_reuse_without_mutating_configuration_or_history(self) -> None:
+        created = self.ensure()
+        improved = self.improve_with_lesson(
+            name=created["name"], expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()), lesson="相同能力应优先复用经过核验的身份。",
+        )
+        self.registry.record_run(
+            name=created["name"], expected_sha256=improved["sha256"],
+            run_id=str(uuid.uuid4()), invocation_kind="spawn_agent", outcome="success",
+        )
+        self.registry.recall(
+            name=created["name"], expected_sha256=improved["sha256"],
+            run_id=str(uuid.uuid4()),
+        )
+        before = Path(created["path"]).read_bytes()
+        with contextlib.closing(self.db()) as connection:
+            snapshot = connection.iterdump()
+            before_ledger = list(snapshot)
+        alias = self.ensure(
+            role_key="interface-root-cause-review", global_domain_key="interface-binding-diagnostics",
+            display_name="另一个显示名称", role_instructions="先做有限读取再交付。",
+            model="gpt-5.6-luna", effort="medium", speed="fast",
+        )
+        self.assertEqual(alias["action"], "reuse_required")
+        self.assertEqual(alias["agent_ref"], created["name"])
+        self.assertEqual(alias["role_key"], "qml-binding-diagnostics")
+        self.assertEqual(alias["requested_role_key"], "interface-root-cause-review")
+        self.assertEqual(alias["sha256"], improved["sha256"])
+        self.assertFalse(alias["compatible"])
+        self.assertFalse(alias["configuration_matches"])
+        self.assertEqual(alias["model"], "gpt-6.1-sol")
+        self.assertEqual(alias["reasoning_effort"], "high")
+        self.assertEqual(alias["speed"], "standard")
+        self.assertEqual(alias["authority"], "read")
+        self.assertNotIn("owner_token", alias)
+        self.assertEqual(Path(created["path"]).read_bytes(), before)
+        self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 1)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(list(connection.iterdump()), before_ledger)
+
+    def test_ensure_alias_high_request_exposes_lower_stored_configuration_for_cas(self) -> None:
+        created = self.ensure(model="gpt-5.6-luna", effort="medium")
+        before = Path(created["path"]).read_bytes()
+        result = self.ensure(role_key="binding-high-alias", global_domain_key="interface-binding-diagnostics")
+        self.assertEqual(result["action"], "reuse_required")
+        self.assertFalse(result["compatible"])
+        self.assertFalse(result["configuration_matches"])
+        self.assertEqual(result["model"], "gpt-5.6-luna")
+        self.assertEqual(result["reasoning_effort"], "medium")
+        self.assertEqual(Path(created["path"]).read_bytes(), before)
+        updated = self.ensure(role_key=result["role_key"], expected_sha256=result["sha256"])
+        self.assertEqual(updated["action"], "reconfigured")
+        self.assertEqual(updated["agent_id"], created["agent_id"])
+
+    def test_ensure_alias_preserves_distinct_permission_and_contract_boundaries(self) -> None:
+        self.ensure()
+        writer = self.ensure(
+            role_key="binding-write-review", authority="write",
+            global_domain_key="interface-binding-diagnostics",
+        )
+        self.assertEqual(writer["action"], "created")
+        writer_alias = self.ensure(
+            role_key="binding-write-alias", authority="write",
+            global_domain_key="interface-binding-diagnostics",
+        )
+        self.assertEqual(writer_alias["action"], "reuse_required")
+        self.assertTrue(writer_alias["compatible"])
+        self.assertTrue(writer_alias["configuration_matches"])
+        self.assertEqual(writer_alias["agent_ref"], writer["name"])
+        for field in agents.GLOBAL_CONTRACT_FIELDS:
+            with self.subTest(field=field):
+                different = self.contract()
+                if field == "domain":
+                    different[field] = "不同证据合同的绑定诊断"
+                else:
+                    different[field] = [*different[field], "结论须用真实用户操作核验"]
+                result = self.ensure(
+                    role_key=f"distinct-{field.replace('_', '-')}",
+                    global_domain_key="interface-binding-diagnostics",
+                    global_contract=different,
+                )
+                self.assertEqual(result["action"], "created")
+
+    def test_ensure_alias_rejects_cas_for_missing_role_and_drifted_candidate(self) -> None:
+        created = self.ensure()
+        before = Path(created["path"]).read_bytes()
+        with self.assertRaisesRegex(agents.SpecialistError, "reusable role does not exist"):
+            self.ensure(
+                role_key="binding-alias", global_domain_key="interface-binding-diagnostics",
+                expected_sha256=created["sha256"],
+            )
+        self.assertEqual(Path(created["path"]).read_bytes(), before)
+        Path(created["path"]).write_bytes(before + b"# external change\n")
+        with self.assertRaisesRegex(agents.SpecialistError, "drifted"):
+            self.ensure(role_key="binding-alias", global_domain_key="interface-binding-diagnostics")
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM agents").fetchone()[0], 1)
 
     def test_ensure_creates_one_specialist_and_reuses_the_same_role(self) -> None:
         first = self.ensure()
@@ -3589,14 +3690,14 @@ else:
         self.assertEqual(
             set(items[0]),
             {
-                "name", "agent_ref", "display_name", "description",
+                "name", "agent_ref", "global_domain_key", "display_name", "description",
                 "model", "reasoning_effort", "authority",
             },
         )
         self.assertEqual(items[0]["agent_ref"], items[0]["name"])
         self.assertEqual(items[0]["display_name"], "来源复核员")
         self.assertEqual(items[0]["description"], "来源复核员：复核来源覆盖和证据范围。")
-        self.assertNotIn("global_domain_key", items[0])
+        self.assertEqual(items[0]["global_domain_key"], "alpha-source-review")
         self.assertNotIn("global_contract", items[0])
         self.assertNotIn("speed", items[0])
         self.assertLess(len(json.dumps(catalog, ensure_ascii=False)), 4096)
@@ -3627,7 +3728,7 @@ else:
         self.assertEqual(
             set(catalog["registered_agents"][0]),
             {
-                "name", "agent_ref", "display_name", "description",
+                "name", "agent_ref", "global_domain_key", "display_name", "description",
                 "model", "reasoning_effort", "authority",
             },
         )
@@ -4381,7 +4482,8 @@ else:
             with self.assertRaises(SystemExit) as exited:
                 agents.build_parser().parse_args(["recall", "--help"])
         self.assertEqual(exited.exception.code, 0)
-        self.assertIn("--name, --agent-ref NAME", help_output.getvalue())
+        self.assertIn("--name", help_output.getvalue())
+        self.assertIn("--agent-ref", help_output.getvalue())
         self.assertIn("lean_* machine identity returned as agent_ref", help_output.getvalue())
 
         agent_ref = "lean_source_review_12345678"

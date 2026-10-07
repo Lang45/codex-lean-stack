@@ -137,7 +137,7 @@ class InstallationChainTests(unittest.TestCase):
                 self.assertFalse(installer._has_default_invocation(text))
                 self.base.write_text(text, encoding="utf-8", newline="")
                 result = installer.ensure_default_invocation(self.home)
-                written = self.base.read_text(encoding="utf-8", newline="")
+                written = self.base.read_bytes().decode("utf-8")
                 self.assertTrue(result["modified"])
                 if text.startswith("---\n"):
                     # Metadata remains first; the instruction belongs to the body.
