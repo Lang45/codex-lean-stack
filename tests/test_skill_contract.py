@@ -202,10 +202,6 @@ class SkillContractTests(unittest.TestCase):
     def test_new_dispatch_uses_three_current_models_and_checks_legacy_reuse(self) -> None:
         selection = self.stack.split("## 模型与思考程度", 1)[1].split("## 原生调用与任务卡", 1)[0]
         models = ("gpt-5.6-luna", "gpt-6.1-sol", "gpt-6-astra")
-        manifest_surface = (
-            self.manifest["interface"]["longDescription"]
-            + self.manifest["interface"]["defaultPrompt"][0]
-        )
         for model in models:
             self.assertIn(model, selection)
             self.assertIn(model, self.dispatch)
@@ -214,7 +210,6 @@ class SkillContractTests(unittest.TestCase):
             self.dispatch,
             self.readme,
             self.openai_yaml,
-            manifest_surface,
         ):
             positions = [surface.index(model) for model in models]
             self.assertEqual(positions, sorted(positions))
@@ -276,16 +271,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("第一行名称按实际派发标一次（复用）或（新建）", self.openai_yaml)
 
     def test_only_astra_is_the_expert_route(self) -> None:
-        manifest_surface = (
-            self.manifest["interface"]["longDescription"]
-            + self.manifest["interface"]["defaultPrompt"][0]
-        )
         for surface in (
             self.stack,
             self.dispatch,
             self.readme,
             self.openai_yaml,
-            manifest_surface,
         ):
             compact = surface.replace("`", "")
             self.assertIn("前两档都是常规子代理路线", compact)
@@ -640,14 +630,12 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不为凑总数拆图", self.flowcharts)
 
     def test_five_line_opening_is_consistent_in_delegation_documents(self) -> None:
-        prompt = self.manifest["interface"]["defaultPrompt"][0]
         documents = (
             self.dispatch,
             read(REFS / "collaboration.md"),
             self.versioning,
             self.openai_yaml,
             self.readme,
-            prompt,
         )
         for document in documents:
             self.assertIn("五行", document)
@@ -657,24 +645,47 @@ class SkillContractTests(unittest.TestCase):
             self.assertNotIn("经验：未加载保留经验", document)
             self.assertIn("本次任务上下文", document)
 
-    def test_manifest_and_skill_prompt_publish_current_behavior(self) -> None:
-        prompt = self.manifest["interface"]["defaultPrompt"][0]
-        manifest_summary = self.manifest["description"] + self.manifest["interface"]["longDescription"] + prompt
+    def test_skill_prompt_and_authoritative_rules_publish_current_behavior(self) -> None:
+        # Manifest starters fit the host's 128-character field and route to skills.
+        # Detailed dispatch contracts belong to the skill and its references.
         for term in ("$lean-stack", "当前子代理", "保留子代理", "三行", "进展说明"):
-            self.assertIn(term, prompt)
             self.assertIn(term, self.openai_yaml)
-        self.assertIn("xhigh 只是上限", prompt)
-        for surface in (prompt, self.openai_yaml):
-            self.assertIn("当前会话已经加载、属于同一能力族、质量兼容", surface)
-            self.assertIn(
-                "目录查询失败但当前会话已加载类型中已有符合三项条件的明确候选时",
-                surface,
-            )
-            self.assertIn("运行时子代理在以下条件成立时选择性建档", surface)
-            self.assertIn("运行时经验行写“本次任务上下文”", surface)
-            self.assertIn("实质变化", surface)
-            self.assertNotIn("必须尝试", surface)
-        self.assertIn("选择性建档", manifest_summary)
+        self.assertIn("`xhigh` 是上限，不是默认值", self.stack)
+        self.assertIn("当前会话已经加载、属于同一能力族、质量兼容", self.openai_yaml)
+        self.assertIn(
+            "目录查询失败但当前会话已加载类型中已有符合三项条件的明确候选时",
+            self.openai_yaml,
+        )
+        self.assertIn("运行时子代理在以下条件成立时选择性建档", self.openai_yaml)
+        self.assertIn("运行时经验行写“本次任务上下文”", self.openai_yaml)
+        self.assertIn("实质变化", self.openai_yaml)
+        self.assertNotIn("必须尝试", self.openai_yaml)
+        self.assertIn("运行时子代理在以下条件成立时选择性建档", self.memory)
+        self.assertIn("“存活轮次：0”“经验：本次任务上下文”", self.dispatch)
+
+    def assert_host_default_prompt_bounds(self, prompts: object) -> None:
+        # The host ignores prompts longer than 128 characters; at most three
+        # starters are consumed. Keep this check on the actual manifest field.
+        self.assertIsInstance(prompts, list)
+        self.assertLessEqual(len(prompts), 3)
+        for index, prompt in enumerate(prompts):
+            self.assertIsInstance(prompt, str)
+            self.assertLessEqual(len(prompt), 128, f"defaultPrompt[{index}] exceeds 128 characters")
+
+    def test_manifest_default_prompts_fit_host_limits_and_identify_skill_entries(self) -> None:
+        prompts = self.manifest["interface"]["defaultPrompt"]
+        self.assert_host_default_prompt_bounds(prompts)
+        entries = [re.findall(r"\$(lean-stack|lean-simplify)(?![\w-])", prompt) for prompt in prompts]
+        self.assertEqual(entries.count(["lean-stack"]), 1)
+        self.assertEqual(entries.count(["lean-simplify"]), 1)
+        self.assertTrue(all(len(entry) == 1 for entry in entries))
+
+    def test_host_default_prompt_bounds_reject_overlong_or_excess_starters(self) -> None:
+        self.assert_host_default_prompt_bounds(["中" * 128] * 3)
+        with self.assertRaisesRegex(AssertionError, r"defaultPrompt\[0\] exceeds 128 characters"):
+            self.assert_host_default_prompt_bounds(["中" * 129])
+        with self.assertRaises(AssertionError):
+            self.assert_host_default_prompt_bounds(["short"] * 4)
 
     def test_standard_install_does_not_require_global_instruction_edits(self) -> None:
         self.assertIn("Standard plugin installation does not edit global instructions", self.readme)

@@ -6,7 +6,7 @@ Current version: **8.1.1**
 
 - Required checks stop dependent synchronization and release on failure; a later successful command cannot hide an earlier failure.
 - Acceptance uses the requested complete workflow, representative data, and the full production application when the user requests its UI.
-- Retained aliases with the same domain, authority, and canonical contract return the existing identity. The routing catalog exposes the existing domain key; semantic overlap still requires a scoped human or parent-agent decision.
+- Retained aliases with the same domain, authority, and canonical contract return the existing identity. The routing catalog exposes the existing domain key; semantic overlap still requires a scoped human or parent-agent decision. Both starter prompts fit the host limit and point to their own skill entry.
 
 Codex Lean Stack provides two independent skills:
 
