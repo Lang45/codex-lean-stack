@@ -405,7 +405,7 @@ class SkillContractTests(unittest.TestCase):
             "先核验并采用配置胜者",
             "当前可用SHA执行`--expected-sha256`CAS",
             "权限不扩大",
-            "选择性条件成立并决定新建时，即便没有新增`--lesson`也可执行`ensure`",
+            "选择性条件成立并决定新建时，即便没有新增经验也可执行`ensure`",
             "无需旧经验、数据库签发收据或`run_id`",
             "若已有竞争变更，重新判断胜者",
         ):

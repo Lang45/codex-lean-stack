@@ -2,11 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.1.1**
+Current version: **8.1.2**
 
-- Required checks stop dependent synchronization and release on failure; a later successful command cannot hide an earlier failure.
-- Acceptance uses the requested complete workflow, representative data, and the full production application when the user requests its UI.
-- Retained aliases with the same domain, authority, and canonical contract return the existing identity. The routing catalog exposes the existing domain key; semantic overlap still requires a scoped human or parent-agent decision. Both starter prompts fit the host limit and point to their own skill entry.
+- After accepting a verified result, the parent conditionally saves a reusable capability family or new experience through the existing registry, reusing compatible identities. End events alone do not qualify a result for retention.
+- Parent and child messages carry useful increments; output budgets preserve authoritative reads. Pending software work, deferred hardware checks, and unexplained flaky reruns retain their own completion boundaries.
+- Qualified Windows identity removal archives the owned configuration and exact related history to a verified Recycle Bin entry before removing the active registration; rejection or drift rolls back without a permanent-delete fallback.
 
 Codex Lean Stack provides two independent skills:
 

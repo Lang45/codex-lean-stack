@@ -1682,13 +1682,13 @@ else:
                     self.registry.record_run(name=created["name"], expected_sha256=created["sha256"],
                                              run_id=str(uuid.uuid4()), invocation_kind="spawn_agent",
                                              outcome="failure")
-                real_delete = agents._windows_delete_file
+                real_move = agents._windows_rename_file
 
-                def compete_then_delete(handle):
+                def compete_then_move(handle, destination):
                     self.assert_windows_competitor_blocked(path)
-                    return real_delete(handle)
+                    return real_move(handle, destination)
 
-                with mock.patch.object(agents, "_windows_delete_file", side_effect=compete_then_delete) as deletion:
+                with mock.patch.object(agents, "_windows_rename_file", side_effect=compete_then_move) as deletion:
                     if second_failure:
                         result = self.registry.record_run(
                             name=created["name"], expected_sha256=created["sha256"],
@@ -1699,7 +1699,8 @@ else:
                                                       owner_token=created["owner_token"])
                 deletion.assert_called_once()
                 self.assertFalse(path.exists())
-                self.assertTrue(result["all_persisted_agent_data_removed"])
+                self.assertTrue(result["all_active_agent_data_removed"])
+                self.assertFalse(result["all_persisted_agent_data_removed"])
 
     @unittest.skipUnless(os.name == "nt", "Windows mandatory sharing semantics")
     def test_windows_create_failure_cleanup_blocks_competing_process(self) -> None:
@@ -2976,7 +2977,7 @@ else:
         self.assertTrue(failed["active"])
         self.assertFalse(failed["permanent_removal_triggered"])
 
-    def test_second_task_failure_permanently_removes_all_agent_data(self) -> None:
+    def test_second_task_failure_removes_active_data_with_platform_disposition(self) -> None:
         created = self.ensure()
         success_id = str(uuid.uuid4())
         first_failure_id = str(uuid.uuid4())
@@ -3029,14 +3030,31 @@ else:
             run_id=second_failure_id, invocation_kind="spawn_agent", outcome="failure",
         )
         self.assertEqual(
-            removed["action"], "task_failure_recorded_and_permanently_removed"
+            removed["action"], "task_failure_recorded_and_recycled" if os.name == "nt"
+            else "task_failure_recorded_and_permanently_removed"
         )
         self.assertFalse(removed["active"])
-        self.assertTrue(removed["permanent_removal_triggered"])
-        self.assertFalse(removed["recoverable"])
-        self.assertEqual(removed["disposition"], "permanently_removed")
+        self.assertTrue(removed["removal_triggered"])
+        self.assertEqual(removed["permanent_removal_triggered"], os.name != "nt")
+        self.assertEqual(removed["recoverable"], os.name == "nt")
+        self.assertEqual(removed["disposition"], "windows_recycle_bin" if os.name == "nt" else "permanently_removed")
+        if os.name == "nt":
+            recovery = removed["recovery_receipt"]
+            payload = Path(recovery["payload_path"])
+            for filename, digest in recovery["files"].items():
+                self.assertEqual(agents.sha256_bytes((payload / filename).read_bytes()), digest)
+            self.assertEqual(agents.sha256_bytes(Path(recovery["metadata_path"]).read_bytes()), recovery["metadata_sha256"])
+            with contextlib.closing(sqlite3.connect(payload / "history.sqlite3")) as history:
+                self.assertEqual(history.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertIsNone(history.execute("PRAGMA foreign_key_check").fetchone())
+                for table, count in {"agents": 1, "agent_runs": 3, "experience_events": 2,
+                                     "experience_summaries": 1, "experience_recall_receipts": 1}.items():
+                    self.assertEqual(history.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], count)
+            self.assertNotIn(created["owner_token"], json.dumps(removed))
+            self.assertEqual(list(self.registry.state_dir.glob("recycle-*")), [])
         self.assertFalse(removed["retired_identity_recorded"])
-        self.assertTrue(removed["all_persisted_agent_data_removed"])
+        self.assertEqual(removed["all_persisted_agent_data_removed"], os.name != "nt")
+        self.assertTrue(removed["all_active_agent_data_removed"])
         self.assertFalse(Path(created["path"]).exists())
         self.assertFalse(self.registry.pending_deletion_dir.exists())
         self.assertEqual(self.registry.status()["registered_count"], 0)
@@ -3170,6 +3188,57 @@ else:
                 ).fetchone()[0],
                 1,
             )
+
+    @unittest.skipUnless(os.name == "nt", "Windows verified Recycle Bin")
+    def test_windows_recycle_verification_failure_restores_source_and_rolls_back(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        original = path.read_bytes()
+        self.registry.record_run(name=created["name"], expected_sha256=created["sha256"],
+                                 run_id=str(uuid.uuid4()), invocation_kind="spawn_agent", outcome="failure")
+        with contextlib.closing(self.db()) as connection:
+            before = list(connection.iterdump())
+        with mock.patch.object(agents, "_windows_recycle_directory", return_value=None):
+            with self.assertRaisesRegex(agents.SpecialistError, "verified recycling failed"):
+                self.registry.record_run(name=created["name"], expected_sha256=created["sha256"],
+                                         run_id=str(uuid.uuid4()), invocation_kind="followup_task", outcome="failure")
+        self.assertEqual(path.read_bytes(), original)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(list(connection.iterdump()), before)
+
+    @unittest.skipUnless(os.name == "nt", "Windows verified Recycle Bin")
+    def test_windows_recycle_failure_preserves_concurrent_user_file(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        original = path.read_bytes()
+        def interloper(_archive):
+            path.write_bytes(b"concurrent user file")
+            raise OSError("injected recycle failure")
+        with contextlib.closing(self.db()) as connection:
+            before = list(connection.iterdump())
+        with mock.patch.object(agents, "_windows_recycle_directory", side_effect=interloper):
+            with self.assertRaisesRegex(agents.SpecialistError, "recovery is incomplete"):
+                self.registry.delete(name=created["name"], expected_sha256=created["sha256"],
+                                     owner_token=created["owner_token"])
+        self.assertEqual(path.read_bytes(), b"concurrent user file")
+        archives = list(self.registry.state_dir.glob("recycle-*"))
+        self.assertEqual(len(archives), 1)
+        self.assertEqual((archives[0] / "agent.toml").read_bytes(), original)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(list(connection.iterdump()), before)
+
+    @unittest.skipUnless(os.name == "nt", "Windows verified Recycle Bin")
+    def test_windows_recycle_rejects_long_and_cross_volume_paths_before_mutation(self) -> None:
+        created = self.ensure()
+        with contextlib.closing(self.db()) as connection:
+            row = connection.execute("SELECT * FROM agents").fetchone()
+            before = list(connection.iterdump())
+            for path in (Path("C:/" + "x" * 240), Path("Z:/outside.toml")):
+                with self.subTest(path=path):
+                    with self.assertRaises(agents.SpecialistError):
+                        self.registry._recycle_owned_agent(connection, row=row, path=path, data=b"original")
+            self.assertEqual(list(connection.iterdump()), before)
+        self.assertEqual(list(self.registry.state_dir.glob("recycle-*")), [])
 
     def test_explicit_v4_attempt_migration_preserves_successes_and_infers_no_failures(self) -> None:
         never_invoked = self.ensure()
@@ -3411,7 +3480,7 @@ else:
                 1,
             )
 
-    def test_delete_permanently_removes_exact_owned_unused_agent(self) -> None:
+    def test_delete_removes_exact_owned_unused_agent_with_platform_disposition(self) -> None:
         created = self.ensure()
         original_path = Path(created["path"])
         result = self.registry.delete(
@@ -3420,15 +3489,16 @@ else:
             owner_token=created["owner_token"],
         )
         self.assertTrue(result["deleted"])
-        self.assertFalse(result["recoverable"])
-        self.assertEqual(result["action"], "permanently_removed")
-        self.assertEqual(result["disposition"], "permanently_removed")
+        self.assertEqual(result["recoverable"], os.name == "nt")
+        self.assertEqual(result["action"], "recycled" if os.name == "nt" else "permanently_removed")
+        self.assertEqual(result["disposition"], "windows_recycle_bin" if os.name == "nt" else "permanently_removed")
         self.assertEqual(result["deleted_from"], "specialist_registry_and_filesystem")
         self.assertEqual(result["agent_id"], created["agent_id"])
         self.assertEqual(result["sha256"], created["sha256"])
         self.assertEqual(result["path"], str(original_path))
         self.assertFalse(result["retired_identity_recorded"])
-        self.assertTrue(result["all_persisted_agent_data_removed"])
+        self.assertEqual(result["all_persisted_agent_data_removed"], os.name != "nt")
+        self.assertTrue(result["all_active_agent_data_removed"])
         self.assertFalse(original_path.exists())
         self.assertFalse(self.registry.pending_deletion_dir.exists())
         with contextlib.closing(self.db()) as connection:
@@ -4603,8 +4673,8 @@ else:
         deleted = json.loads(delete_output.getvalue())
         self.assertEqual(delete_exit, 0)
         self.assertTrue(deleted["deleted"])
-        self.assertFalse(deleted["recoverable"])
-        self.assertEqual(deleted["disposition"], "permanently_removed")
+        self.assertEqual(deleted["recoverable"], os.name == "nt")
+        self.assertEqual(deleted["disposition"], "windows_recycle_bin" if os.name == "nt" else "permanently_removed")
         self.assertFalse(Path(disposable["path"]).exists())
 
 

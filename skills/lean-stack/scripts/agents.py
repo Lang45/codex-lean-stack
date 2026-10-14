@@ -4,7 +4,8 @@
 The hot dispatch path never depends on this tool.  It only persists one reusable
 specialist per role, records idempotent completed task outcomes, appends
 sanitized experience or corrections, maintains a bounded prompt summary, and
-permanently removes an exactly owned unused or twice-failed agent.
+removes an exactly owned unused or twice-failed agent. Windows removals preserve
+the original identity and its history in a verified Recycle Bin archive.
 """
 
 from __future__ import annotations
@@ -1076,6 +1077,115 @@ def remove_exact_file(path: Path, *, expected: bytes) -> None:
     if path.read_bytes() != expected:
         raise SpecialistError("agent changed immediately before permanent removal")
     path.unlink()
+
+
+def _windows_recycle_directory(path: Path) -> None:
+    """Shell recycling only: explicitly forbid the permanent-delete fallback."""
+    if os.name != "nt":
+        raise SpecialistError("verified recycling requires Windows")
+    ole = ctypes.OleDLL("ole32")
+    shell = ctypes.OleDLL("shell32")
+    pointer = ctypes.c_void_p
+    guid = lambda value: (ctypes.c_ubyte * 16).from_buffer_copy(uuid.UUID(value).bytes_le)
+    operation = pointer()
+    item = pointer()
+    initialized = False
+
+    def call(interface, index, argtypes, *args):
+        table = ctypes.cast(interface, ctypes.POINTER(ctypes.POINTER(pointer))).contents
+        function = ctypes.WINFUNCTYPE(ctypes.c_long, pointer, *argtypes)(table[index])
+        status = function(interface, *args)
+        if status < 0:
+            raise SpecialistError(f"Windows recycle operation failed: HRESULT {status & 0xffffffff:08x}")
+
+    try:
+        status = ole.OleInitialize(None)
+        if status < 0:
+            raise SpecialistError("Windows recycle COM apartment is unavailable")
+        initialized = True
+        clsid = guid("3ad05575-8857-4850-9277-11b85bdb8e09")
+        iid = guid("947aab5f-0a5c-4c13-b4d6-4bf7836fc9f8")
+        status = ole.CoCreateInstance(ctypes.byref(clsid), None, 1, ctypes.byref(iid), ctypes.byref(operation))
+        if status < 0:
+            raise SpecialistError("Windows recycle interface is unavailable")
+        # SILENT | NOCONFIRMATION | NOERRORUI | RECYCLEONDELETE |
+        # EARLYFAILURE | ADDUNDORECORD. No permanent deletion fallback.
+        call(operation, 5, [ctypes.c_uint32], 0x20180414)
+        item_iid = guid("43826d1e-e718-42ee-bc55-a1e261c37bfe")
+        shell.SHCreateItemFromParsingName.argtypes = [ctypes.c_wchar_p, pointer, pointer, ctypes.POINTER(pointer)]
+        status = shell.SHCreateItemFromParsingName(str(path), None, ctypes.byref(item_iid), ctypes.byref(item))
+        if status < 0:
+            raise SpecialistError("Windows recycle shell item is unavailable")
+        call(operation, 18, [pointer, pointer], item, None)
+        call(operation, 21, [])
+        aborted = ctypes.c_int()
+        call(operation, 22, [ctypes.POINTER(ctypes.c_int)], ctypes.byref(aborted))
+        if aborted.value:
+            raise SpecialistError("Windows recycle operation was aborted")
+    finally:
+        for interface in (item, operation):
+            if interface.value:
+                table = ctypes.cast(interface, ctypes.POINTER(ctypes.POINTER(pointer))).contents
+                ctypes.WINFUNCTYPE(ctypes.c_ulong, pointer)(table[2])(interface)
+        if initialized:
+            ole.OleUninitialize()
+
+
+def _verified_recycle_archive(path: Path, expected: dict[str, str]) -> dict[str, Any]:
+    """Recycle one private short-path archive, then verify exact $I/$R bytes."""
+    ensure_plain_directory(path, create=False)
+    if len(str(path)) >= 240 or not path.drive:
+        raise SpecialistError("recycle archive requires a short absolute Windows path")
+
+    def verify(root: Path) -> None:
+        ensure_plain_directory(root, create=False)
+        if {entry.name for entry in root.iterdir()} != set(expected):
+            raise SpecialistError("recycle archive contents changed")
+        for name, digest in expected.items():
+            candidate = root / name
+            validate_direct_plain_file(candidate, root, kind="recycle archive")
+            if sha256_bytes(candidate.read_bytes()) != digest:
+                raise SpecialistError("recycle archive content drifted")
+
+    verify(path)
+    with _windows_parent_guard(path):
+        _windows_recycle_directory(path)
+    if path_exists_without_following_links(path):
+        raise SpecialistError("Windows recycle left the original archive present")
+    matches = []
+    bin_root = Path(path.anchor) / "$Recycle.Bin"
+    for user_bin in bin_root.iterdir():
+        try:
+            ensure_plain_directory(user_bin, create=False)
+            entries = list(user_bin.glob("$I*"))
+        except (OSError, SpecialistError):
+            continue
+        for metadata in entries:
+            try:
+                validate_direct_plain_file(metadata, user_bin, kind="recycle metadata")
+                raw = metadata.read_bytes()
+                if len(raw) < 28 or len(raw) > 2048:
+                    continue
+                version = int.from_bytes(raw[:8], "little")
+                if version == 2:
+                    length = int.from_bytes(raw[24:28], "little")
+                    if not 1 <= length <= 1000 or 28 + length * 2 > len(raw):
+                        continue
+                    original = raw[28:28 + length * 2].decode("utf-16-le").rstrip("\0")
+                elif version == 1:
+                    original = raw[24:].decode("utf-16-le").rstrip("\0")
+                else:
+                    continue
+                if original.casefold() == str(path).casefold():
+                    matches.append((metadata, user_bin / ("$R" + metadata.name[2:]), raw))
+            except (OSError, UnicodeError, SpecialistError):
+                continue
+    if len(matches) != 1:
+        raise SpecialistError("unique verified Recycle Bin recovery item was not found")
+    metadata, payload, raw = matches[0]
+    verify(payload)
+    return {"metadata_path": str(metadata), "payload_path": str(payload),
+            "metadata_sha256": sha256_bytes(raw), "files": expected}
 
 
 def _windows_replace_exact_file(path: Path, *, expected: bytes, replacement: bytes) -> None:
@@ -3169,6 +3279,81 @@ class SpecialistRegistry:
             return f"agent file rollback failed: {exc}"
         return None
 
+    def _recycle_owned_agent(
+        self, connection: sqlite3.Connection, *, row: sqlite3.Row, path: Path, data: bytes,
+    ) -> dict[str, Any]:
+        """Archive exactly one identity/history; leave no registered shadow row."""
+        if os.name != "nt" or len(str(path)) >= 240:
+            raise SpecialistError("verified retirement requires a short Windows path")
+        if path.drive.casefold() != self.state_dir.drive.casefold():
+            raise SpecialistError("retirement archive must be on the source volume")
+        # Existing path validation plus native parent/file guards remain the
+        # ownership/CAS boundary. The Shell only sees a private unique archive.
+        validate_direct_agent_file(path, self.agents_dir)
+        archive = self.state_dir / ("recycle-" + uuid.uuid4().hex)
+        if len(str(archive)) >= 240:
+            raise SpecialistError("retirement archive path exceeds the safe recycle boundary")
+        database = archive / "history.sqlite3"
+        source = archive / "agent.toml"
+        moved = False
+        parent_guard = _windows_parent_guard(archive)
+        parent_guard.__enter__()
+        try:
+            ensure_plain_directory(archive, create=True)
+            write_new_file(database, b"")
+            counts = {}
+            with contextlib.closing(sqlite3.connect(database)) as backup:
+                backup.execute("PRAGMA foreign_keys=ON")
+                for sql in SCHEMA_TABLE_SQL.values():
+                    backup.execute(sql)
+                backup.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                for table in ("agents", "experience_events", "experience_summaries",
+                              "agent_runs", "experience_recall_receipts"):
+                    order = "sequence" if table == "experience_events" else "rowid"
+                    cursor = connection.execute(f"SELECT * FROM {table} WHERE agent_id=? ORDER BY {order}", (row["agent_id"],))
+                    rows = [tuple(item) for item in cursor.fetchall()]
+                    columns = [item[0] for item in cursor.description]
+                    marks = ",".join("?" for _ in columns)
+                    backup.executemany(f"INSERT INTO {table}({','.join(columns)}) VALUES({marks})", rows)
+                    if [tuple(item) for item in backup.execute(f"SELECT * FROM {table} ORDER BY {order}")] != rows:
+                        raise SpecialistError("retirement history snapshot does not match source rows")
+                    counts[table] = len(rows)
+                backup.commit()
+                if backup.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or backup.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise SpecialistError("retirement history snapshot failed integrity checks")
+            receipt = {"kind": "retained-removal-recovery-v1", "snapshot_state": "precommit",
+                       "agent_id": row["agent_id"], "name": row["name"], "original_path": str(path),
+                       "toml_sha256": sha256_bytes(data), "schema_version": SCHEMA_VERSION,
+                       "history_counts": counts, "created_at": utc_now()}
+            receipt_bytes = (json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
+            write_new_file(archive / "receipt.json", receipt_bytes)
+            # No-overwrite movement binds the final exact bytes to a held source
+            # handle. Permanent removal is never a fallback for Shell errors.
+            rename_exact_file_no_replace(path, source, expected=data)
+            moved = True
+            expected = {"agent.toml": sha256_bytes(data), "history.sqlite3": sha256_bytes(database.read_bytes()),
+                        "receipt.json": sha256_bytes(receipt_bytes)}
+            result = _verified_recycle_archive(archive, expected)
+            result["history_counts"] = counts
+            return result
+        except BaseException as failure:
+            if moved:
+                try:
+                    if path_exists_without_following_links(path):
+                        raise SpecialistError("retirement rollback destination appeared concurrently")
+                    if path_exists_without_following_links(source):
+                        rename_exact_file_no_replace(source, path, expected=data)
+                    else:
+                        write_new_file(path, data)
+                except (OSError, SpecialistError) as recovery_error:
+                    raise SpecialistError(
+                        "recycling failed and exact source recovery is incomplete; "
+                        f"preserved archive: {archive}; {recovery_error}"
+                    ) from failure
+            raise SpecialistError(f"verified recycling failed; preserved recovery archive: {archive}") from failure
+        finally:
+            parent_guard.__exit__(None, None, None)
+
     def record_run(
         self,
         *,
@@ -3280,6 +3465,7 @@ class SpecialistRegistry:
         data: bytes | None = None
         rewritten: bytes | None = None
         removed_file = False
+        recycle_receipt: dict[str, Any] | None = None
         committed = False
         transaction_started = False
         try:
@@ -3533,12 +3719,18 @@ class SpecialistRegistry:
                 validate_direct_agent_file(path, self.agents_dir)
                 if path.read_bytes() != data or sha256_bytes(data) != expected_sha256:
                     raise SpecialistError("agent changed immediately before permanent removal")
-                remove_exact_file(path, expected=data)
+                if os.name == "nt":
+                    recycle_receipt = self._recycle_owned_agent(connection, row=row, path=path, data=data)
+                else:
+                    remove_exact_file(path, expected=data)
                 removed_file = True
                 self._delete_all_agent_records(connection, agent_id=agent_id)
                 active = False
                 removal_triggered = True
-                action = "task_failure_recorded_and_permanently_removed"
+                action = (
+                    "task_failure_recorded_and_recycled"
+                    if recycle_receipt is not None else "task_failure_recorded_and_permanently_removed"
+                )
             run_action = action
             if completion and not removal_triggered:
                 action = (
@@ -3563,7 +3755,8 @@ class SpecialistRegistry:
                 "survival_rounds": survival_rounds,
                 "failure_removal_threshold": FAILURE_REMOVAL_THRESHOLD,
                 "active": active,
-                "permanent_removal_triggered": removal_triggered,
+                "permanent_removal_triggered": removal_triggered and recycle_receipt is None,
+                "removal_triggered": removal_triggered,
                 "historical_backfill": False,
                 "loaded_experience_digest": loaded_experience_digest,
                 "experience_outcome_association_persisted": (
@@ -3606,12 +3799,15 @@ class SpecialistRegistry:
             if removal_triggered:
                 result.update(
                     {
-                        "recoverable": False,
-                        "disposition": "permanently_removed",
+                        "recoverable": recycle_receipt is not None,
+                        "disposition": "windows_recycle_bin" if recycle_receipt is not None else "permanently_removed",
                         "retired_identity_recorded": False,
-                        "all_persisted_agent_data_removed": True,
+                        "all_persisted_agent_data_removed": recycle_receipt is None,
+                        "all_active_agent_data_removed": True,
                     }
                 )
+                if recycle_receipt is not None:
+                    result["recovery_receipt"] = recycle_receipt
             return result
         except BaseException as exc:
             if committed:
@@ -3978,6 +4174,7 @@ class SpecialistRegistry:
         data: bytes | None = None
         path: Path | None = None
         removed_file = False
+        recycle_receipt: dict[str, Any] | None = None
         committed = False
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -3989,7 +4186,7 @@ class SpecialistRegistry:
             if row["retired_at"] is not None:
                 raise SpecialistError(
                     "legacy retired identity requires one-time manual purge; "
-                    "new lifecycle removals retain no identity or recovery data"
+                    "new lifecycle removals retain no active or retired identity"
                 )
             path = Path(row["path"]).absolute()
             if not path_exists_without_following_links(path):
@@ -4060,25 +4257,32 @@ class SpecialistRegistry:
             validate_direct_agent_file(path, self.agents_dir)
             if path.read_bytes() != data or sha256_bytes(data) != expected_sha256:
                 raise SpecialistError("agent changed immediately before permanent removal")
-            remove_exact_file(path, expected=data)
+            if os.name == "nt":
+                recycle_receipt = self._recycle_owned_agent(connection, row=row, path=path, data=data)
+            else:
+                remove_exact_file(path, expected=data)
             removed_file = True
             self._delete_all_agent_records(connection, agent_id=row["agent_id"])
             connection.execute("COMMIT")
             committed = True
-            return {
+            result = {
                 "ok": True,
-                "action": "permanently_removed",
+                "action": "recycled" if recycle_receipt is not None else "permanently_removed",
                 "deleted": True,
                 "deleted_from": "specialist_registry_and_filesystem",
-                "recoverable": False,
-                "disposition": "permanently_removed",
+                "recoverable": recycle_receipt is not None,
+                "disposition": "windows_recycle_bin" if recycle_receipt is not None else "permanently_removed",
                 "path": str(path),
                 "sha256": expected_sha256,
                 "agent_id": row["agent_id"],
                 "active": False,
                 "retired_identity_recorded": False,
-                "all_persisted_agent_data_removed": True,
+                "all_persisted_agent_data_removed": recycle_receipt is None,
+                "all_active_agent_data_removed": True,
             }
+            if recycle_receipt is not None:
+                result["recovery_receipt"] = recycle_receipt
+            return result
         except BaseException as exc:
             if committed:
                 raise
@@ -4281,7 +4485,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     delete = subparsers.add_parser(
         "delete",
-        help="permanently remove one exactly owned unused specialist and all retained data",
+        help="remove one exactly owned unused specialist; Windows preserves a verified Recycle Bin archive",
     )
     add_agent_ref_argument(delete)
     delete.add_argument("--expected-sha256", required=True)
