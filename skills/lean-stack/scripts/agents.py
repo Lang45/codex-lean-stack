@@ -1149,11 +1149,18 @@ def _verified_recycle_archive(path: Path, expected: dict[str, str]) -> dict[str,
 
     verify(path)
     with _windows_parent_guard(path):
-        _windows_recycle_directory(path)
+        # Capture the real long spelling while the archive still exists. Temp
+        # roots can contain 8.3 aliases (RUNNER~1), while Shell $I metadata uses
+        # the expanded path; after recycling the alias cannot be resolved.
+        canonical_path = path.resolve(strict=True)
+        if len(str(canonical_path)) >= 240:
+            raise SpecialistError("expanded recycle archive path exceeds the safe boundary")
+        accepted_paths = {str(path).casefold(), str(canonical_path).casefold()}
+        _windows_recycle_directory(canonical_path)
     if path_exists_without_following_links(path):
         raise SpecialistError("Windows recycle left the original archive present")
     matches = []
-    bin_root = Path(path.anchor) / "$Recycle.Bin"
+    bin_root = Path(canonical_path.anchor) / "$Recycle.Bin"
     for user_bin in bin_root.iterdir():
         try:
             ensure_plain_directory(user_bin, create=False)
@@ -1176,7 +1183,7 @@ def _verified_recycle_archive(path: Path, expected: dict[str, str]) -> dict[str,
                     original = raw[24:].decode("utf-16-le").rstrip("\0")
                 else:
                     continue
-                if original.casefold() == str(path).casefold():
+                if original.casefold() in accepted_paths:
                     matches.append((metadata, user_bin / ("$R" + metadata.name[2:]), raw))
             except (OSError, UnicodeError, SpecialistError):
                 continue

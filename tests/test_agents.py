@@ -3190,6 +3190,56 @@ else:
             )
 
     @unittest.skipUnless(os.name == "nt", "Windows verified Recycle Bin")
+    def test_windows_recycle_matches_real_short_path_to_long_metadata(self) -> None:
+        archive = self.registry.state_dir / "Recovery archive with spaces"
+        archive.mkdir(parents=True)
+        canonical = archive.resolve(strict=True)
+        data = b"short-path recovery probe"
+        (archive / "probe.bin").write_bytes(data)
+        api = agents.ctypes.WinDLL("kernel32", use_last_error=True)
+        api.GetShortPathNameW.argtypes = [agents.ctypes.c_wchar_p, agents.ctypes.c_wchar_p, agents.ctypes.c_uint32]
+        buffer = agents.ctypes.create_unicode_buffer(32768)
+        length = api.GetShortPathNameW(str(archive), buffer, len(buffer))
+        self.assertGreater(length, 0)
+        self.assertLess(length, len(buffer))
+        short_archive = Path(buffer.value)
+        self.assertEqual(short_archive.resolve(strict=True), canonical)
+        recovery = agents._verified_recycle_archive(short_archive, {"probe.bin": agents.sha256_bytes(data)})
+        self.assertEqual((Path(recovery["payload_path"]) / "probe.bin").read_bytes(), data)
+        self.assertEqual(agents.sha256_bytes(Path(recovery["metadata_path"]).read_bytes()), recovery["metadata_sha256"])
+        self.assertFalse(archive.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows verified Recycle Bin")
+    def test_windows_recycle_expanded_long_path_is_rejected_before_shell(self) -> None:
+        archive = self.registry.state_dir / "archive"
+        archive.mkdir(parents=True)
+        data = b"expanded-path boundary"
+        (archive / "probe.bin").write_bytes(data)
+        with mock.patch.object(Path, "resolve", return_value=Path("C:/" + "x" * 240)), \
+                mock.patch.object(agents, "_windows_recycle_directory") as shell:
+            with self.assertRaisesRegex(agents.SpecialistError, "expanded recycle archive path"):
+                agents._verified_recycle_archive(archive, {"probe.bin": agents.sha256_bytes(data)})
+        shell.assert_not_called()
+        self.assertEqual((archive / "probe.bin").read_bytes(), data)
+
+    @unittest.skipUnless(os.name == "nt", "Windows verified Recycle Bin")
+    def test_windows_unavailable_recycle_shell_rolls_back_without_permanent_fallback(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        original = path.read_bytes()
+        with contextlib.closing(self.db()) as connection:
+            before = list(connection.iterdump())
+        with mock.patch.object(agents, "_windows_recycle_directory", side_effect=agents.SpecialistError("Windows recycle interface is unavailable")), \
+                mock.patch.object(agents, "remove_exact_file") as permanent:
+            with self.assertRaisesRegex(agents.SpecialistError, "verified recycling failed"):
+                self.registry.delete(name=created["name"], expected_sha256=created["sha256"],
+                                     owner_token=created["owner_token"])
+        permanent.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(list(connection.iterdump()), before)
+
+    @unittest.skipUnless(os.name == "nt", "Windows verified Recycle Bin")
     def test_windows_recycle_verification_failure_restores_source_and_rolls_back(self) -> None:
         created = self.ensure()
         path = Path(created["path"])

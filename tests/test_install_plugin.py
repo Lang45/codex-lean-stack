@@ -99,7 +99,8 @@ class PluginInstallTests(unittest.TestCase):
         original = "第一行\n第二行\r\n第三行\r第四行"
         self.agents.write_text(original, encoding="utf-8", newline="")
         install_plugin.ensure_default_invocation(self.codex_home)
-        text = self.agents.read_text(encoding="utf-8", newline="")
+        with self.agents.open(encoding="utf-8", newline="") as stream:
+            text = stream.read()
         self.assertTrue(
             text.startswith("第一行\n" + install_plugin.DEFAULT_INVOCATION_LINE + "\n")
         )

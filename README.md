@@ -2,11 +2,9 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.1.2**
+Current version: **8.1.3**
 
-- After accepting a verified result, the parent conditionally saves a reusable capability family or new experience through the existing registry, reusing compatible identities. End events alone do not qualify a result for retention.
-- Parent and child messages carry useful increments; output budgets preserve authoritative reads. Pending software work, deferred hardware checks, and unexplained flaky reruns retain their own completion boundaries.
-- Qualified Windows identity removal archives the owned configuration and exact related history to a verified Recycle Bin entry before removing the active registration; rejection or drift rolls back without a permanent-delete fallback.
+- Windows Recycle Bin verification resolves real 8.3 path aliases while the owned archive still exists, preserving exact metadata matching, content hashes, rollback, and the safe expanded-path limit. The existing capability-retention and incremental-communication behavior is retained.
 
 Codex Lean Stack provides two independent skills:
 
