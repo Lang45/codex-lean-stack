@@ -4721,7 +4721,7 @@ else:
                 ]
             )
         deleted = json.loads(delete_output.getvalue())
-        self.assertEqual(delete_exit, 0)
+        self.assertEqual(delete_exit, 0, deleted)
         self.assertTrue(deleted["deleted"])
         self.assertEqual(deleted["recoverable"], os.name == "nt")
         self.assertEqual(deleted["disposition"], "windows_recycle_bin" if os.name == "nt" else "permanently_removed")
