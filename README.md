@@ -2,9 +2,9 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.1.3**
+Current version: **8.1.4**
 
-- Windows Recycle Bin verification resolves real 8.3 path aliases while the owned archive still exists, preserving exact metadata matching, content hashes, rollback, and the safe expanded-path limit. The existing capability-retention and incremental-communication behavior is retained.
+- Subagents explain progress throughout execution. Task cards and long-task checkpoints cannot impose default silence; parent-directed messages remain focused on dependencies, corrections, and risks without suppressing visible updates.
 
 Codex Lean Stack provides two independent skills:
 
@@ -88,6 +88,9 @@ replace the Codex runtime, intercept native agent calls, or run a background orc
 template tests, an installed cache, and live host behavior are separate evidence surfaces.
 
 A child's user-visible progress note is called **进展说明** in the Chinese documentation. It is not a final result.
+Children continue to explain meaningful progress, changes, and problems while working. Task cards must not
+require default silence or opening-and-final-only reporting. Internal messages to the parent are reserved for
+dependencies, corrections, and risks; reducing duplicate messages must not suppress normal progress updates.
 The parent adopts a child result only from its final response or an equivalent result receipt.
 
 ## 中文说明
