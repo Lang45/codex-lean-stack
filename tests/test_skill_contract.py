@@ -300,7 +300,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不得猜测", section)
 
     def test_adopted_runtime_family_uses_the_bounded_retention_conditions(self) -> None:
-        self.assertIn("结果核验后主任务立即继续", self.stack)
+        self.assertIn("references/agent-results.md#父代理采用", self.stack)
+        self.assertIn("已完成切片或续用增量的最终结果", self.results)
+        self.assertIn("不等待用户提醒、保留线程结束或整个主任务结束", self.results)
+        self.assertIn("是否保留能力族", self.results)
+        self.assertIn("是否保存新增经验", self.results)
         self.assertIn("普通派发不进行成本、迁移或摘要巡检", self.stack)
         self.assertIn(
             "命中当前可调用的兼容保留类型后，仅读取该保留子代理",
@@ -347,7 +351,7 @@ class SkillContractTests(unittest.TestCase):
             self.assertNotIn(removed_gate, compact)
         combined = self.stack + self.dispatch + self.memory
         self.assertNotRegex(combined, r"每\s*\d+\s*(?:次|个).{0,12}(?:保留|ensure)")
-        self.assertIn("不设固定建档率、配额或强制百分比", combined)
+        self.assertIn("不设固定建档率、配额或强制百分比", re.sub(r"\s+", "", combined))
         self.assertIn("不回填历史运行", self.memory)
         self.assertIn("同族已存在就复用或按 CAS 重配，绝不新建", self.memory)
 
@@ -381,7 +385,7 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(phrase, compact_dispatch)
         for phrase in (
-            "运行时子代理结束后只做一次选择性建档判断",
+            "每个已完成切片的结果被核验采用时",
             "父代理按`ensure`返回的成功或冲突回执记录实际结果",
             "健康结构下新增经验直接按需保存，不等待历史",
             "只有需要声称某版旧经验参与该次并发完成结果时",
@@ -656,7 +660,7 @@ class SkillContractTests(unittest.TestCase):
             "目录查询失败但当前会话已加载类型中已有符合三项条件的明确候选时",
             self.openai_yaml,
         )
-        self.assertIn("运行时子代理在以下条件成立时选择性建档", self.openai_yaml)
+        self.assertIn("按结果采用入口自动分别判断身份保留和新增经验", self.openai_yaml)
         self.assertIn("运行时经验行写“本次任务上下文”", self.openai_yaml)
         self.assertIn("实质变化", self.openai_yaml)
         self.assertNotIn("必须尝试", self.openai_yaml)

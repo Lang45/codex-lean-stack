@@ -2311,18 +2311,28 @@ class SpecialistRegistry:
         )
         memory = self._experience_memory(payload)
         empty_memory = memory_block("", [])
+        summary_row = self._summary_row(connection, row["agent_id"])
+        summary = summary_row["summary"] if summary_row is not None else ""
+        covered = int(summary_row["covered_through_sequence"]) if summary_row is not None else 0
+        pending = self._pending_events(connection, row["agent_id"], covered)
+        expected_memory, raw_count = self._select_memory_window(summary, pending)
+        legacy_deferred = memory == empty_memory and expected_memory == UNLOADED_MEMORY
+        if memory != expected_memory and not legacy_deferred:
+            raise SpecialistError("agent memory does not match active experience state")
+        summary_count = int(connection.execute(
+            "SELECT COUNT(*) FROM experience_events AS event WHERE event.agent_id = ? "
+            f"AND event.sequence <= ? AND {ACTIVE_EXPERIENCE_EVENT_FILTER}",
+            (row["agent_id"], covered),
+        ).fetchone()[0]) if summary else 0
+        # Count all active events, including those beyond the bounded pending query.
+        pending_count = active_experience_count - summary_count - raw_count
+        experience_complete = pending_count == 0
+        # Compatibility: loaded means some usable content, not complete coverage.
         experience_loaded = memory not in (empty_memory, UNLOADED_MEMORY)
         if not active_experience_count and memory != empty_memory:
             raise SpecialistError("agent memory does not match active experience state")
-        if active_experience_count and not experience_loaded:
-            summary_row = self._summary_row(connection, row["agent_id"])
-            summary = summary_row["summary"] if summary_row is not None else ""
-            covered = int(summary_row["covered_through_sequence"]) if summary_row is not None else 0
-            pending = self._pending_events(connection, row["agent_id"], covered)
-            if self._memory_for_toml(summary, pending) != UNLOADED_MEMORY:
-                raise SpecialistError("agent memory does not match active experience state")
-            # Older files used the empty placeholder for this same valid deferred
-            # state. Accept it read-only; do not invent a loaded-experience digest.
+        # Legacy deferred files retain their empty placeholder read-only; no digest
+        # is invented for either that placeholder or the current unloaded sentinel.
         experience_digest = (
             sha256_bytes(memory.encode("utf-8")) if experience_loaded else None
         )
@@ -2345,8 +2355,14 @@ class SpecialistRegistry:
         )
         if experience_digest is None:
             experience_line = (
-                f"经验：已保存 {active_experience_count} 条，当前未加载；待摘要压缩"
-                if active_experience_count else "经验：未加载已保存经验"
+                f"经验：已保存 {active_experience_count} 条；本次暂无可用内容，"
+                f"{pending_count} 条待摘要"
+                if active_experience_count else "经验：零经验（当前有效 0 条）"
+            )
+        elif not experience_complete:
+            experience_line = (
+                f"经验：已保存 {active_experience_count} 条；本次提供部分，"
+                f"{pending_count} 条待摘要"
             )
         elif experience_successes or experience_failures:
             experience_line = (
@@ -2362,6 +2378,10 @@ class SpecialistRegistry:
             "survival_rounds": success_count,
             "failed_attempt_count": failure_count,
             "active_experience_count": active_experience_count,
+            "experience_summary_count": summary_count,
+            "experience_raw_count": raw_count,
+            "experience_pending_count": pending_count,
+            "experience_complete": experience_complete,
             "experience_loaded": experience_loaded,
             "experience_digest": experience_digest,
             "experience_successful_attempt_count": experience_successes,
@@ -2477,12 +2497,12 @@ class SpecialistRegistry:
         }
 
     @staticmethod
-    def _memory_for_toml(
+    def _select_memory_window(
         summary: str,
         pending: Sequence[sqlite3.Row],
         *,
         max_bytes: int = MAX_MEMORY_BYTES,
-    ) -> str:
+    ) -> tuple[str, int]:
         initial = memory_block(summary, [])
         if len(initial.encode("utf-8")) > max_bytes:
             raise SpecialistError("stored experience summary exceeds the bounded memory window")
@@ -2494,8 +2514,20 @@ class SpecialistRegistry:
                 break
             selected.append(lesson)
         if pending and not selected and not summary:
-            return UNLOADED_MEMORY if len(UNLOADED_MEMORY.encode("utf-8")) <= max_bytes else initial
-        return memory_block(summary, selected)
+            memory = UNLOADED_MEMORY if len(UNLOADED_MEMORY.encode("utf-8")) <= max_bytes else initial
+            return memory, 0
+        return memory_block(summary, selected), len(selected)
+
+    @staticmethod
+    def _memory_for_toml(
+        summary: str,
+        pending: Sequence[sqlite3.Row],
+        *,
+        max_bytes: int = MAX_MEMORY_BYTES,
+    ) -> str:
+        return SpecialistRegistry._select_memory_window(
+            summary, pending, max_bytes=max_bytes
+        )[0]
 
     def ensure(
         self,

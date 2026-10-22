@@ -2441,6 +2441,13 @@ else:
             len(result["compaction"]["events"]), agents.COMPACT_BATCH_EVENTS
         )
         self.assertEqual(result["experience_count"], 101)
+        recalled = self.registry.recall(name=created["name"])
+        state = recalled["retention_state"]
+        self.assertEqual(state["active_experience_count"], 101)
+        self.assertEqual(state["experience_summary_count"], 0)
+        self.assertEqual(state["experience_raw_count"], agents.COMPACT_BATCH_EVENTS)
+        self.assertEqual(state["experience_pending_count"], 101 - agents.COMPACT_BATCH_EVENTS)
+        self.assertFalse(state["experience_complete"])
 
     def test_stale_compaction_cannot_overwrite_a_newer_summary(self) -> None:
         created = self.ensure()
@@ -4035,6 +4042,195 @@ else:
                 self.assertEqual(exit_code, 2)
                 self.assertIn(expected_error, json.loads(output.getvalue())["error"])
 
+    def test_recall_reports_partial_window_and_compaction_restores_complete_coverage(self) -> None:
+        created = self.ensure()
+        current_hash = created["sha256"]
+        first_event_id = str(uuid.uuid4())
+        for index in range(8):
+            result = self.improve_with_lesson(
+                name=created["name"], expected_sha256=current_hash,
+                event_id=first_event_id if index == 0 else str(uuid.uuid4()),
+                lesson=f"基础经验 {index}：先核对实际来源。",
+            )
+            current_hash = result["sha256"]
+        result = self.improve_with_lesson(
+            name=created["name"], expected_sha256=current_hash,
+            event_id=str(uuid.uuid4()), retracts_event_id=first_event_id,
+            lesson="纠正首项经验：来源未核实时不能采用结论。",
+        )
+        current_hash = result["sha256"]
+        batch = result["compaction"]
+        compacted = self.improve_with_summary(
+            name=created["name"], expected_sha256=current_hash,
+            summary="八项基础经验：先核对实际来源。",
+            covered_through=batch["covered_through"], source_digest=batch["source_digest"],
+        )
+        current_hash = compacted["sha256"]
+        lessons = [f"后续经验 {index}：" + "证" * 400 for index in range(6)]
+        for lesson in lessons:
+            result = self.improve_with_lesson(
+                name=created["name"], expected_sha256=current_hash,
+                event_id=str(uuid.uuid4()), lesson=lesson,
+            )
+            current_hash = result["sha256"]
+        with contextlib.closing(self.db()) as connection:
+            raw_before = list(connection.execute(
+                "SELECT sequence,lesson FROM experience_events ORDER BY sequence"
+            ))
+        recalled = self.registry.recall(name=created["name"], expected_sha256=current_hash)
+        state = recalled["retention_state"]
+        supplied_raw = sum(lesson in recalled["experience"] for lesson in lessons)
+        self.assertGreater(supplied_raw, 0)
+        self.assertLess(supplied_raw, len(lessons))
+        self.assertEqual(len(raw_before), 15)
+        self.assertEqual(state["active_experience_count"], 14)
+        self.assertEqual(state["experience_summary_count"], 8)
+        self.assertEqual(state["experience_raw_count"], supplied_raw)
+        self.assertEqual(state["experience_pending_count"], 6 - supplied_raw)
+        self.assertFalse(state["experience_complete"])
+        self.assertTrue(state["experience_loaded"])
+        self.assertRegex(state["experience_digest"], r"^[0-9a-f]{64}$")
+        self.assertIn("已保存 14 条；本次提供部分", recalled["opening_status"])
+        self.assertIn(f"{6 - supplied_raw} 条待摘要", recalled["opening_status"])
+        self.assertNotIn("当前配置 14 条", recalled["opening_status"])
+        memory = self.registry._experience_memory(
+            tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
+        )
+        self.assertEqual(recalled["experience"], agents.MEMORY_HEADER.lstrip() + memory)
+        self.assertLessEqual(len(memory.encode("utf-8")), 4096)
+
+        batch = result["compaction"]
+        compacted = self.improve_with_summary(
+            name=created["name"], expected_sha256=current_hash,
+            summary="八项基础与六项后续经验：核对来源并保留可复验的证据。",
+            covered_through=batch["covered_through"], source_digest=batch["source_digest"],
+        )
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=compacted["sha256"]
+        )
+        state = recalled["retention_state"]
+        self.assertEqual(state["active_experience_count"], 14)
+        self.assertEqual(state["experience_summary_count"], 14)
+        self.assertEqual(state["experience_raw_count"], 0)
+        self.assertEqual(state["experience_pending_count"], 0)
+        self.assertTrue(state["experience_complete"])
+        self.assertEqual(state["attempt_count"], 0)
+        self.assertEqual(state["experience_successful_attempt_count"], 0)
+        self.assertIn("当前配置 14 条", recalled["opening_status"])
+        with contextlib.closing(self.db()) as connection:
+            raw_after = list(connection.execute(
+                "SELECT sequence,lesson FROM experience_events ORDER BY sequence"
+            ))
+        self.assertEqual([tuple(row) for row in raw_before], [tuple(row) for row in raw_after])
+
+    def test_recall_distinguishes_zero_experience_from_loaded_experience(self) -> None:
+        created = self.ensure()
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=created["sha256"]
+        )
+        state = recalled["retention_state"]
+        self.assertEqual(state["active_experience_count"], 0)
+        self.assertFalse(state["experience_loaded"])
+        self.assertIsNone(state["experience_digest"])
+        self.assertEqual(state["experience_summary_count"], 0)
+        self.assertEqual(state["experience_raw_count"], 0)
+        self.assertEqual(state["experience_pending_count"], 0)
+        self.assertTrue(state["experience_complete"])
+        opening = (recalled["opening_declaration"] + recalled["opening_status"]).splitlines()
+        self.assertEqual(len(opening), 5)
+        self.assertEqual(opening[-1], "经验：零经验（当前有效 0 条）")
+
+        improved = self.improve_with_lesson(
+            name=created["name"], expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()),
+            lesson="适用情境：已确认来源；做法：复用真实证据；证据：完成检查。",
+        )
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=improved["sha256"]
+        )
+        state = recalled["retention_state"]
+        self.assertEqual(state["active_experience_count"], 1)
+        self.assertTrue(state["experience_loaded"])
+        self.assertRegex(state["experience_digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(state["experience_summary_count"], 0)
+        self.assertEqual(state["experience_raw_count"], 1)
+        self.assertEqual(state["experience_pending_count"], 0)
+        self.assertTrue(state["experience_complete"])
+        self.assertIn("经验：当前配置 1 条", recalled["opening_status"])
+        self.assertNotIn("零经验", recalled["opening_status"])
+
+    def test_recall_deferred_nonzero_experience_keeps_unloaded_identity(self) -> None:
+        created = self.ensure()
+        improved = self.improve_with_lesson(
+            name=created["name"], expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()), lesson="经验边界" * 1000,
+        )
+        recalled = self.registry.recall(
+            name=created["name"], expected_sha256=improved["sha256"]
+        )
+        state = recalled["retention_state"]
+        self.assertEqual(state["active_experience_count"], 1)
+        self.assertFalse(state["experience_loaded"])
+        self.assertIsNone(state["experience_digest"])
+        self.assertEqual(state["experience_summary_count"], 0)
+        self.assertEqual(state["experience_raw_count"], 0)
+        self.assertEqual(state["experience_pending_count"], 1)
+        self.assertFalse(state["experience_complete"])
+        self.assertIn(agents.UNLOADED_MEMORY, recalled["experience"])
+        self.assertIn("已保存 1 条", recalled["opening_status"])
+        self.assertIn("本次暂无可用内容，1 条待摘要", recalled["opening_status"])
+        self.assertNotIn("零经验", recalled["opening_status"])
+
+        # Older owned files represented the same valid deferred state with the
+        # empty placeholder. Keep accepting it read-only without a loaded digest.
+        path = Path(created["path"])
+        original = path.read_bytes()
+        self.assertEqual(original.count(agents.UNLOADED_MEMORY.encode("utf-8")), 1)
+        legacy = original.replace(
+            agents.UNLOADED_MEMORY.encode("utf-8"),
+            agents.memory_block("", []).encode("utf-8"),
+        )
+        path.write_bytes(legacy)
+        with contextlib.closing(self.db()) as connection:
+            connection.execute(
+                "UPDATE agents SET expected_sha256=? WHERE agent_id=?",
+                (agents.sha256_bytes(legacy), created["agent_id"]),
+            )
+            connection.commit()
+        before = self.registry.db_path.read_bytes()
+        legacy_recall = self.registry.recall(name=created["name"])
+        self.assertEqual(legacy_recall["retention_state"], state)
+        self.assertEqual(path.read_bytes(), legacy)
+        self.assertEqual(self.registry.db_path.read_bytes(), before)
+
+    def test_recall_owned_file_read_failure_never_reports_zero_experience(self) -> None:
+        created = self.ensure()
+        owned_path = Path(created["path"])
+        before = (self.registry.db_path.read_bytes(), owned_path.read_bytes())
+        original_read_bytes = Path.read_bytes
+
+        def fail_owned_read(path):
+            if path == owned_path:
+                raise PermissionError("owned agent read denied")
+            return original_read_bytes(path)
+
+        output = io.StringIO()
+        with mock.patch.object(Path, "read_bytes", fail_owned_read):
+            with self.assertRaisesRegex(PermissionError, "read denied"):
+                self.registry.recall(name=created["name"])
+            with contextlib.redirect_stdout(output):
+                code = agents.main([
+                    "--codex-home", str(self.codex_home), "recall", "--name", created["name"],
+                ])
+        result = json.loads(output.getvalue())
+        self.assertEqual(code, 2)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action"], "auxiliary_skipped")
+        self.assertIn("read denied", result["error"])
+        self.assertNotIn("opening_status", result)
+        self.assertNotIn("零经验", output.getvalue())
+        self.assertEqual(before, (self.registry.db_path.read_bytes(), owned_path.read_bytes()))
+
     def test_recall_reads_only_the_selected_role_without_writes_or_private_metadata(self) -> None:
         selected = self.ensure()
         updated = self.improve_with_lesson(
@@ -4164,6 +4360,10 @@ else:
         recalled = self.registry.recall(name=selected["name"])
         self.assertNotIn("被撤回的旧结论", recalled["experience"])
         self.assertIn("其他输入尚待核验", recalled["experience"])
+        state = recalled["retention_state"]
+        self.assertEqual(state["active_experience_count"], 1)
+        self.assertEqual(state["experience_raw_count"], 1)
+        self.assertEqual(state["experience_pending_count"], 0)
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0], 2)
         original_owned = self.registry._owned_agent
@@ -4175,6 +4375,17 @@ else:
             return row, path, data, payload, header
         with mock.patch.object(self.registry, "_owned_agent", side_effect=oversized):
             with self.assertRaisesRegex(agents.SpecialistError, "bounded recall window"):
+                self.registry.recall(name=selected["name"])
+
+        def mismatched(*args, **kwargs):
+            row, path, data, payload, header = original_owned(*args, **kwargs)
+            payload["developer_instructions"] = agents.compose_instructions(
+                payload["developer_instructions"], "与实际有效事件不符的经验。",
+            )
+            return row, path, data, payload, header
+
+        with mock.patch.object(self.registry, "_owned_agent", side_effect=mismatched):
+            with self.assertRaisesRegex(agents.SpecialistError, "active experience state"):
                 self.registry.recall(name=selected["name"])
 
     def test_semantic_persistence_requires_current_origin_terms_in_api_cli_and_plan(self) -> None:

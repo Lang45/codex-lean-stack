@@ -2,10 +2,10 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.2.0**
+Current version: **8.2.1**
 
-- Say “多开子代理” to keep adding useful parallel work throughout the current task: quality remains required, while cost no longer vetoes more parallel help. New ready slices and freed capacity trigger further dispatch instead of a one-time increase or a fixed team size.
-- When read-only analysis turns into implementation, route the write task directly to a compatible writer; useful existing context does not grant write permission.
+- Retention distinguishes saved experience from what the current role actually receives. Zero experience is stated directly; partial coverage reports the remaining summary work without raising the 4 KiB window or dropping raw records.
+- Routing reads the actual registry schema, preserves verified identity statistics, and reselects when the capability domain changes. Every adopted completed slice or follow-up result triggers separate identity and new-experience decisions, with eligible writes and readback through the existing safe APIs before continuing; it does not wait for a user reminder or the whole thread to finish.
 
 Codex Lean Stack provides two independent skills:
 

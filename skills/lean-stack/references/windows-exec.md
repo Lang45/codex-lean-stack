@@ -38,6 +38,12 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
    if ($taskCheckExitCode -ne 0) { throw "必要检查失败，退出码 $taskCheckExitCode" }
    # 仅在检查通过后执行依赖它的同步或发布。
    ```
+
+   退出码必须穿过包装层：Python 的 `subprocess.run` 使用 `check=True`，或在保存诊断后以
+   `sys.exit(result.returncode)` 传播失败；仅打印子进程退出码会让外层误报 exit0。
+   `functions.exec` 中顺序运行有依赖的工具时，检查前项已结束结果的实际 `exit_code` 再调用后项；
+   仅 `await` 返回不等于成功。返回运行句柄则沿原句柄继续，不以未结束状态当失败重派。
+   独立调用可以并发，但每项的拒绝或非零结果仍分别处理。
 4. 调用普通原生程序优先使用 `& $exe @argList`。可执行文件、参数和数据分别保存，不能先用空格
    拼接参数，也不能用 `Invoke-Expression` 执行拼出的命令；不把 `Start-Process -ArgumentList`
    数组当作无损参数数组接口。`.cmd`、`.bat` 和 `cmd.exe` 单独按其解析规则处理。
