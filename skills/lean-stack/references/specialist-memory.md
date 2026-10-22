@@ -127,7 +127,15 @@ py -3 -X utf8 -B .\skills\lean-stack\scripts\agents.py ensure `
   --authority <read|write>
 ```
 
-`origin-term` 仅供去敏拒绝，不进入受管存储。首次 `ensure` 返回
+执行 `ensure`、`improve` 或带 `--lesson` 的 `complete-run` 前，父代理必须从当前任务事实取得
+实际来源项目或插件标识，并随该次命令传入非空 `--origin-term`；有来源别名时重复传入。
+能力族键、角色名或通用技术词不能冒充来源。来源参数仅供去敏拒绝，不进入受管存储，
+真实来源也不能写进经验或职责正文；不要从脚本目录或能力族名称机械推导来源。
+缺少来源时接口拒写，父代理须具名报告未完成的命令、实际错误和未保存结果；取得缺失事实后，
+由原采用任务按当前身份、CAS与本次采用动作的稳定记账标识补齐未完成动作并回读，不补造历史轮次。
+查看 `--help` 不算写入尝试；非零退出或 `ok=false` 不能当作保存完成，最终交付不得省略这项受阻。
+
+首次 `ensure` 返回
 `reconfiguration_required` 或 `global_contract_refresh_required` 时，只有已核验并采用
 该配置且响应给出当前可用 SHA，才对同一身份、同一请求做一次 CAS 确认；若已有竞争变更，
 重新判断胜者，不拿旧 SHA 强写。父代理按 `ensure` 返回的成功或冲突回执记录实际结果；
@@ -161,13 +169,17 @@ py -3 -X utf8 -B .\skills\lean-stack\scripts\agents.py ensure `
 曾对同一机器身份和 `run_id` 签发，不证明宿主加载或经验导致结果。不得依据相同正文或历史
 摘要猜测关联。
 
+变量来自当前采用结果、已核验身份与真实来源事实时，可直接执行完整调用：
+
 ```powershell
-py -3 -X utf8 -B .\skills\lean-stack\scripts\agents.py complete-run `
-  --agent-ref <lean_* 机器身份> --expected-sha256 <调用方 CAS 快照> `
-  --run-id <UUID> --invocation-kind spawn_agent --outcome success `
-  --origin-term <用于去敏检查的来源词> `
-  --lesson "适用范围：<可复用情境>；证据限制：<已核验依据与未覆盖边界>"
+py -3 -X utf8 -B $agentsScript complete-run `
+  --agent-ref $agentRef --expected-sha256 $currentSha256 `
+  --run-id $adoptionRunId --invocation-kind spawn_agent --outcome success `
+  --origin-term $sourceProject --lesson $sanitizedLesson
 ```
+
+`$sourceProject` 是实际来源标识，`$sanitizedLesson` 已去除该标识；`$adoptionRunId` 沿用本次
+采用动作的稳定值，仅当前真实保留调用使用此例，运行时建档后的经验按既有 `improve` 分支处理。
 
 经验不含项目名、路径、URL、日志、凭据、原始提示、源码或思维过程。失败教训只写
 “情境、停止依据、重开条件”，不作为失败记录的 `--lesson`。用户否定已写结果时只追加

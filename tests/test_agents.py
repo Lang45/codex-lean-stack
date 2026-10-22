@@ -4440,6 +4440,36 @@ else:
             self.assertEqual(exit_code, 2)
             self.assertIn("at least one", json.loads(output.getvalue())["error"])
 
+        before = (self.registry.db_path.read_bytes(), Path(created["path"]).read_bytes())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = agents.main([
+                "--codex-home", str(self.codex_home), "complete-run",
+                "--agent-ref", created["name"], "--expected-sha256", created["sha256"],
+                "--run-id", str(uuid.uuid4()), "--invocation-kind", "spawn_agent",
+                "--outcome", "success", "--lesson", "已核验的方法仍须实际来源护栏。",
+            ])
+        self.assertEqual(exit_code, 2)
+        self.assertFalse(json.loads(output.getvalue())["ok"])
+        self.assertIn("at least one", json.loads(output.getvalue())["error"])
+        self.assertEqual(before, (self.registry.db_path.read_bytes(), Path(created["path"]).read_bytes()))
+
+        for command in ("ensure", "improve", "complete-run"):
+            with self.subTest(command=command):
+                help_output = io.StringIO()
+                with contextlib.redirect_stdout(help_output):
+                    with self.assertRaises(SystemExit) as exited:
+                        agents.build_parser().parse_args([command, "--help"])
+                self.assertEqual(exited.exception.code, 0)
+                help_text = " ".join(help_output.getvalue().split())
+                self.assertIn("--origin-term", help_text)
+                self.assertIn("actual source project/plugin identifier", help_text)
+                self.assertIn("not a capability or generic technical term", help_text)
+                self.assertIn(
+                    "required with --lesson" if command == "complete-run" else "required for semantic persistence",
+                    help_text,
+                )
+
         rows = self.downgrade_registry(3)
         plan = self.write_migration_plan(rows)
         payload = json.loads(plan.read_text(encoding="utf-8"))

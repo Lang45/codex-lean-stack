@@ -4383,7 +4383,13 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="canonicalizable JSON object defining the global domain contract",
     )
-    ensure.add_argument("--origin-term", action="append", default=[])
+    ensure.add_argument(
+        "--origin-term", action="append", default=[],
+        help=(
+            "required for semantic persistence; actual source project/plugin identifier "
+            "for redaction, not a capability or generic technical term; repeat for aliases"
+        ),
+    )
     ensure.add_argument(
         "--expected-sha256",
         help="CAS guard required only when replacing an existing role configuration",
@@ -4405,7 +4411,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     improve.add_argument("--covered-through", type=int)
     improve.add_argument("--source-digest")
-    improve.add_argument("--origin-term", action="append", default=[])
+    improve.add_argument(
+        "--origin-term", action="append", default=[],
+        help=(
+            "required for semantic persistence; actual source project/plugin identifier "
+            "for redaction, not a capability or generic technical term; repeat for aliases"
+        ),
+    )
 
     migrate = subparsers.add_parser(
         "migrate-global",
@@ -4493,7 +4505,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--retracts-event-id",
         help="optional prior event corrected by the adopted experience",
     )
-    complete_run.add_argument("--origin-term", action="append", default=[])
+    complete_run.add_argument(
+        "--origin-term", action="append", default=[],
+        help=(
+            "required with --lesson; actual source project/plugin identifier for redaction, "
+            "not a capability or generic technical term; repeat for aliases"
+        ),
+    )
 
     status = subparsers.add_parser(
         "status",

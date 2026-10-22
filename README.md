@@ -4,9 +4,9 @@
 
 Current version: **8.2.3**
 
-- New experience is compared with what the compatible role already carries, not with whether an algorithm was invented for the first time. Verified reusable methods, counterexamples and evidence limits can flow from child finals into the existing adoption-time write and readback path; generic goals do not substitute for concrete methods.
-- Progress updates report confirmed results, current work, changes and problems throughout execution; avoiding repeated status does not suppress useful updates.
-- Fixed retained roles use their loaded configuration without model or effort overrides; runtime roles select explicit supported settings, and every call sets `fork_turns="none"`.
+- New experience is compared with what the compatible role already carries, not with whether an algorithm was invented for the first time. Verified reusable methods, counterexamples and evidence limits flow into adoption-time persistence; writes require a real source identifier for redaction, and failures remain explicit until the original adoption task completes the write and readback.
+- Integration waits for frozen inputs, while completed preparation can be delivered first. Independent reads run together with per-result checks; ambiguous feedback or a deferred release does not silently cancel other pending work, and useful progress updates continue throughout execution.
+- Read-only roles return facts for an authorized writer instead of acquiring write access through a task card. Fixed retained roles use their loaded configuration without model or effort overrides; runtime roles select explicit supported settings, and every call sets `fork_turns="none"`.
 
 Codex Lean Stack provides two independent skills:
 
