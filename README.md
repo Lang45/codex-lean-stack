@@ -2,10 +2,10 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.2.1**
+Current version: **8.2.2**
 
-- Retention distinguishes saved experience from what the current role actually receives. Zero experience is stated directly; partial coverage reports the remaining summary work without raising the 4 KiB window or dropping raw records.
-- Routing reads the actual registry schema, preserves verified identity statistics, and reselects when the capability domain changes. Every adopted completed slice or follow-up result triggers separate identity and new-experience decisions, with eligible writes and readback through the existing safe APIs before continuing; it does not wait for a user reminder or the whole thread to finish.
+- Every result-consumption entry uses the same automatic identity and new-experience closure. A verified reusable-method candidate travels with the child final result, is checked at adoption, and is written and read back when eligible; a candidate alone is not proof of persistence.
+- Calls explicitly use the supported `fork_turns="none"` and current runtime model catalog. Verified working directories survive task-date changes; retained role models stay fixed.
 
 Codex Lean Stack provides two independent skills:
 

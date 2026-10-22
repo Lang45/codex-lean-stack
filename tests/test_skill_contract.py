@@ -189,6 +189,10 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn('禁止 `fork_turns="all"`', combined)
         self.assertIn("TOML", combined)
         self.assertIn("不能代替原生参数", combined)
+        self.assertNotIn("有限正整数", combined)
+        compact = re.sub(r"\s+", "", combined)
+        self.assertIn("当前公开覆盖目录", compact)
+        self.assertIn("某角色的型号可用，不证明通用运行时角色", compact)
 
     def test_astra_effort_is_selected_per_task(self) -> None:
         compact = re.sub(r"\s+", "", self.stack + self.dispatch)
