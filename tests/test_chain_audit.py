@@ -208,7 +208,10 @@ class RegistryChainTests(unittest.TestCase):
         self.assertIsNone(recalled["retention_state"]["experience_digest"])
         self.assertFalse(recalled["retention_state"]["experience_loaded"])
         self.assertEqual(recalled["retention_state"]["active_experience_count"], 1)
-        self.assertIn("待摘要压缩", recalled["opening_status"])
+        self.assertEqual(recalled["retention_state"]["experience_pending_count"], 1)
+        self.assertFalse(recalled["retention_state"]["experience_complete"])
+        self.assertIn("已保存 1 条", recalled["opening_status"])
+        self.assertIn("1 条待摘要", recalled["opening_status"])
         self.assertEqual(self.registry.status(for_routing=True)["registered_count"], 1)
         self.assertEqual(self.registry.status(for_dashboard=True)["active_experience_count"], 1)
         self.registry.complete_run(
