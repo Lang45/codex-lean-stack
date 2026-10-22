@@ -2,9 +2,10 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.1.4**
+Current version: **8.2.0**
 
-- Subagents explain progress throughout execution. Task cards and long-task checkpoints cannot impose default silence; parent-directed messages remain focused on dependencies, corrections, and risks without suppressing visible updates.
+- Say “多开子代理” to keep adding useful parallel work throughout the current task: quality remains required, while cost no longer vetoes more parallel help. New ready slices and freed capacity trigger further dispatch instead of a one-time increase or a fixed team size.
+- When read-only analysis turns into implementation, route the write task directly to a compatible writer; useful existing context does not grant write permission.
 
 Codex Lean Stack provides two independent skills:
 
@@ -21,6 +22,7 @@ evidence required to support a conclusion.
 - **Quality, cost, and time by context.** Use the Astra expert route for difficult high-value work when it has a
   decision-changing quality advantage; compare total cost
   after ordinary options meet the same reliability bar; add parallel help for speed within an acceptable cost range.
+  An explicit request for [continued parallel speedup](skills/lean-stack/SKILL.md#用户要求持续并行提速) overrides that default cost gate for the current task, while preserving quality, permissions, real capacity, dependencies, and write ownership.
 - **Tools first.** Deterministic work goes directly to tools.
 - **Reuse one capability family.** Small follow-ups on the same task continue a compatible live child without a new
   routing pass. For a new capability with no suitable current child, perform one bounded registry lookup. A retained
