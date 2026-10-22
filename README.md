@@ -2,10 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.2.2**
+Current version: **8.2.3**
 
-- Every result-consumption entry uses the same automatic identity and new-experience closure. A verified reusable-method candidate travels with the child final result, is checked at adoption, and is written and read back when eligible; a candidate alone is not proof of persistence.
-- Calls explicitly use the supported `fork_turns="none"` and current runtime model catalog. Verified working directories survive task-date changes; retained role models stay fixed.
+- New experience is compared with what the compatible role already carries, not with whether an algorithm was invented for the first time. Verified reusable methods, counterexamples and evidence limits can flow from child finals into the existing adoption-time write and readback path; generic goals do not substitute for concrete methods.
+- Progress updates report confirmed results, current work, changes and problems throughout execution; avoiding repeated status does not suppress useful updates.
+- Fixed retained roles use their loaded configuration without model or effort overrides; runtime roles select explicit supported settings, and every call sets `fork_turns="none"`.
 
 Codex Lean Stack provides two independent skills:
 

@@ -193,6 +193,12 @@ class SkillContractTests(unittest.TestCase):
         compact = re.sub(r"\s+", "", combined)
         self.assertIn("当前公开覆盖目录", compact)
         self.assertIn("某角色的型号可用，不证明通用运行时角色", compact)
+        for surface in (self.stack, self.dispatch):
+            native = re.sub(r"\s+", "", surface)
+            self.assertIn("通用运行时角色显式传", native)
+            self.assertIn("固定保留角色沿用工具已加载固定配置", native)
+            self.assertIn("不传模型或思考程度覆盖参数，任务卡核对实际配置", native)
+        self.assertIn("[原生调用](dispatch-start.md#原生调用)", read(REFS / "collaboration.md"))
 
     def test_astra_effort_is_selected_per_task(self) -> None:
         compact = re.sub(r"\s+", "", self.stack + self.dispatch)
@@ -309,6 +315,8 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不等待用户提醒、保留线程结束或整个主任务结束", self.results)
         self.assertIn("是否保留能力族", self.results)
         self.assertIn("是否保存新增经验", self.results)
+        self.assertIn("不要求首次发明算法", self.memory)
+        self.assertIn("泛化质量要求不等于已保存具体做法", re.sub(r"\s+", "", self.memory))
         self.assertIn("普通派发不进行成本、迁移或摘要巡检", self.stack)
         self.assertIn(
             "命中当前可调用的兼容保留类型后，仅读取该保留子代理",
