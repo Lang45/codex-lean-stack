@@ -20,6 +20,8 @@ description: 非平凡主任务或可选准备将先于实际推进时读取；�
 影响仍以用户当前要求与更高层规则为准；始终保留安全、权限、数据完整性和诚实证据边界。
 工具与 PowerShell 路径精简共同遵守
 [Windows exec 稳健性契约](../lean-stack/references/windows-exec.md#windows-exec-与-powershell)。
+Computer Use 的实际操作按[父代理指导、Terra 操作](../lean-stack/SKILL.md#computer-use父代理指导terra-操作)
+分工；本入口收窄目标与阶段，不因操作简单或只有一个工具动作就改由父代理代操。
 
 ## 最小完整方法
 

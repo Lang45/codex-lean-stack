@@ -31,6 +31,8 @@ Astra 可选 `medium`、`high` 和 `xhigh`；不得因为模型是 Astra 就固�
 Sol `ultra` 时，父代理用一句话记录决定性的质量缺口；普通调用不生成固定格式的路线收据。
 Terra 的适用条件、`medium`/`high` 选择和转用 Sol 的质量门槛统一见
 [入口模型规则](../SKILL.md#模型与思考程度)。专家问题仍按 Astra 的决定性质量差距边界处理。
+Computer Use 的界面执行按[父代理指导、Terra 操作](../SKILL.md#computer-use父代理指导terra-操作)
+处理；复杂业务判断与具体界面操作分别选配，任务卡补齐该节的目标、授权范围、阶段验收与操作所有权。
 
 ## 选择同一能力族的执行者
 
