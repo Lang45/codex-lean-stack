@@ -73,7 +73,7 @@ TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 NEW_SUBAGENT_MODELS = (
-    "gpt-5.6-luna",
+    "gpt-6.1-terra",
     "gpt-6.1-sol",
     "gpt-6-astra",
 )
@@ -455,8 +455,6 @@ def validate_ensure_model_effort(model: str, effort: str) -> tuple[str, str]:
         )
     if effort == "low":
         raise SpecialistError("new or reconfigured specialists cannot use low reasoning effort")
-    if model == "gpt-5.6-luna" and effort == "ultra":
-        raise SpecialistError("gpt-5.6-luna subagents support at most max reasoning effort")
     return model, effort
 
 

@@ -211,7 +211,7 @@ class SkillContractTests(unittest.TestCase):
 
     def test_new_dispatch_uses_three_current_models_and_checks_legacy_reuse(self) -> None:
         selection = self.stack.split("## 模型与思考程度", 1)[1].split("## 原生调用与任务卡", 1)[0]
-        models = ("gpt-5.6-luna", "gpt-6.1-sol", "gpt-6-astra")
+        models = ("gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra")
         for model in models:
             self.assertIn(model, selection)
             self.assertIn(model, self.dispatch)
@@ -223,7 +223,7 @@ class SkillContractTests(unittest.TestCase):
         ):
             positions = [surface.index(model) for model in models]
             self.assertEqual(positions, sorted(positions))
-        for historical_model in ("gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"):
+        for historical_model in ("gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"):
             self.assertNotIn(historical_model, selection)
         self.assertIn("显式传实际`model`", re.sub(r"\s+", "", self.stack))
         self.assertIn("显式传入实际`model`", re.sub(r"\s+", "", self.dispatch))
@@ -458,7 +458,7 @@ class SkillContractTests(unittest.TestCase):
             "第二阶段",
             "续用旧Astra线程还是新建或改派另一条兼容Astra路线",
             "旧线程上下文无边际价值",
-            "不能因此降到Sol/Luna",
+            "不能因此降到Sol/Terra",
             "只有当前切片不再需要Astra",
             "工具、兼容保留身份或满足质量的更便宜路线",
             "历史使用Astra不锁定未来模型",
@@ -575,12 +575,13 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("提交最终回复", self.results)
         self.assertIn("新启动一个子代理", self.cost)
 
-    def test_cheap_model_is_limited_to_bounded_fact_work(self) -> None:
-        combined = re.sub(r"\s+", "", self.stack + self.dispatch)
-        self.assertIn("有界读取、结构化提取和事实总结", combined)
-        self.assertIn("建议、取舍、合规判断、审查结论", combined)
-        self.assertIn("至少使用合适的Sol", combined)
-        self.assertIn("已保留身份也不能绕过", combined)
+    def test_terra_handles_simple_speed_prioritized_work(self) -> None:
+        selection = self.stack.split("## 模型与思考程度", 1)[1].split("## 同一能力族优先复用", 1)[0]
+        compact = re.sub(r"\s+", "", selection)
+        for phrase in ("gpt-6.1-terra", "速度优先", "有界读取", "结构化提取", "事实总结", "局部小修改"):
+            self.assertIn(phrase, compact)
+        for phrase in ("复杂取舍", "高风险修改", "最终审查结论", "至少使用合适的Sol", "已保留身份也不能绕过"):
+            self.assertIn(phrase, compact)
 
     def test_machine_identity_and_display_name_are_distinct(self) -> None:
         for term in ("agent_ref", "display_name", "lean_*", "中文展示名"):

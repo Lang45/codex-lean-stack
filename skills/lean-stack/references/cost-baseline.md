@@ -6,20 +6,21 @@
 
 ## 当前基线
 
-核对日期：2026-09-24。来源为文末官方页面；以下为 API 美元价格，不把单价比例当作整项任务节省，也不推断 Codex credits 结算。
+核对日期：Astra 为 2026-09-24，Terra 为 2026-10-27；Sol 尚未核验。来源为文末官方页面；以下为 API 美元价格，不把单价比例当作整项任务节省，也不推断 Codex credits 结算。
 
 ### API 美元基线
 
-OpenAI 官方价格页当前标准处理、短上下文的每百万令牌价格：
+OpenAI 官方页面在各自核对日期的标准处理、短上下文每百万令牌价格（缓存写入为 30 分钟保留）：
 
 | 模型 | 输入 | 缓存输入 | 缓存写入 | 输出 |
 | --- | ---: | ---: | ---: | ---: |
 | gpt-6-astra | $10 | $1 | $12.50 | $50 |
 | gpt-6.1-sol | 待官方核验 | 待官方核验 | 待官方核验 | 待官方核验 |
-| gpt-5.6-luna | $0.20 | $0.02 | $0.25 | $1.20 |
+| gpt-6.1-terra | $1.00 | $0.05 | $1.25 | $5.00 |
 
 2026-09-30 按用户要求统一 Sol 为 `gpt-6.1-sol`；其费率尚未核验，不沿用旧 Sol 的价格。
-已有数字仍是上述核对日期的基线。各模型四列价格分别以表中数字为准；不同列的模型间比例不一定相同。不据此猜测当前任务计费类别、token 用量或账户实际结算。
+2026-10-27 按用户要求用 Terra 取代 Luna 的速度优先路线；Terra 的单价独立核对，不沿用 Luna 的价格，也不声称比 Luna 更便宜或已实测更快。
+已有数字仍是各自核对日期的基线。各模型四列价格分别以表中数字为准；不同列的模型间比例不一定相同。不据此猜测当前任务计费类别、token 用量或账户实际结算。
 
 ### 选模时使用这份价格
 
@@ -62,6 +63,8 @@ py -3 -X utf8 <插件技能目录>/scripts/cost_check.py record --expected-state
 
 ## 官方来源
 
+- [GPT-6.1 Terra 模型说明与价格](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+- [模型选择与 Terra 适用任务](https://developers.openai.com/api/docs/guides/model-selection)
 - [OpenAI API 价格](https://developers.openai.com/api/docs/pricing)
 - [OpenAI Codex 费率](https://learn.chatgpt.com/docs/pricing)
 - [OpenAI Codex 子代理](https://learn.chatgpt.com/docs/agent-configuration/subagents?surface=app)

@@ -411,7 +411,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         alias = self.ensure(
             role_key="interface-root-cause-review", global_domain_key="interface-binding-diagnostics",
             display_name="另一个显示名称", role_instructions="先做有限读取再交付。",
-            model="gpt-5.6-luna", effort="medium", speed="fast",
+            model="gpt-6.1-terra", effort="medium", speed="fast",
         )
         self.assertEqual(alias["action"], "reuse_required")
         self.assertEqual(alias["agent_ref"], created["name"])
@@ -431,13 +431,13 @@ class SpecialistRegistryTests(unittest.TestCase):
             self.assertEqual(list(connection.iterdump()), before_ledger)
 
     def test_ensure_alias_high_request_exposes_lower_stored_configuration_for_cas(self) -> None:
-        created = self.ensure(model="gpt-5.6-luna", effort="medium")
+        created = self.ensure(model="gpt-6.1-terra", effort="medium")
         before = Path(created["path"]).read_bytes()
         result = self.ensure(role_key="binding-high-alias", global_domain_key="interface-binding-diagnostics")
         self.assertEqual(result["action"], "reuse_required")
         self.assertFalse(result["compatible"])
         self.assertFalse(result["configuration_matches"])
-        self.assertEqual(result["model"], "gpt-5.6-luna")
+        self.assertEqual(result["model"], "gpt-6.1-terra")
         self.assertEqual(result["reasoning_effort"], "medium")
         self.assertEqual(Path(created["path"]).read_bytes(), before)
         updated = self.ensure(role_key=result["role_key"], expected_sha256=result["sha256"])
@@ -762,42 +762,33 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
 
     def test_ensure_omitted_speed_defaults_all_models_to_standard(self) -> None:
-        luna = self.ensure(
-            role_key="luna-default-speed-review",
-            global_domain_key="luna-default-speed-review",
-            model="gpt-5.6-luna",
-            effort="medium",
-        )
-        terra = self.ensure(
-            role_key="terra-default-speed-review",
-            global_domain_key="terra-default-speed-review",
-            model="gpt-6.1-sol",
-            effort="medium",
-        )
+        for model in agents.NEW_SUBAGENT_MODELS:
+            with self.subTest(model=model):
+                role_key = f"standard-speed-{model.replace('.', '-')}"
+                created = self.ensure(
+                    role_key=role_key,
+                    global_domain_key=role_key,
+                    model=model,
+                    effort="medium",
+                )
+                payload = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
+                self.assertNotIn("service_tier", payload)
+                self.assertNotIn("速度：", payload["developer_instructions"])
         explicit_standard = self.ensure(
-            role_key="luna-explicit-standard-review",
-            global_domain_key="luna-explicit-standard-review",
-            model="gpt-5.6-luna",
+            role_key="terra-explicit-standard-review",
+            global_domain_key="terra-explicit-standard-review",
+            model="gpt-6.1-terra",
             effort="medium",
             speed="standard",
         )
-
-        luna_payload = tomllib.loads(Path(luna["path"]).read_text(encoding="utf-8"))
-        terra_payload = tomllib.loads(Path(terra["path"]).read_text(encoding="utf-8"))
-        standard_payload = tomllib.loads(
-            Path(explicit_standard["path"]).read_text(encoding="utf-8")
-        )
-        self.assertNotIn("service_tier", luna_payload)
-        self.assertNotIn("速度：", luna_payload["developer_instructions"])
-        self.assertNotIn("service_tier", terra_payload)
-        self.assertNotIn("速度：", terra_payload["developer_instructions"])
-        self.assertNotIn("service_tier", standard_payload)
+        payload = tomllib.loads(Path(explicit_standard["path"]).read_text(encoding="utf-8"))
+        self.assertNotIn("service_tier", payload)
 
     def test_omitted_standard_does_not_overwrite_explicit_fast_without_cas(self) -> None:
         created = self.ensure(
-            role_key="luna-default-reconfiguration",
-            global_domain_key="luna-default-reconfiguration",
-            model="gpt-5.6-luna",
+            role_key="terra-default-reconfiguration",
+            global_domain_key="terra-default-reconfiguration",
+            model="gpt-6.1-terra",
             effort="medium",
             speed="fast",
         )
@@ -811,18 +802,18 @@ class SpecialistRegistryTests(unittest.TestCase):
         before = path.read_bytes()
 
         preview = self.ensure(
-            role_key="luna-default-reconfiguration",
-            global_domain_key="luna-default-reconfiguration",
-            model="gpt-5.6-luna",
+            role_key="terra-default-reconfiguration",
+            global_domain_key="terra-default-reconfiguration",
+            model="gpt-6.1-terra",
             effort="medium",
         )
         self.assertEqual(preview["action"], "reconfiguration_required")
         self.assertEqual(path.read_bytes(), before)
 
         reconfigured = self.ensure(
-            role_key="luna-default-reconfiguration",
-            global_domain_key="luna-default-reconfiguration",
-            model="gpt-5.6-luna",
+            role_key="terra-default-reconfiguration",
+            global_domain_key="terra-default-reconfiguration",
+            model="gpt-6.1-terra",
             effort="medium",
             expected_sha256=improved["sha256"],
         )
@@ -836,9 +827,9 @@ class SpecialistRegistryTests(unittest.TestCase):
 
         standard_bytes = path.read_bytes()
         repeated = self.ensure(
-            role_key="luna-default-reconfiguration",
-            global_domain_key="luna-default-reconfiguration",
-            model="gpt-5.6-luna",
+            role_key="terra-default-reconfiguration",
+            global_domain_key="terra-default-reconfiguration",
+            model="gpt-6.1-terra",
             effort="medium",
         )
         self.assertEqual(repeated["action"], "reused")
@@ -1082,7 +1073,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             display_name="QML 根因核对员",
             description="采用验证后胜出的配置重复诊断 QML 根因。",
             role_instructions="先核对实际依赖图，再返回最小可复核修法。",
-            model="gpt-5.6-luna",
+            model="gpt-6.1-terra",
             effort="medium",
             speed="fast",
             authority="write",
@@ -1095,7 +1086,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             display_name="QML 根因核对员",
             description="采用验证后胜出的配置重复诊断 QML 根因。",
             role_instructions="先核对实际依赖图，再返回最小可复核修法。",
-            model="gpt-5.6-luna",
+            model="gpt-6.1-terra",
             effort="medium",
             speed="fast",
             authority="write",
@@ -1108,7 +1099,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(reconfigured["path"], created["path"])
         self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 1)
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["model"], "gpt-5.6-luna")
+        self.assertEqual(payload["model"], "gpt-6.1-terra")
         self.assertEqual(payload["model_reasoning_effort"], "medium")
         self.assertEqual(payload["service_tier"], "fast")
         self.assertNotIn("features", payload)
@@ -1289,7 +1280,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             role_key="legacy-fast-opening",
             global_domain_key="legacy-fast-opening",
             display_name="快速配置核对员",
-            model="gpt-5.6-luna",
+            model="gpt-6.1-terra",
             effort="medium",
             speed="fast",
         )
@@ -1316,7 +1307,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             role_key="legacy-fast-opening",
             global_domain_key="legacy-fast-opening",
             display_name="快速配置核对员",
-            model="gpt-5.6-luna",
+            model="gpt-6.1-terra",
             effort="medium",
             speed="fast",
         )
@@ -1330,7 +1321,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             role_key="legacy-fast-opening",
             global_domain_key="legacy-fast-opening",
             display_name="快速配置核对员",
-            model="gpt-5.6-luna",
+            model="gpt-6.1-terra",
             effort="medium",
             speed="fast",
             expected_sha256=legacy_sha256,
@@ -1893,27 +1884,43 @@ else:
                     self.assertEqual(payload["model"], model)
                     self.assertEqual(payload["model_reasoning_effort"], effort)
 
-    def test_luna_subagent_accepts_max_and_rejects_ultra_reasoning_effort(self) -> None:
-        created = self.ensure(
-            role_key="luna-max-supported",
-            global_domain_key="luna-max-supported",
-            model="gpt-5.6-luna",
-            effort="max",
-        )
-        payload = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
-        self.assertEqual(payload["model"], "gpt-5.6-luna")
-        self.assertEqual(payload["model_reasoning_effort"], "max")
-        with self.assertRaisesRegex(agents.SpecialistError, "at most max"):
-            self.ensure(
-                role_key="luna-ultra-rejected",
-                global_domain_key="luna-ultra-rejected",
-                model="gpt-5.6-luna",
-                effort="ultra",
-            )
+    def test_terra_subagent_accepts_host_supported_medium_through_ultra_efforts(self) -> None:
+        for effort in ("medium", "high", "xhigh", "max", "ultra"):
+            with self.subTest(effort=effort, operation="create"):
+                role_key = f"terra-{effort}-supported"
+                created = self.ensure(
+                    role_key=role_key,
+                    global_domain_key=role_key,
+                    model="gpt-6.1-terra",
+                    effort=effort,
+                )
+                path = Path(created["path"])
+                payload = tomllib.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["model"], "gpt-6.1-terra")
+                self.assertEqual(payload["model_reasoning_effort"], effort)
+            with self.subTest(effort=effort, operation="reconfigure"):
+                reconfigured = self.ensure(
+                    role_key=role_key,
+                    global_domain_key=role_key,
+                    model="gpt-6.1-terra",
+                    effort="high" if effort == "medium" else "medium",
+                    expected_sha256=created["sha256"],
+                )
+                self.assertEqual(reconfigured["action"], "reconfigured")
+                restored = self.ensure(
+                    role_key=role_key,
+                    global_domain_key=role_key,
+                    model="gpt-6.1-terra",
+                    effort=effort,
+                    expected_sha256=reconfigured["sha256"],
+                )
+                self.assertEqual(restored["action"], "reconfigured")
+                payload = tomllib.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["model_reasoning_effort"], effort)
 
     def test_ensure_accepts_only_current_models_with_medium_or_higher_effort(self) -> None:
         current_models = (
-            "gpt-5.6-luna",
+            "gpt-6.1-terra",
             "gpt-6.1-sol",
             "gpt-6-astra",
         )
@@ -1928,7 +1935,7 @@ else:
                 )
                 self.assertEqual(created["action"], "created")
 
-        for model in ("gpt-6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-6-sol", "gpt-5.6-sol"):
+        for model in ("gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-5.5", "gpt-6-sol", "gpt-5.6-sol"):
             with self.subTest(model=model, operation="create"):
                 with self.assertRaisesRegex(agents.SpecialistError, "require one of") as caught:
                     self.ensure(
@@ -1941,21 +1948,17 @@ else:
             with self.subTest(model=model, operation="low"):
                 with self.assertRaisesRegex(agents.SpecialistError, "cannot use low"):
                     self.ensure(role_key="rejected-low-effort", model=model, effort="low")
-        with self.assertRaisesRegex(agents.SpecialistError, "at most max"):
-            self.ensure(
-                role_key="rejected-luna-ultra",
-                model="gpt-5.6-luna",
-                effort="ultra",
-            )
         self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 3)
 
         existing = self.ensure()
         original = Path(existing["path"]).read_bytes()
         for model, effort, error in (
+            ("gpt-5.6-luna", "medium", "require one of"),
             ("gpt-6-luna", "high", "require one of"),
             ("gpt-5.6-terra", "high", "require one of"),
             ("gpt-6-sol", "high", "require one of"),
             ("gpt-5.6-sol", "high", "require one of"),
+            ("gpt-6.1-terra", "low", "cannot use low"),
             ("gpt-6.1-sol", "low", "cannot use low"),
         ):
             with self.subTest(model=model, effort=effort, operation="reconfigure"):
@@ -1993,8 +1996,78 @@ else:
         self.assertEqual(payload["model"], "gpt-6.1-sol")
         self.assertEqual(payload["model_reasoning_effort"], "high")
 
+    def test_historical_luna_to_terra_cas_migration_preserves_identity_experience_and_runs(self) -> None:
+        created = self.ensure(speed="fast")
+        current_sha256 = created["sha256"]
+        for index in range(8):
+            recorded = self.improve_with_lesson(
+                name=created["name"], expected_sha256=current_sha256,
+                lesson=f"迁移前经验 {index}：保留原始证据。", event_id=str(uuid.uuid4()),
+            )
+            current_sha256 = recorded["sha256"]
+        compaction = recorded["compaction"]
+        self.assertTrue(compaction["needed"])
+        summarized = self.improve_with_summary(
+            name=created["name"], expected_sha256=current_sha256,
+            summary="迁移前摘要：保留已验证的方法和证据边界。",
+            covered_through=compaction["covered_through"],
+            source_digest=compaction["source_digest"],
+        )
+        pending = self.improve_with_lesson(
+            name=created["name"], expected_sha256=summarized["sha256"],
+            lesson="迁移前未压缩经验：核对身份和所有权。", event_id=str(uuid.uuid4()),
+        )
+        self.registry.record_run(
+            name=created["name"], expected_sha256=pending["sha256"],
+            run_id=str(uuid.uuid4()), invocation_kind="spawn_agent", outcome="success",
+        )
+        legacy_sha256 = self.mark_legacy_configuration(
+            created, model="gpt-5.6-luna", effort="max",
+        )
+        path = Path(created["path"])
+        original = path.read_bytes()
+        before = self.registry_rows()
+        recalled = self.registry.recall(name=created["name"], expected_sha256=legacy_sha256)
+        catalog = self.registry.status(for_routing=True)["registered_agents"]
+        self.assertEqual(recalled["model"], "gpt-5.6-luna")
+        self.assertEqual(recalled["reasoning_effort"], "max")
+        self.assertEqual(catalog[0]["model"], "gpt-5.6-luna")
+        preview = self.ensure(model="gpt-6.1-terra", effort="medium", speed="fast")
+        self.assertEqual(preview["action"], "reconfiguration_required")
+        self.assertEqual(preview["retry_with_expected_sha256"], legacy_sha256)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(self.registry_rows(), before)
+        with self.assertRaisesRegex(agents.SpecialistError, "SHA-256"):
+            self.ensure(
+                model="gpt-6.1-terra", effort="medium", speed="fast",
+                expected_sha256=created["sha256"],
+            )
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(self.registry_rows(), before)
+        updated = self.ensure(
+            model="gpt-6.1-terra", effort="medium", speed="fast",
+            expected_sha256=legacy_sha256,
+        )
+        self.assertEqual(updated["action"], "reconfigured")
+        self.assertTrue(updated["experience_preserved"])
+        for key in ("agent_id", "name", "path", "owner_token"):
+            self.assertEqual(updated[key], created[key])
+        after = self.registry_rows()
+        for table in before.keys() - {"agents"}:
+            self.assertEqual(after[table], before[table])
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["model"], "gpt-6.1-terra")
+        self.assertEqual(payload["model_reasoning_effort"], "medium")
+        self.assertEqual(payload["service_tier"], "fast")
+        self.assertEqual(payload["sandbox_mode"], "read-only")
+        migrated = self.registry.recall(name=created["name"], expected_sha256=updated["sha256"])
+        self.assertEqual(migrated["experience"], recalled["experience"])
+        self.assertEqual(migrated["retention_state"], recalled["retention_state"])
+        self.assertEqual(self.ensure(model="gpt-6.1-terra", effort="medium", speed="fast")["action"], "reused")
+
     def test_rejected_current_creation_models_remain_readable_as_historical_roles(self) -> None:
         for index, (model, effort) in enumerate((
+            ("gpt-5.6-luna", "max"),
             ("gpt-6-luna", "ultra"),
             ("gpt-5.6-terra", "low"),
             ("gpt-6-sol", "medium"),
@@ -3724,7 +3797,7 @@ else:
                 display_name="另一个执行员",
                 description="执行另一种重复工作。",
                 role_instructions="返回直接成果。",
-                model="gpt-5.6-luna",
+                model="gpt-6.1-terra",
                 effort="medium",
                 authority="read",
                 global_domain_key="another-specialty",
@@ -3792,7 +3865,7 @@ else:
             global_domain_key="alpha-source-review",
             display_name="来源复核员",
             description="复核来源覆盖和证据范围。",
-            model="gpt-5.6-luna",
+            model="gpt-6.1-terra",
             effort="medium",
         )
 
@@ -4288,7 +4361,7 @@ else:
             role_key="fast-opening-declaration",
             global_domain_key="fast-opening-declaration",
             display_name="快速配置核对员",
-            model="gpt-5.6-luna",
+            model="gpt-6.1-terra",
             effort="medium",
             speed="fast",
         )
@@ -4303,7 +4376,7 @@ else:
         self.assertEqual(
             recalled["opening_declaration"],
             "子代理名称：快速配置核对员（复用）\n"
-            "模型：gpt-5.6-luna\n"
+            "模型：gpt-6.1-terra\n"
             "思考程度：medium\n",
         )
         self.assertEqual(len(recalled["opening_declaration"].splitlines()), 3)
@@ -4394,7 +4467,7 @@ else:
             "display_name": "来源核对员",
             "description": "重复核对通用领域输入。",
             "role_instructions": "返回通用证据和结论。",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6.1-terra",
             "effort": "medium",
             "authority": "read",
             "global_domain_key": "generic-origin-review",
@@ -4420,7 +4493,7 @@ else:
                 "--codex-home", str(self.codex_home), "ensure",
                 "--role-key", "cli-missing-origin", "--display-name", "CLI 来源核对员",
                 "--description", "核对通用输入。", "--instructions", "返回通用证据。",
-                "--model", "gpt-5.6-luna", "--reasoning-effort", "medium",
+                "--model", "gpt-6.1-terra", "--reasoning-effort", "medium",
                 "--authority", "read", "--global-domain-key", "cli-origin-review",
                 "--global-contract", json.dumps(self.contract("CLI 通用审核"), ensure_ascii=False),
             ])
@@ -4812,7 +4885,7 @@ else:
                     "--instructions",
                     "完成任务",
                     "--model",
-                    "gpt-5.6-luna",
+                    "gpt-6.1-terra",
                     "--reasoning-effort",
                     "medium",
                     "--authority",
@@ -4870,7 +4943,7 @@ else:
                     "--instructions",
                     "返回精确来源覆盖和证据缺口。",
                     "--model",
-                    "gpt-5.6-luna",
+                    "gpt-6.1-terra",
                     "--reasoning-effort",
                     "medium",
                     "--authority",

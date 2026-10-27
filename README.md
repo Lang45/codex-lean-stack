@@ -2,11 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **8.2.3**
+Current version: **9.0.0**
 
-- New experience is compared with what the compatible role already carries, not with whether an algorithm was invented for the first time. Verified reusable methods, counterexamples and evidence limits flow into adoption-time persistence; writes require a real source identifier for redaction, and failures remain explicit until the original adoption task completes the write and readback.
-- Integration waits for frozen inputs, while completed preparation can be delivered first. Independent reads run together with per-result checks; ambiguous feedback or a deferred release does not silently cancel other pending work, and useful progress updates continue throughout execution.
-- Read-only roles return facts for an authorized writer instead of acquiring write access through a task card. Fixed retained roles use their loaded configuration without model or effort overrides; runtime roles select explicit supported settings, and every call sets `fork_turns="none"`.
+- GPT-6.1 Terra replaces Luna for simple, speed-prioritized reading and extraction, text revision, defined screen operations, and small local edits with clear inputs and direct acceptance checks.
+- Terra normally uses `medium`; complex reasoning, high-risk changes, and final reviews stay with Sol, while Astra keeps its expert-only quality threshold.
+- New profiles and explicit reconfigurations use Terra, Sol, or Astra. Historical Luna profiles remain readable and migrate through the existing CAS path without losing identity, authority, experience, or history.
 
 Codex Lean Stack provides two independent skills:
 
@@ -49,10 +49,13 @@ evidence required to support a conclusion.
   They have no fixed percentage. Never create calls, over-retain roles, or duplicate identities to improve a number.
   A low retained-spawn share cannot establish a missed reuse opportunity.
 
-A new child uses `gpt-5.6-luna`, `gpt-6.1-sol`, or `gpt-6-astra`, in that order of capability, with reasoning effort from `medium` upward.
+A new child uses `gpt-6.1-terra`, `gpt-6.1-sol`, or `gpt-6-astra` according to task needs, with reasoning effort from `medium` upward.
 The first two are ordinary subagent routes; only `gpt-6-astra` is the expert route.
-`gpt-5.6-luna` is limited to bounded reading, structured extraction, and factual summaries. Recommendations,
-trade-offs, compliance judgments, review conclusions, and other sustained judgment use a suitable Sol or higher.
+`gpt-6.1-terra` handles simple, speed-prioritized work with clear inputs, low risk, and direct acceptance checks:
+bounded reading, structured extraction, factual summaries, text revision, defined screen operations, and small local edits.
+Use `medium` normally and `high` for limited local ambiguity. Complex trade-offs, cross-module causality,
+compliance or safety judgments, high-risk changes, and final review conclusions use a suitable Sol or higher.
+Historical Luna profiles remain readable; new profiles and explicit CAS reconfigurations use the current three models.
 Astra is selected only when the strongest suitable `gpt-6.1-sol` option still has a decision-changing quality gap.
 Its reasoning effort is chosen per task from `medium`, `high`, or `xhigh`; `xhigh` is the upper bound,
 not the default.
@@ -121,7 +124,7 @@ The parent adopts a child result only from its final response or an equivalent r
 同一能力族有多个独立已就绪切片时，可以按各自任务卡创建运行时复制；只有存在真实选配疑问并
 且结果可比较时才形成配置变体。两者都只属于当前运行；比较、采用和未来保留仍走原有权威分支。
 
-新调用按能力顺序选 `gpt-5.6-luna`、`gpt-6.1-sol`、`gpt-6-astra`，思考程度从 `medium` 起。Luna 只做有界读取、结构化提取和事实总结；建议、取舍、合规判断、审查结论及其他持续判断至少使用合适的 Sol。Astra 仅在最强可行 `gpt-6.1-sol` 仍有决定性质量差距时使用。旧保留类型配置不合规时，本次调用可用运行时角色；兼容身份需更新时才按 CAS 重配，新任务验证宿主加载。
+新调用按任务分工选 `gpt-6.1-terra`、`gpt-6.1-sol`、`gpt-6-astra`，思考程度从 `medium` 起。Terra 承担输入清楚、风险低且验收直接的速度优先简单工作：有界读取、结构化提取、事实总结、文字整理、明确界面操作和局部小修改；通常 `medium`，有限局部歧义可用 `high`。复杂取舍、跨模块因果、合规或安全判断、高风险修改及最终审查结论至少使用合适的 Sol。Astra 仅在最强可行 `gpt-6.1-sol` 仍有决定性质量差距时使用。旧 Luna 资料保持可读，新建或显式重配使用当前三档；兼容身份按 CAS 重配并由新任务验证宿主加载，旧会话的固定 Luna 配置不能冒充 Terra。
 前两档都是常规子代理路线；只有 `gpt-6-astra` 是专家路线。
 模型和思考程度分别按任务选择。Astra 可以使用 `medium`、`high`、`xhigh`，不能每次固定
 为 `xhigh`。每次 `spawn_agent` 都显式传入真实模型、思考程度和非全量历史。
@@ -139,7 +142,7 @@ The parent adopts a child result only from its final response or an equivalent r
 
 只有任务类型、质量门槛、权限或证据边界、专家必要性、预计成本发生实质变化时才重新选路；同一
 任务的小补充直接继续，不重复评估。历史使用 Astra 不锁定未来模型。若当前质量仍需 Astra，再独立决定续用旧线程或改派兼容 Astra；旧线程
-上下文无边际价值只决定停止旧线程，不能据此降到 Sol/Luna。已完成且采用、验收满足的 Astra
+上下文无边际价值只决定停止旧线程，不能据此降到 Sol/Terra。已完成且采用、验收满足的 Astra
 无新增依据时停止。
 
 子代理完成后，父代理核验结果并继续主任务。运行时子代理在以下条件成立时选择性建档：
