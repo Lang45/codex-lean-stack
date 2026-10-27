@@ -2,11 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.1.2**
+Current version: **9.2.0**
 
-- Make one brief delegation decision from known task facts; useful ready slices start without quantified savings, exhaustive route comparisons, or a completed task breakdown.
-- Reuse that decision for semantic follow-ups. The parent continues suitable substantive work while deterministic checks stay with parent tools; ready work does not wait for unrelated missing inputs.
-- Necessary quality, permission, data integrity, verified task cards, and parent-guided Terra execution for Computer Use remain in place.
+- Apply everyday code simplification through `$lean-simplify` during implementation and review: validate external inputs at their owning boundary, keep clear one-use logic local, and add exception handling only when it serves the current error contract.
+- Explain concrete failure modes, likelihood evidence, and complexity cost before expanding scope for speculative, very unlikely edge cases; preserve necessary security, data integrity, rollback, and resource cleanup.
+- Use the existing plugin entrypoints and one [authoritative reference](skills/lean-stack/references/anti-overengineering.md#日常代码精简); no global instruction-file update is required.
 
 Codex Lean Stack provides two independent skills:
 

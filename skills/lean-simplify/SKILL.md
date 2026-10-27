@@ -81,7 +81,7 @@ Computer Use 的实际操作按[父代理指导、Terra 操作](../lean-stack/SK
 | 后续有两个或更多必须按顺序完成、前一步会解锁后一步的阶段 | [长任务](../lean-stack/references/long-running.md) |
 | 下一步要编写 Windows exec、PowerShell、复杂参数或任务脚本，或执行清理、删除文件 | [Windows exec 与 PowerShell](../lean-stack/references/windows-exec.md) |
 | 准备确定检查对象、独立预期或验证范围，或执行条件性验证或最窄重验 | [条件性验证](../lean-stack/references/verification.md) |
-| 准备新增抽象、兼容层、流程或文件，或需要证明现实消费者 | [反 AI 过度工程](../lean-stack/references/anti-overengineering.md) |
+| 编写或审查代码时准备增加防御分支、重复校验、帮助函数或异常捕获；或新增抽象、兼容层、流程、文件及核对现实消费者 | [反 AI 过度工程](../lean-stack/references/anti-overengineering.md)；局部代码先用[日常代码精简](../lean-stack/references/anti-overengineering.md#日常代码精简) |
 | 用户明确要求执行正式消融，而不只是普通精简 | [消融反馈循环](../lean-stack/references/ablation-loop.md) |
 | 已获授权且下一步确实要升版、安装、发布或维护发布文档 | [版本与发布](../lean-stack/references/versioning.md) |
 | 用户明确调用流程图并要求检查或解释，不执行上述动作 | [中文链路图](../lean-stack/references/flowcharts-zh.md) |
