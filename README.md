@@ -2,11 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.1.1**
+Current version: **9.1.2**
 
-- Decide whether delegation is needed before choosing a model or reusing a child. Means, defined formulas, event aggregation, and file comparisons stay with parent tools; independent recalculation does not automatically require another model.
-- The parent keeps suitable substantive work while useful independent slices run alongside it. Continued parallel speedup and existing child context do not bypass whole-task completion time and combined-cost reasoning.
-- Task cards carry verified state before dispatch. Necessary high-risk independent review, the three principles, and parent-guided Terra execution for Computer Use remain in place.
+- Make one brief delegation decision from known task facts; useful ready slices start without quantified savings, exhaustive route comparisons, or a completed task breakdown.
+- Reuse that decision for semantic follow-ups. The parent continues suitable substantive work while deterministic checks stay with parent tools; ready work does not wait for unrelated missing inputs.
+- Necessary quality, permission, data integrity, verified task cards, and parent-guided Terra execution for Computer Use remain in place.
 
 Codex Lean Stack provides two independent skills:
 
