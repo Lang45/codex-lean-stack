@@ -2,10 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.1.0**
+Current version: **9.1.1**
 
-- Computer Use is performed by GPT-6.1 Terra under the parent's guidance, including read-only UI observation. The parent owns goals, authorized scope, complex decisions, stage guidance, and final verification.
-- One operator owns each shared desktop, window, or tab. Tools must be available in the executing child, short UI tasks still follow this division, and connector/API/CLI workflows keep their existing tool routes.
+- Decide whether delegation is needed before choosing a model or reusing a child. Means, defined formulas, event aggregation, and file comparisons stay with parent tools; independent recalculation does not automatically require another model.
+- The parent keeps suitable substantive work while useful independent slices run alongside it. Continued parallel speedup and existing child context do not bypass whole-task completion time and combined-cost reasoning.
+- Task cards carry verified state before dispatch. Necessary high-risk independent review, the three principles, and parent-guided Terra execution for Computer Use remain in place.
 
 Codex Lean Stack provides two independent skills:
 
@@ -23,9 +24,11 @@ evidence required to support a conclusion.
   decision-changing quality advantage; compare total cost
   after ordinary options meet the same reliability bar; add parallel help for speed within an acceptable cost range.
   An explicit request for [continued parallel speedup](skills/lean-stack/SKILL.md#用户要求持续并行提速) overrides that default cost gate for the current task, while preserving quality, permissions, real capacity, dependencies, and write ownership.
-- **Tools first.** Deterministic work goes directly to tools.
-- **Reuse one capability family.** Small follow-ups on the same task continue a compatible live child without a new
-  routing pass. For a new capability with no suitable current child, perform one bounded registry lookup. A retained
+- **Necessity before model selection.** Apply the [whole-task decision](skills/lean-stack/SKILL.md#先判断是否委派再选模型与复用) before selecting or reusing a child. Means, defined formulas, event aggregation, and file comparisons stay with parent tools; an independent recalculation does not automatically require another model.
+- **Parent participation.** Keep suitable implementation, research, or critical-path work with the parent, then delegate the remaining useful slices. Compare end-to-end completion time and combined cost, including handoffs, waiting, integration, and verification. Continued parallel speedup preserves this decision.
+- **Tools first.** Deterministic work goes directly to tools; Computer Use keeps its parent-guided Terra execution rule.
+- **Reuse one capability family.** Small follow-ups within an unfinished semantic task continue a compatible live child without a new
+  model-selection pass. New deterministic calculations stay with parent tools even when a child is already available. For a new capability with no suitable current child, perform one bounded registry lookup. A retained
   role is reused when it is loaded in the current session, belongs to the same capability family, and is quality-compatible.
   Read only that retained role before generic or runtime fallback. A registry-wide lookup failure does not discard an
   already-loaded candidate that clearly meets those three conditions; read that candidate once and reuse it if the
