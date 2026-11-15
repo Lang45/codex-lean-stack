@@ -2,11 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.2.0**
+Current version: **9.3.1**
 
-- Apply everyday code simplification through `$lean-simplify` during implementation and review: validate external inputs at their owning boundary, keep clear one-use logic local, and add exception handling only when it serves the current error contract.
-- Explain concrete failure modes, likelihood evidence, and complexity cost before expanding scope for speculative, very unlikely edge cases; preserve necessary security, data integrity, rollback, and resource cleanup.
-- Use the existing plugin entrypoints and one [authoritative reference](skills/lean-stack/references/anti-overengineering.md#日常代码精简); no global instruction-file update is required.
+- Follow the user's explicit delegation, agent-count, concurrency, and ownership instructions before applying the plugin's three default principles. A request for ten agents is a target to fulfill, not an optional upper bound.
+- Report actual native starts and current states; completed historical threads and message counts do not establish live parallelism. Explain concrete capacity, permission, dependency, or safety blockers instead of silently reducing the requested team.
+- Carry unfinished instructions across compaction and task stages, and deliver ready results while the rest of the team continues working.
 
 Codex Lean Stack provides two independent skills:
 
@@ -20,14 +20,17 @@ evidence required to support a conclusion.
 
 ## How delegation works
 
+The defaults below fill only decisions the user has not explicitly made, including model, reasoning effort, tool, operator, and reuse choices. Actual permissions, available tool parameters, fixed-role configurations, and data protections still apply.
+
+- **Explicit instructions first.** Apply [user priority](skills/lean-stack/SKILL.md#用户明确指令优先) to requested agent counts and collaboration arrangements, including an instruction not to delegate. Default cost, tool-first, parent-participation, and reuse rules fill only the remaining decisions.
 - **Quality, cost, and time by context.** Use the Astra expert route for difficult high-value work when it has a
   decision-changing quality advantage; compare total cost
   after ordinary options meet the same reliability bar; add parallel help for speed within an acceptable cost range.
   An explicit request for [continued parallel speedup](skills/lean-stack/SKILL.md#用户要求持续并行提速) overrides that default cost gate for the current task, while preserving quality, permissions, real capacity, dependencies, and write ownership.
 - **Necessity before model selection.** Apply the [whole-task decision](skills/lean-stack/SKILL.md#先判断是否委派再选模型与复用) before selecting or reusing a child. Means, defined formulas, event aggregation, and file comparisons stay with parent tools; an independent recalculation does not automatically require another model.
 - **Parent participation.** Keep suitable implementation, research, or critical-path work with the parent, then delegate the remaining useful slices. Compare end-to-end completion time and combined cost, including handoffs, waiting, integration, and verification. Continued parallel speedup preserves this decision.
-- **Tools first.** Deterministic work goes directly to tools; Computer Use keeps its parent-guided Terra execution rule.
-- **Reuse one capability family.** Small follow-ups within an unfinished semantic task continue a compatible live child without a new
+- **Tools first by default.** Deterministic work goes directly to tools; explicit user assignments take priority. Computer Use keeps its parent-guided Terra execution rule when the user has not specified another available operator or tool.
+- **Reuse one capability family by default.** Explicit user choices of a new or available executor take priority. Small follow-ups within an unfinished semantic task continue a compatible live child without a new
   model-selection pass. New deterministic calculations stay with parent tools even when a child is already available. For a new capability with no suitable current child, perform one bounded registry lookup. A retained
   role is reused when it is loaded in the current session, belongs to the same capability family, and is quality-compatible.
   Read only that retained role before generic or runtime fallback. A registry-wide lookup failure does not discard an
