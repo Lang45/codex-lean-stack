@@ -1,7 +1,7 @@
 {
   "name": "codex-lean-stack",
-  "version": "9.4.0+codex.20261118063537",
-  "description": "9.4.0：Sol/Astra 子代理升级至 6.2，旧型号请求自动更新，任务卡与结果采用加入防错约束。",
+  "version": "9.4.1+codex.20261118072458",
+  "description": "9.4.1：修正子代理防错执行句定位，保持模型与保留身份兼容。",
   "author": {
     "name": "Lang45",
     "url": "https://github.com/Lang45"
@@ -20,8 +20,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex子代理调用与精简流程",
-    "shortDescription": "9.4.0：Sol/Astra 子代理升级至 6.2，旧型号请求自动更新，任务卡与结果采用加入防错约束。",
-    "longDescription": "9.4.0 将常规复杂子代理迁至 GPT-6.2 Sol、专家迁至 GPT-6.2 Astra，Terra 保持。旧 Sol/Astra 请求自动更新为对应 6.2 后继续处理，原身份经 CAS 升级，权限和经验保持。6.2 任务卡与结果采用覆盖关键事实与未知、要求完整性、工具失败和阻断报告，以及无新增证据时停止原样循环。用户明确指令与数据保护保持；这些约束降低错误风险，不保证零错误。",
+    "shortDescription": "9.4.1：修正子代理防错执行句定位，保持模型与保留身份兼容。",
+    "longDescription": "9.4.1 修正 6.2 防错执行句的入口指向，模型选择说明与统一任务卡位置保持一致。详细触发条件留在派发分支，父代理从必读入口取得完整执行要求。现有 Sol/Astra 型号兼容映射、保留身份、权限、速度及经验保持。",
     "developerName": "Lang45",
     "category": "Productivity",
     "capabilities": [

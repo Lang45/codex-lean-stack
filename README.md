@@ -2,11 +2,9 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.4.0**
+Current version: **9.4.1**
 
-- Route ordinary complex work to GPT-6.2 Sol and expert work to GPT-6.2 Astra; keep Terra for clear, low-risk work and guided Computer Use.
-- Carry evidence checks, explicit blocker reporting, requirement coverage, and a stop for unchanged retry loops into 6.2 task cards and result adoption.
-- Preserve historical profiles for reading and CAS migration. Old Sol/Astra requests automatically normalize to their 6.2 replacements; previously loaded roles require a new task to adopt changed configuration.
+- Correct the 6.2 safeguard reference so the model-selection section points to the complete execution sentence in the task-card entry. Existing model aliases and retained identities remain compatible.
 
 Codex Lean Stack provides two independent skills:
 
