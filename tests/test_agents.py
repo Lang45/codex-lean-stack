@@ -53,7 +53,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         display_name: str | None = None,
         description: str = "重复完成一个范围清晰、可复核的专门工作。",
         role_instructions: str = "交付直接可消费的结果和必要证据。",
-        model: str = "gpt-6.1-sol",
+        model: str = "gpt-6.2-sol",
         effort: str = "high",
         speed: str | None = None,
         expected_sha256: str | None = None,
@@ -95,10 +95,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         """Represent an already owned pre-policy role without calling ensure."""
         path = Path(str(created["path"]))
         current = path.read_bytes()
-        self.assertIn(b"gpt-6.1-sol", current)
+        self.assertIn(b"gpt-6.2-sol", current)
         self.assertIn(b'model_reasoning_effort = "high"', current)
         legacy = (
-            current.replace(b"gpt-6.1-sol", model.encode("utf-8"))
+            current.replace(b"gpt-6.2-sol", model.encode("utf-8"))
             .replace(
                 b'model_reasoning_effort = "high"',
                 f'model_reasoning_effort = "{effort}"'.encode("utf-8"),
@@ -420,7 +420,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(alias["sha256"], improved["sha256"])
         self.assertFalse(alias["compatible"])
         self.assertFalse(alias["configuration_matches"])
-        self.assertEqual(alias["model"], "gpt-6.1-sol")
+        self.assertEqual(alias["model"], "gpt-6.2-sol")
         self.assertEqual(alias["reasoning_effort"], "high")
         self.assertEqual(alias["speed"], "standard")
         self.assertEqual(alias["authority"], "read")
@@ -522,7 +522,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("保持只读", first_paragraph)
         opening = (
             "子代理名称：QML 绑定诊断员（复用）\n"
-            "模型：gpt-6.1-sol\n"
+            "模型：gpt-6.2-sol\n"
             "思考程度：high\n"
         )
         self.assertIn(opening, instructions)
@@ -576,7 +576,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("QML 绑定诊断员", instructions)
         for parent_owned_contract in (
             "MODEL_ROUTE",
-            "gpt-6-astra",
+            "gpt-6.2-astra",
             "可接受成本带",
             "migrate-attempts",
             "FAILURE_REMOVAL_THRESHOLD",
@@ -595,21 +595,21 @@ class SpecialistRegistryTests(unittest.TestCase):
         ).splitlines()
         self.assertEqual(len(opening_lines), 5)
         self.assertEqual(opening_lines[:3], [
-            "子代理名称：QML 绑定诊断员（复用）", "模型：gpt-6.1-sol", "思考程度：high"
+            "子代理名称：QML 绑定诊断员（复用）", "模型：gpt-6.2-sol", "思考程度：high"
         ])
         self.assertTrue(opening_lines[3].startswith("存活轮次："))
         self.assertTrue(opening_lines[4].startswith("经验："))
         self.assertEqual(
             agents.opening_configuration_declaration(
                 display_name="QML 绑定诊断员（复用）",
-                model="gpt-6.1-sol", effort="high",
+                model="gpt-6.2-sol", effort="high",
             ),
             recalled["opening_declaration"],
         )
         with self.assertRaisesRegex(agents.SpecialistError, "cannot use the new-agent"):
             agents.opening_configuration_declaration(
                 display_name="QML 绑定诊断员（新建）",
-                model="gpt-6.1-sol", effort="high",
+                model="gpt-6.2-sol", effort="high",
             )
 
         instructions = tomllib.loads(
@@ -747,7 +747,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertTrue(instructions.startswith("你是专门负责“快速来源核对员”的子代理"))
         opening = (
             "子代理名称：快速来源核对员（复用）\n"
-            "模型：gpt-6.1-sol\n"
+            "模型：gpt-6.2-sol\n"
             "思考程度：medium\n"
         )
         self.assertEqual(instructions.count(opening), 1)
@@ -1026,7 +1026,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             display_name="QML 绑定诊断员",
             role_key=role_key,
             role_instructions="交付直接可消费的结果和必要证据。",
-            model="gpt-6.1-sol",
+            model="gpt-6.2-sol",
             effort="high",
             authority="read",
         )
@@ -1037,7 +1037,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             name=name,
             display_name="QML 绑定诊断员",
             description="模拟文件落盘后、ledger 提交前的进程崩溃。",
-            model="gpt-6.1-sol",
+            model="gpt-6.2-sol",
             effort="high",
             authority="read",
             instruction_base=base,
@@ -1209,7 +1209,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             "--display-name", "QML 绑定诊断员",
             "--description", "重复完成一个范围清晰、可复核的专门工作。",
             "--instructions", "交付直接可消费的结果和必要证据。",
-            "--model", "gpt-6.1-sol",
+            "--model", "gpt-6.2-sol",
             "--reasoning-effort", "high",
             "--speed", "fast",
             "--authority", "read",
@@ -1818,11 +1818,11 @@ else:
         self.assertNotEqual(old, self.registry.db_path)
 
     def test_astra_subagent_effort_is_capped_at_xhigh(self) -> None:
-        first = self.ensure(model="gpt-6-astra", effort="xhigh")
-        second = self.ensure(model="gpt-6-astra", effort="xhigh")
+        first = self.ensure(model="gpt-6.2-astra", effort="xhigh")
+        second = self.ensure(model="gpt-6.2-astra", effort="xhigh")
         path = Path(first["path"])
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["model"], "gpt-6-astra")
+        self.assertEqual(payload["model"], "gpt-6.2-astra")
         self.assertEqual(payload["model_reasoning_effort"], "xhigh")
         self.assertEqual(second["action"], "reused")
         self.assertEqual(first["sha256"], second["sha256"])
@@ -1833,7 +1833,7 @@ else:
                 accepted = self.ensure(
                     role_key=f"astra-{effort}-accepted",
                     global_domain_key=f"astra-{effort}-accepted",
-                    model="gpt-6-astra",
+                    model="gpt-6.2-astra",
                     effort=effort,
                 )
                 accepted_payload = tomllib.loads(
@@ -1845,12 +1845,12 @@ else:
             with self.subTest(effort=effort, route="create"):
                 with self.assertRaisesRegex(
                     agents.SpecialistError,
-                    "gpt-6-astra subagents support at most xhigh reasoning effort",
+                    "gpt-6.2-astra subagents support at most xhigh reasoning effort",
                 ):
                     self.ensure(
                         role_key=f"astra-{effort}-rejected",
                         global_domain_key=f"astra-{effort}-rejected",
-                        model="gpt-6-astra",
+                        model="gpt-6.2-astra",
                         effort=effort,
                     )
                 self.assertEqual(len(list(self.registry.agents_dir.glob("*.toml"))), 3)
@@ -1858,17 +1858,17 @@ else:
             with self.subTest(effort=effort, route="reconfigure"):
                 with self.assertRaisesRegex(
                     agents.SpecialistError,
-                    "gpt-6-astra subagents support at most xhigh reasoning effort",
+                    "gpt-6.2-astra subagents support at most xhigh reasoning effort",
                 ):
                     self.ensure(
-                        model="gpt-6-astra",
+                        model="gpt-6.2-astra",
                         effort=effort,
                         expected_sha256=first["sha256"],
                     )
                 self.assertEqual(path.read_bytes(), before)
 
     def test_sol_subagents_accept_max_and_ultra_reasoning_effort(self) -> None:
-        for model in ("gpt-6.1-sol",):
+        for model in ("gpt-6.2-sol",):
             for effort in ("max", "ultra"):
                 with self.subTest(model=model, effort=effort):
                     role_key = f"sol-{model.replace('.', '-')}-{effort}-supported"
@@ -1918,11 +1918,11 @@ else:
                 payload = tomllib.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(payload["model_reasoning_effort"], effort)
 
-    def test_ensure_accepts_only_current_models_with_medium_or_higher_effort(self) -> None:
+    def test_ensure_writes_only_current_models_with_medium_or_higher_effort(self) -> None:
         current_models = (
             "gpt-6.1-terra",
-            "gpt-6.1-sol",
-            "gpt-6-astra",
+            "gpt-6.2-sol",
+            "gpt-6.2-astra",
         )
         self.assertEqual(agents.NEW_SUBAGENT_MODELS, current_models)
         for model in current_models:
@@ -1959,7 +1959,7 @@ else:
             ("gpt-6-sol", "high", "require one of"),
             ("gpt-5.6-sol", "high", "require one of"),
             ("gpt-6.1-terra", "low", "cannot use low"),
-            ("gpt-6.1-sol", "low", "cannot use low"),
+            ("gpt-6.2-sol", "low", "cannot use low"),
         ):
             with self.subTest(model=model, effort=effort, operation="reconfigure"):
                 with self.assertRaisesRegex(agents.SpecialistError, error):
@@ -1984,19 +1984,72 @@ else:
         with self.assertRaisesRegex(agents.SpecialistError, "require one of"):
             self.ensure(model="gpt-5.6-terra", effort="low", expected_sha256=legacy_sha256)
         self.assertEqual(path.read_bytes(), before)
-        preview = self.ensure(model="gpt-6.1-sol", effort="high")
+        preview = self.ensure(model="gpt-6.2-sol", effort="high")
         self.assertEqual(preview["action"], "reconfiguration_required")
         self.assertEqual(path.read_bytes(), before)
         updated = self.ensure(
-            model="gpt-6.1-sol", effort="high", expected_sha256=legacy_sha256
+            model="gpt-6.2-sol", effort="high", expected_sha256=legacy_sha256
         )
         self.assertEqual(updated["action"], "reconfigured")
         self.assertEqual(updated["agent_id"], created["agent_id"])
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["model"], "gpt-6.1-sol")
+        self.assertEqual(payload["model"], "gpt-6.2-sol")
         self.assertEqual(payload["model_reasoning_effort"], "high")
 
     def test_historical_luna_to_terra_cas_migration_preserves_identity_experience_and_runs(self) -> None:
+        self.check_historical_cas_migration("gpt-5.6-luna", "max", "gpt-6.1-terra")
+
+    def test_historical_sol_to_62_cas_migration_preserves_identity_experience_and_runs(self) -> None:
+        self.check_historical_cas_migration("gpt-6.1-sol", "high", "gpt-6.2-sol", request_model="gpt-6.1-sol")
+
+    def test_historical_astra_to_62_cas_migration_preserves_identity_experience_and_runs(self) -> None:
+        self.check_historical_cas_migration("gpt-6-astra", "xhigh", "gpt-6.2-astra", request_model="gpt-6-astra")
+
+    def test_old_sol_astra_inputs_create_current_models_and_reconfigure_without_losing_identity(self) -> None:
+        for source, target in (("gpt-6.1-sol", "gpt-6.2-sol"), ("gpt-6-astra", "gpt-6.2-astra")):
+            with self.subTest(source=source):
+                role_key = "alias-" + source.replace(".", "-")
+                created = self.ensure(role_key=role_key, model=source, speed="fast")
+                path = Path(created["path"])
+                payload = tomllib.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["model"], target)
+                self.assertNotIn(f"模型：{source}\n", payload["developer_instructions"])
+                self.assertIn(f"模型：{target}\n", payload["developer_instructions"])
+                reused = self.ensure(role_key=role_key, model=source, speed="fast")
+                self.assertEqual(reused["action"], "reused")
+                original = path.read_bytes()
+                before = self.registry_rows()
+                with self.assertRaisesRegex(agents.SpecialistError, "SHA-256"):
+                    self.ensure(role_key=role_key, model=source, effort="medium", speed="fast", expected_sha256="0" * 64)
+                self.assertEqual(path.read_bytes(), original)
+                self.assertEqual(self.registry_rows(), before)
+                updated = self.ensure(role_key=role_key, model=source, effort="medium", speed="fast", expected_sha256=created["sha256"])
+                self.assertEqual(updated["action"], "reconfigured")
+                for key in ("agent_id", "name", "path", "owner_token"):
+                    self.assertEqual(updated[key], created[key])
+                payload = tomllib.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(payload["model"], target)
+                self.assertEqual(payload["sandbox_mode"], "read-only")
+                self.assertEqual(payload["service_tier"], "fast")
+
+    def test_historical_and_current_astra_cannot_bypass_effort_limit(self) -> None:
+        created = self.ensure()
+        path = Path(created["path"])
+        original = path.read_bytes()
+        before = self.registry_rows()
+        for model in ("gpt-6-astra", "gpt-6.2-astra"):
+            for effort in ("max", "ultra"):
+                with self.subTest(model=model, effort=effort):
+                    with self.assertRaisesRegex(agents.SpecialistError, "support at most xhigh"):
+                        agents.validate_subagent_model_effort(model, effort)
+                    for kwargs in ({"role_key": "rejected-astra"}, {"expected_sha256": created["sha256"]}):
+                        with self.assertRaisesRegex(agents.SpecialistError, "support at most xhigh"):
+                            self.ensure(model=model, effort=effort, **kwargs)
+                        self.assertEqual(path.read_bytes(), original)
+                        self.assertEqual(self.registry_rows(), before)
+
+    def check_historical_cas_migration(self, source_model: str, source_effort: str, target_model: str, *, request_model: str | None = None) -> None:
+        request_model = request_model or target_model
         created = self.ensure(speed="fast")
         current_sha256 = created["sha256"]
         for index in range(8):
@@ -2022,30 +2075,30 @@ else:
             run_id=str(uuid.uuid4()), invocation_kind="spawn_agent", outcome="success",
         )
         legacy_sha256 = self.mark_legacy_configuration(
-            created, model="gpt-5.6-luna", effort="max",
+            created, model=source_model, effort=source_effort,
         )
         path = Path(created["path"])
         original = path.read_bytes()
         before = self.registry_rows()
         recalled = self.registry.recall(name=created["name"], expected_sha256=legacy_sha256)
         catalog = self.registry.status(for_routing=True)["registered_agents"]
-        self.assertEqual(recalled["model"], "gpt-5.6-luna")
-        self.assertEqual(recalled["reasoning_effort"], "max")
-        self.assertEqual(catalog[0]["model"], "gpt-5.6-luna")
-        preview = self.ensure(model="gpt-6.1-terra", effort="medium", speed="fast")
+        self.assertEqual(recalled["model"], source_model)
+        self.assertEqual(recalled["reasoning_effort"], source_effort)
+        self.assertEqual(catalog[0]["model"], source_model)
+        preview = self.ensure(model=request_model, effort="medium", speed="fast")
         self.assertEqual(preview["action"], "reconfiguration_required")
         self.assertEqual(preview["retry_with_expected_sha256"], legacy_sha256)
         self.assertEqual(path.read_bytes(), original)
         self.assertEqual(self.registry_rows(), before)
         with self.assertRaisesRegex(agents.SpecialistError, "SHA-256"):
             self.ensure(
-                model="gpt-6.1-terra", effort="medium", speed="fast",
+                model=request_model, effort="medium", speed="fast",
                 expected_sha256=created["sha256"],
             )
         self.assertEqual(path.read_bytes(), original)
         self.assertEqual(self.registry_rows(), before)
         updated = self.ensure(
-            model="gpt-6.1-terra", effort="medium", speed="fast",
+            model=request_model, effort="medium", speed="fast",
             expected_sha256=legacy_sha256,
         )
         self.assertEqual(updated["action"], "reconfigured")
@@ -2056,17 +2109,19 @@ else:
         for table in before.keys() - {"agents"}:
             self.assertEqual(after[table], before[table])
         payload = tomllib.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(payload["model"], "gpt-6.1-terra")
+        self.assertEqual(payload["model"], target_model)
         self.assertEqual(payload["model_reasoning_effort"], "medium")
         self.assertEqual(payload["service_tier"], "fast")
         self.assertEqual(payload["sandbox_mode"], "read-only")
         migrated = self.registry.recall(name=created["name"], expected_sha256=updated["sha256"])
         self.assertEqual(migrated["experience"], recalled["experience"])
         self.assertEqual(migrated["retention_state"], recalled["retention_state"])
-        self.assertEqual(self.ensure(model="gpt-6.1-terra", effort="medium", speed="fast")["action"], "reused")
+        self.assertEqual(self.ensure(model=request_model, effort="medium", speed="fast")["action"], "reused")
 
-    def test_rejected_current_creation_models_remain_readable_as_historical_roles(self) -> None:
+    def test_legacy_models_remain_readable_as_historical_roles(self) -> None:
         for index, (model, effort) in enumerate((
+            ("gpt-6.1-sol", "ultra"),
+            ("gpt-6-astra", "xhigh"),
             ("gpt-5.6-luna", "max"),
             ("gpt-6-luna", "ultra"),
             ("gpt-5.6-terra", "low"),
@@ -2115,7 +2170,7 @@ else:
                 after = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
                 for payload in (before, after):
                     instructions = payload["developer_instructions"]
-                    self.assertIn("模型：gpt-6.1-sol", instructions)
+                    self.assertIn("模型：gpt-6.2-sol", instructions)
                     self.assertIn("思考程度：high", instructions)
                     self.assertIn("任务卡必须提供五行实际值", instructions)
                     self.assertIn("新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理", instructions)
@@ -4346,7 +4401,7 @@ else:
         self.assertEqual(
             result["opening_declaration"],
             "子代理名称：QML 绑定诊断员（复用）\n"
-            "模型：gpt-6.1-sol\n"
+            "模型：gpt-6.2-sol\n"
             "思考程度：high\n",
         )
         self.assertEqual(len(result["opening_declaration"].splitlines()), 3)

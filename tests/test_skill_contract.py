@@ -211,7 +211,7 @@ class SkillContractTests(unittest.TestCase):
 
     def test_new_dispatch_uses_three_current_models_and_checks_legacy_reuse(self) -> None:
         selection = self.stack.split("## 模型与思考程度", 1)[1].split("## 原生调用与任务卡", 1)[0]
-        models = ("gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra")
+        models = ("gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra")
         for model in models:
             self.assertIn(model, selection)
             self.assertIn(model, self.dispatch)
@@ -223,8 +223,15 @@ class SkillContractTests(unittest.TestCase):
         ):
             positions = [surface.index(model) for model in models]
             self.assertEqual(positions, sorted(positions))
-        for historical_model in ("gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"):
-            self.assertNotIn(historical_model, selection)
+        model_table = "\n".join(line for line in selection.splitlines() if line.startswith("|"))
+        for historical_model in ("gpt-6.1-sol", "gpt-6-astra", "gpt-5.6-luna", "gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol", "gpt-5.6-sol"):
+            self.assertNotIn(historical_model, model_table)
+        for historical_model in ("gpt-6.1-sol", "gpt-6-astra"):
+            self.assertIn(historical_model, selection)
+        self.assertIn("保留资料可读取", selection)
+        self.assertIn("新建或显式重配使用本表型号", selection)
+        self.assertIn("`ensure` 接受旧", selection)
+        self.assertIn("分别规范化为", selection)
         self.assertIn("显式传实际`model`", re.sub(r"\s+", "", self.stack))
         self.assertIn("显式传入实际`model`", re.sub(r"\s+", "", self.dispatch))
         for text in (self.stack, self.dispatch):
@@ -232,6 +239,27 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("新任务验证", text)
         self.assertIn("运行时子代理", self.dispatch)
         self.assertIn("CAS", self.dispatch)
+
+    def test_62_error_prevention_reaches_task_card_and_result_consumers(self) -> None:
+        policy = self.dispatch.split("## 6.2 调用防错", 1)[1].split("## ", 1)[0]
+        for term in ("具名关键事实", "未知项", "最窄成功条件", "工具失败", "实际错误",
+                     "无新增证据", "停止原样循环", "决定性检查", "必要安全与数据完整性检查"):
+            self.assertIn(term, policy)
+        self.assertIn("references/dispatch-start.md#62-调用防错", self.stack)
+        card = self.dispatch.split("## 任务卡、上下文与所有权", 1)[1].split("## 原生调用", 1)[0]
+        self.assertIn("#62-调用防错", card)
+        self.assertIn("../SKILL.md#原生调用与任务卡", card)
+        entry_card = self.stack.split("## 原生调用与任务卡", 1)[1].split("\n## ", 1)[0]
+        execution = re.search(r"```text\n(按关键要求.+?)\n```", entry_card, re.S)
+        self.assertIsNotNone(execution)
+        assert execution is not None
+        self.assertNotIn("按关键要求给出结果与对应证据", self.dispatch)
+        for term in ("对应证据", "工具失败或阻断", "实际错误", "无新增证据", "停止原样循环", "具名缺口"):
+            self.assertIn(term, execution.group(1))
+        for heading in ("最终结果", "父代理采用"):
+            consumer = self.results.split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
+            self.assertIn("dispatch-start.md#62-调用防错", consumer)
+            self.assertIn("关键要求对应证据", consumer)
 
     def test_task_card_has_five_opening_lines_and_three_final_lines(self) -> None:
         block = re.search(r"```text\n(子代理名称：.+?)\n```", self.dispatch, re.S)
@@ -289,7 +317,7 @@ class SkillContractTests(unittest.TestCase):
         ):
             compact = surface.replace("`", "")
             self.assertIn("前两档都是常规子代理路线", compact)
-            self.assertIn("只有 gpt-6-astra 是专家路线", compact)
+            self.assertIn("只有 gpt-6.2-astra 是专家路线", compact)
 
     def test_user_facing_progress_term_is_chinese(self) -> None:
         active = "\n".join(

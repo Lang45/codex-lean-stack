@@ -74,8 +74,8 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 NEW_SUBAGENT_MODELS = (
     "gpt-6.1-terra",
-    "gpt-6.1-sol",
-    "gpt-6-astra",
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
 )
 AUTHORITIES = {"read", "write"}
 SPEEDS = {"standard", "fast"}
@@ -439,9 +439,9 @@ def validate_subagent_model_effort(model: str, effort: str) -> tuple[str, str]:
     # Historical owned TOML and explicit migrations retain their original values.
     model = validate_model(model)
     effort = validate_effort(effort)
-    if model == "gpt-6-astra" and effort in {"max", "ultra"}:
+    if model in {"gpt-6-astra", "gpt-6.2-astra"} and effort in {"max", "ultra"}:
         raise SpecialistError(
-            "gpt-6-astra subagents support at most xhigh reasoning effort"
+            f"{model} subagents support at most xhigh reasoning effort"
         )
     return model, effort
 
@@ -449,6 +449,10 @@ def validate_subagent_model_effort(model: str, effort: str) -> tuple[str, str]:
 def validate_ensure_model_effort(model: str, effort: str) -> tuple[str, str]:
     # Only new role creation and explicit reconfiguration use the current policy.
     model, effort = validate_subagent_model_effort(model, effort)
+    model = {
+        "gpt-6.1-sol": "gpt-6.2-sol",
+        "gpt-6-astra": "gpt-6.2-astra",
+    }.get(model, model)
     if model not in NEW_SUBAGENT_MODELS:
         raise SpecialistError(
             f"new or reconfigured specialists require one of {list(NEW_SUBAGENT_MODELS)}"

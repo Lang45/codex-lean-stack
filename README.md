@@ -2,11 +2,11 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.3.1**
+Current version: **9.4.0**
 
-- Follow the user's explicit delegation, agent-count, concurrency, and ownership instructions before applying the plugin's three default principles. A request for ten agents is a target to fulfill, not an optional upper bound.
-- Report actual native starts and current states; completed historical threads and message counts do not establish live parallelism. Explain concrete capacity, permission, dependency, or safety blockers instead of silently reducing the requested team.
-- Carry unfinished instructions across compaction and task stages, and deliver ready results while the rest of the team continues working.
+- Route ordinary complex work to GPT-6.2 Sol and expert work to GPT-6.2 Astra; keep Terra for clear, low-risk work and guided Computer Use.
+- Carry evidence checks, explicit blocker reporting, requirement coverage, and a stop for unchanged retry loops into 6.2 task cards and result adoption.
+- Preserve historical profiles for reading and CAS migration. Old Sol/Astra requests automatically normalize to their 6.2 replacements; previously loaded roles require a new task to adopt changed configuration.
 
 Codex Lean Stack provides two independent skills:
 
@@ -17,6 +17,8 @@ Codex Lean Stack provides two independent skills:
 
 Either skill can be used alone. Both preserve the requested result, permission boundaries, data integrity, and the
 evidence required to support a conclusion.
+
+For 6.2, the [calling safeguards](skills/lean-stack/references/dispatch-start.md#62-调用防错) address missing facts, omitted blockers, and unproductive loops. They reduce risk and do not guarantee error-free output. User instructions and permission boundaries still apply.
 
 ## How delegation works
 
@@ -54,17 +56,17 @@ The defaults below fill only decisions the user has not explicitly made, includi
   They have no fixed percentage. Never create calls, over-retain roles, or duplicate identities to improve a number.
   A low retained-spawn share cannot establish a missed reuse opportunity.
 
-A new child uses `gpt-6.1-terra`, `gpt-6.1-sol`, or `gpt-6-astra` according to task needs, with reasoning effort from `medium` upward.
-The first two are ordinary subagent routes; only `gpt-6-astra` is the expert route.
+A new child uses `gpt-6.1-terra`, `gpt-6.2-sol`, or `gpt-6.2-astra` according to task needs, with reasoning effort from `medium` upward.
+The first two are ordinary subagent routes; only `gpt-6.2-astra` is the expert route.
 `gpt-6.1-terra` handles simple, speed-prioritized work with clear inputs, low risk, and direct acceptance checks:
 bounded reading, structured extraction, factual summaries, text revision, defined screen operations, and small local edits.
 Use `medium` normally and `high` for limited local ambiguity. Complex trade-offs, cross-module causality,
 compliance or safety judgments, high-risk changes, and final review conclusions use a suitable Sol or higher.
-Historical Luna profiles remain readable; new profiles and explicit CAS reconfigurations use the current three models.
+Historical profiles remain readable. Old Sol/Astra requests normalize to their 6.2 replacements before creating or CAS-reconfiguring the same family.
 For Computer Use, the parent directs and verifies while GPT-6.1 Terra performs the UI operations, including
 read-only observation. Complex decisions stay with the parent or a suitable Sol/Astra. One operator owns a shared
 desktop, window, or tab; direct tool access and permissions must be valid in the executing child.
-Astra is selected only when the strongest suitable `gpt-6.1-sol` option still has a decision-changing quality gap.
+Astra is selected only when the strongest suitable `gpt-6.2-sol` option still has a decision-changing quality gap.
 Its reasoning effort is chosen per task from `medium`, `high`, or `xhigh`; `xhigh` is the upper bound,
 not the default.
 Routing is reconsidered only when the task type, quality threshold, authority or evidence boundary, expert necessity,
@@ -132,12 +134,14 @@ The parent adopts a child result only from its final response or an equivalent r
 同一能力族有多个独立已就绪切片时，可以按各自任务卡创建运行时复制；只有存在真实选配疑问并
 且结果可比较时才形成配置变体。两者都只属于当前运行；比较、采用和未来保留仍走原有权威分支。
 
-新调用按任务分工选 `gpt-6.1-terra`、`gpt-6.1-sol`、`gpt-6-astra`，思考程度从 `medium` 起。Terra 承担输入清楚、风险低且验收直接的速度优先简单工作：有界读取、结构化提取、事实总结、文字整理、明确界面操作和局部小修改；通常 `medium`，有限局部歧义可用 `high`。复杂取舍、跨模块因果、合规或安全判断、高风险修改及最终审查结论至少使用合适的 Sol。Astra 仅在最强可行 `gpt-6.1-sol` 仍有决定性质量差距时使用。旧 Luna 资料保持可读，新建或显式重配使用当前三档；兼容身份按 CAS 重配并由新任务验证宿主加载，旧会话的固定 Luna 配置不能冒充 Terra。
+新调用按任务分工选 `gpt-6.1-terra`、`gpt-6.2-sol`、`gpt-6.2-astra`，思考程度从 `medium` 起。Terra 承担输入清楚、风险低且验收直接的速度优先简单工作：有界读取、结构化提取、事实总结、文字整理、明确界面操作和局部小修改；通常 `medium`，有限局部歧义可用 `high`。复杂取舍、跨模块因果、合规或安全判断、高风险修改及最终审查结论至少使用合适的 Sol。Astra 仅在最强可行 `gpt-6.2-sol` 仍有决定性质量差距时使用。历史资料保持可读，旧 Sol/Astra 请求自动规范化为对应 6.2 后继续新建或显式重配；兼容身份按 CAS 重配并由新任务验证宿主加载，旧会话的固定 Luna 配置不能冒充 Terra。
 
 Computer Use 类型任务由父代理指导 GPT-6.1 Terra 实际操作，包括只读界面观察。父代理负责目标、授权范围、阶段指导与验收，复杂判断仍交给合适的 Sol/Astra；Terra 依据当前界面执行并反馈。同一桌面、窗口或标签页保持一个操作者，工具须在子代理中真实可用，委派不扩权。详细合同见[父代理指导、Terra 操作](skills/lean-stack/SKILL.md#computer-use父代理指导terra-操作)。
-前两档都是常规子代理路线；只有 `gpt-6-astra` 是专家路线。
+前两档都是常规子代理路线；只有 `gpt-6.2-astra` 是专家路线。
 模型和思考程度分别按任务选择。Astra 可以使用 `medium`、`high`、`xhigh`，不能每次固定
 为 `xhigh`。每次 `spawn_agent` 都显式传入真实模型、思考程度和非全量历史。
+
+6.2 的任务卡与结果采用按[调用防错](skills/lean-stack/references/dispatch-start.md#62-调用防错)核对关键要求与证据，如实报告阻断，无新增证据时停止原样循环；这降低风险，不保证零错误。旧 Sol/Astra 资料仍可读取并按 CAS 迁至 6.2，已加载旧角色须在新任务核验实际型号。
 
 新子代理任务卡写五行真实配置与状态，名称后按实际派发标一次“（复用）”或“（新建）”，并把
 “首条用户可见进展说明展示五行、最终回复顶部重复前三行”的执行句直接交给子代理，再写唯一
