@@ -674,26 +674,31 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("只读界面观察、应用清单", activation)
         self.assertIn("不等到已经决定委派才读取", activation)
 
-    def test_computer_use_defaults_to_sol_with_parent_guidance_and_child_tool_access(self) -> None:
-        route = self.stack.split("## Computer Use：父代理指导，Sol 操作", 1)[1].split("\n## ", 1)[0]
+    def test_computer_use_assigns_by_risk_with_parent_guidance_and_child_tool_access(self) -> None:
+        route = self.stack.split("## Computer Use：父代理指导，按任务选配", 1)[1].split("\n## ", 1)[0]
+        routing = " ".join(route.split("Computer Use 工具自身", 1)[0].split())
+        self.assertRegex(routing, r"输入清楚[^。；]*风险低[^。；]*默认 `gpt-6\.1-terra`")
+        self.assertRegex(routing, r"界面状态复杂[^。；]*多步依赖[^。；]*高风险变更[^。；]*至少使用 `gpt-6\.2-sol`")
         for term in (
             "用户未另行明确指定可用操作者或工具",
+            "#用户明确指令优先",
             "只读界面观察",
             "父代理指导与验收",
             "委派不扩大现有授权",
             "同一桌面、窗口或标签页保持一个操作者",
             "模型和工具须在执行子代理中真实可用",
+            "不把发出点击命令当作已保存或已完成",
             "报告具体缺口",
+            "不擅改明确指定",
+            "指定执行者已操作",
         ):
             self.assertIn(term, route)
-        self.assertRegex(route, r"由父代理指导 `gpt-6\.2-sol`\s+实际执行")
-        self.assertNotIn("Terra", route)
         observations = " ".join(route.split("Computer Use 工具自身", 1)[1].split("\n\n", 1)[0].split())
         self.assertIn("应用/窗口清单、UI 树和截图等只读观察也属于本节", observations)
         self.assertRegex(observations, r"不能因接口名是 API.+只有一次调用，就由父代理直接执行或绕过本入口")
         self.assertIn("普通业务连接器、API 和 CLI 的原分工保持", observations)
 
-        anchor = "#computer-use父代理指导sol-操作"
+        anchor = "#computer-use父代理指导按任务选配"
         for label, surface in (
             ("lean-stack", self.stack),
             ("dispatch", self.dispatch),
@@ -702,17 +707,8 @@ class SkillContractTests(unittest.TestCase):
         ):
             with self.subTest(surface=label):
                 self.assertIn(anchor, surface)
-                self.assertNotIn("#computer-use父代理指导terra-操作", surface)
-
-        for surface in (self.stack, self.dispatch, self.openai_yaml, self.readme):
-            self.assertNotRegex(surface, r"(?i)Computer Use[^；。\n]*\bTerra\b")
-            for clause in re.split(r"[；。]|\n", surface):
-                if re.search(r"(?i)\bterra\b", clause):
-                    self.assertNotIn("明确界面操作", clause)
-        terra_role = self.readme.split("`gpt-6.1-terra` handles", 1)[1].split("For Computer Use", 1)[0]
-        self.assertNotIn("defined screen operations", terra_role)
-        for surface in (self.openai_yaml, self.readme):
-            self.assertRegex(surface, r"(?i)Computer Use[^；。\n]*GPT-6\.2[- ]Sol")
+                self.assertNotRegex(surface, r"#computer-use父代理指导(?:terra|sol)-操作")
+        self.assertRegex(self.openai_yaml, r"Computer Use 的[^；]*低风险[^；]*GPT-6\.1 Terra[^；]*高风险[^；]*GPT-6\.2 Sol")
 
     def test_machine_identity_and_display_name_are_distinct(self) -> None:
         for term in ("agent_ref", "display_name", "lean_*", "中文展示名"):

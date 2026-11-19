@@ -1,7 +1,7 @@
 {
   "name": "codex-lean-stack",
-  "version": "9.5.0+codex.20261119031653",
-  "description": "9.5.0：子代理电脑操作改用 6.2 Sol，防错随型号退出。",
+  "version": "9.6.0+codex.20261119034857",
+  "description": "9.6.0：普通电脑操作用 Terra，复杂高风险用 Sol 子代理。",
   "author": {
     "name": "Lang45",
     "url": "https://github.com/Lang45"
@@ -20,8 +20,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex子代理调用与精简流程",
-    "shortDescription": "9.5.0：子代理电脑操作改用 6.2 Sol，防错随型号退出。",
-    "longDescription": "9.5.0 将 Computer Use 实际操作者切换为父代理指导的 GPT-6.2 Sol，包含只读观察。优化 6.2 的完成条件、例行停等、审查发现和视觉细节验证；专属附加指令随 6.2 退出同步清理，不自动套给后继型号。通用证据、安全、旧调用及保留身份兼容保持。",
+    "shortDescription": "9.6.0：普通电脑操作用 Terra，复杂高风险用 Sol 子代理。",
+    "longDescription": "9.6.0 根据同工具、同任务的电脑操作快速对照，将常规、输入清楚、低风险 Computer Use 默认交给父代理指导的 GPT-6.1 Terra；复杂界面状态、难判断多步依赖或高风险变更至少使用 GPT-6.2 Sol。保留首次操作前读取、用户明确指定优先、单操作者及权限保护。现有型号、旧参数和保留身份兼容保持。",
     "developerName": "Lang45",
     "category": "Productivity",
     "capabilities": [

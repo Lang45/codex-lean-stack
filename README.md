@@ -2,10 +2,9 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.5.0**
+Current version: **9.6.0**
 
-- Computer Use now runs through parent-guided GPT-6.2 Sol, including read-only observation.
-- Refine 6.2 safeguards for completion, routine decisions, verified review findings, and visual details. Remove model-specific guidance with 6.2 while preserving general protections and compatible calls.
+- Use parent-guided GPT-6.1 Terra for routine low-risk Computer Use, including read-only observation; use GPT-6.2 Sol for complex UI state, difficult dependencies, or high-risk changes.
 
 Codex Lean Stack provides two independent skills:
 
@@ -30,7 +29,7 @@ The defaults below fill only decisions the user has not explicitly made, includi
   An explicit request for [continued parallel speedup](skills/lean-stack/SKILL.md#用户要求持续并行提速) overrides that default cost gate for the current task, while preserving quality, permissions, real capacity, dependencies, and write ownership.
 - **Necessity before model selection.** Apply the [whole-task decision](skills/lean-stack/SKILL.md#先判断是否委派再选模型与复用) before selecting or reusing a child. Means, defined formulas, event aggregation, and file comparisons stay with parent tools; an independent recalculation does not automatically require another model.
 - **Parent participation.** Keep suitable implementation, research, or critical-path work with the parent, then delegate the remaining useful slices. Compare end-to-end completion time and combined cost, including handoffs, waiting, integration, and verification. Continued parallel speedup preserves this decision.
-- **Tools first by default.** Deterministic work goes directly to tools; explicit user assignments take priority. Computer Use keeps its parent-guided GPT-6.2 Sol execution rule when the user has not specified another available operator or tool.
+- **Tools first by default.** Deterministic work goes directly to tools; explicit user assignments take priority. Computer Use keeps parent-guided execution: Terra for routine low-risk operations and Sol for complex or high-risk operations when the user has not specified another available operator or tool.
 - **Reuse one capability family by default.** Explicit user choices of a new or available executor take priority. Small follow-ups within an unfinished semantic task continue a compatible live child without a new
   model-selection pass. New deterministic calculations stay with parent tools even when a child is already available. For a new capability with no suitable current child, perform one bounded registry lookup. A retained
   role is reused when it is loaded in the current session, belongs to the same capability family, and is quality-compatible.
@@ -62,8 +61,8 @@ bounded reading, structured extraction, factual summaries, text revision, and sm
 Use `medium` normally and `high` for limited local ambiguity. Complex trade-offs, cross-module causality,
 compliance or safety judgments, high-risk changes, and final review conclusions use a suitable Sol or higher.
 Historical profiles remain readable. Old Sol/Astra requests normalize to their 6.2 replacements before creating or CAS-reconfiguring the same family.
-For Computer Use, the parent directs and verifies while GPT-6.2 Sol performs the UI operations, including
-read-only observation. Complex decisions stay with the parent or a suitable Sol/Astra. One operator owns a shared
+For Computer Use, the parent directs and verifies while GPT-6.1 Terra handles routine low-risk UI operations, including
+read-only observation. Complex UI state, difficult dependencies, or high-risk changes use GPT-6.2 Sol or higher. Complex business decisions stay with the parent or a suitable Sol/Astra. One operator owns a shared
 desktop, window, or tab; direct tool access and permissions must be valid in the executing child.
 Read `$lean-stack` before the first Computer Use operation, including an application listing or UI tree query.
 Astra is selected only when the strongest suitable `gpt-6.2-sol` option still has a decision-changing quality gap.
@@ -136,7 +135,7 @@ The parent adopts a child result only from its final response or an equivalent r
 
 新调用按任务分工选 `gpt-6.1-terra`、`gpt-6.2-sol`、`gpt-6.2-astra`，思考程度从 `medium` 起。Terra 承担输入清楚、风险低且验收直接的速度优先简单工作：有界读取、结构化提取、事实总结、文字整理和局部小修改；通常 `medium`，有限局部歧义可用 `high`。复杂取舍、跨模块因果、合规或安全判断、高风险修改及最终审查结论至少使用合适的 Sol。Astra 仅在最强可行 `gpt-6.2-sol` 仍有决定性质量差距时使用。历史资料保持可读，旧 Sol/Astra 请求自动规范化为对应 6.2 后继续新建或显式重配；兼容身份按 CAS 重配并由新任务验证宿主加载，旧会话的固定 Luna 配置不能冒充 Terra。
 
-Computer Use 类型任务由父代理指导 GPT-6.2 Sol 实际操作，包括只读界面观察。父代理负责目标、授权范围、阶段指导与验收，复杂判断仍交给合适的 Sol/Astra；Sol 依据当前界面执行并反馈。同一桌面、窗口或标签页保持一个操作者，工具须在子代理中真实可用，委派不扩权。详细合同见[父代理指导、Sol 操作](skills/lean-stack/SKILL.md#computer-use父代理指导sol-操作)。
+Computer Use 由父代理指导：常规、输入清楚、低风险操作默认 GPT-6.1 Terra，包括只读界面观察；复杂界面状态、难判断的多步依赖或高风险变更至少用 GPT-6.2 Sol。父代理负责目标、授权范围、阶段指导与验收，复杂业务判断仍交给合适的 Sol/Astra；执行者依据当前界面执行并反馈。同一桌面、窗口或标签页保持一个操作者，工具须在子代理中真实可用，委派不扩权。详细合同见[父代理指导、按任务选配](skills/lean-stack/SKILL.md#computer-use父代理指导按任务选配)。
 前两档都是常规子代理路线；只有 `gpt-6.2-astra` 是专家路线。
 模型和思考程度分别按任务选择。Astra 可以使用 `medium`、`high`、`xhigh`，不能每次固定
 为 `xhigh`。每次 `spawn_agent` 都显式传入真实模型、思考程度和非全量历史。
