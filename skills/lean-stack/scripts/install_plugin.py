@@ -28,6 +28,13 @@ assert _lock_spec is not None and _lock_spec.loader is not None
 _locks = importlib.util.module_from_spec(_lock_spec)
 _lock_spec.loader.exec_module(_locks)
 
+_update_spec = importlib.util.spec_from_file_location(
+    "_lean_stack_atomic_file_update", Path(__file__).with_name("_atomic_file_update.py")
+)
+assert _update_spec is not None and _update_spec.loader is not None
+_updates = importlib.util.module_from_spec(_update_spec)
+_update_spec.loader.exec_module(_updates)
+
 
 PLUGIN_NAME = "codex-lean-stack"
 DEFAULT_INVOCATION_LINE = (
@@ -211,7 +218,11 @@ def _atomic_replace(
     expected_original: bytes | None,
     replacement: bytes,
     mode: int,
-) -> None:
+) -> dict[str, str] | None:
+    if expected_original is not None:
+        if _read_limited(path, label="global AGENTS.md", limit=MAX_AGENTS_BYTES) != expected_original:
+            raise InstallError("global AGENTS.md changed after it was read")
+        return _updates.replace_existing(path, expected=expected_original, replacement=replacement)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
@@ -230,20 +241,15 @@ def _atomic_replace(
             current = None
         if current != expected_original:
             raise InstallError("global AGENTS.md changed after it was read")
-        if expected_original is None:
-            # Do not overwrite a file created after the final read. Windows
-            # rename already has no-replace semantics, POSIX link does too.
-            try:
-                if os.name == "nt":
-                    os.rename(temporary, path)
-                    staging_owned = False
-                else:
-                    os.link(temporary, path)
-            except FileExistsError as exc:
-                raise InstallError("global AGENTS.md was created after it was read") from exc
-        else:
-            os.replace(temporary, path)
-            staging_owned = False
+        # Windows rename and POSIX link never overwrite a concurrent creator.
+        try:
+            if os.name == "nt":
+                os.rename(temporary, path)
+                staging_owned = False
+            else:
+                os.link(temporary, path)
+        except FileExistsError as exc:
+            raise InstallError("global AGENTS.md was created after it was read") from exc
         try:
             fsync_directory(path.parent)
         except OSError as exc:
@@ -253,16 +259,44 @@ def _atomic_replace(
     finally:
         if staging_owned:
             primary = sys.exc_info()[1]
+            if primary is not None:
+                if isinstance(primary, Exception):
+                    raise InstallError(f"{primary}; unpublished candidate retained at {temporary}") from primary
+                primary.add_note(f"Unpublished candidate retained at {temporary}")
+                raise
             try:
                 temporary.unlink(missing_ok=True)
             except OSError as cleanup:
-                if primary is None:
-                    raise InstallError(f"global instructions were written, but staging cleanup failed: {cleanup}") from cleanup
-                if isinstance(primary, Exception):
-                    raise InstallError(f"{primary}; staging cleanup also failed for {temporary}: {cleanup}") from primary
+                raise InstallError(f"global instructions were written, but staging cleanup failed: {cleanup}") from cleanup
 
 
 def effective_agents_path(home: Path) -> Path:
+    # ReplaceFileW error 1177 may have moved the old rules to recovery while
+    # leaving the proposed file unpublished. Never treat that as a first install.
+    for filename in ("AGENTS.md", "AGENTS.override.md"):
+        target = home / filename
+        if path_lexists(target):
+            continue
+        for work in home.glob(f".{filename}.recovery-*"):
+            ensure_plain_path(work, label="instruction recovery directory", directory=True)
+            previous, proposed = work / "previous", work / "proposed"
+            if not (path_lexists(previous) and path_lexists(proposed)):
+                continue
+            raw = _read_limited(work / "operation.json", label="instruction recovery record", limit=MAX_AGENTS_BYTES)
+            try:
+                record = json.loads(raw.decode("utf-8"))
+            except (UnicodeError, ValueError, RecursionError) as exc:
+                raise InstallError(f"invalid instruction recovery record; inspect {work}") from exc
+            if (not isinstance(record, dict) or record.get("target") != str(target.absolute())
+                    or record.get("candidate") != "proposed" or record.get("displaced") != "previous"):
+                raise InstallError(f"unverified instruction recovery record; inspect {work}")
+            ensure_plain_path(previous, label="previous instruction recovery file", directory=False)
+            ensure_plain_path(proposed, label="proposed instruction recovery file", directory=False)
+            raise InstallError(
+                f"instruction recovery is required before retrying: {target} is missing; "
+                f"previous user rules are at {previous}, proposed rules are at {proposed}; "
+                f"inspect {work / 'operation.json'} before restoring either file"
+            )
     override = home / "AGENTS.override.md"
     _, text, _, _, _ = _read_agents(override)
     return override if text.strip() else home / "AGENTS.md"
@@ -285,29 +319,56 @@ def _frontmatter_end(text: str) -> int:
     raise InstallError("unterminated YAML front matter; refusing to change global instructions")
 
 
-def _has_default_invocation(text: str) -> bool:
-    # A literal "<!--" inside fenced code or a code span cannot open a comment.
-    # Examine fences before interpreting inline markup on their contents.
+def _markdown_inline_blocks(text: str) -> Iterator[tuple[list[str], tuple[str, str] | None]]:
+    block_start = re.compile(r"^ {0,3}(?:<!--|>|#{1,6}(?:[ \t]|$)|(?:[-+*]|1[.)])[ \t]+\S)")
+    separator = re.compile(r" {0,3}(?:([*_-])(?:[ \t]*\1){2,}|[=-]+)[ \t]*")
+    paragraph = []
+    for line in text.splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        fence = None
+        if marker:
+            run, suffix = marker.groups()
+            if run[0] == "~" or "`" not in suffix:
+                fence = (run, suffix)
+        if not line.strip() or fence or block_start.match(line) or separator.fullmatch(line):
+            if paragraph:
+                yield paragraph, None
+                paragraph = []
+            yield [line], fence
+        else:
+            paragraph.append(line)
+    if paragraph:
+        yield paragraph, None
+
+
+def _visible_instruction_lines(text: str) -> Iterator[str]:
+    # Inline spans can cross soft line breaks. Match equal-length backtick
+    # runs within each paragraph before interpreting HTML comment delimiters.
     fence = ""
     in_comment = False
-    for line in text[_frontmatter_end(text):].splitlines():
+    for block, marker in _markdown_inline_blocks(text):
         if not in_comment:
-            marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
             if marker:
-                run, suffix = marker.groups()
-                if fence:
-                    if run[0] == fence[0] and len(run) >= len(fence) and not suffix.strip():
-                        fence = ""
-                    continue
-                if run[0] == "~" or "`" not in suffix:
+                run, suffix = marker
+                if not fence:
                     fence = run
-                    continue
+                elif run[0] == fence[0] and len(run) >= len(fence) and not suffix.strip():
+                    fence = ""
+                continue
             if fence:
                 continue
-        if in_comment or "<!--" in line:
-            # Only a matching, equally long backtick run closes a code span.
-            last_tick = {len(m[0]): m.start() for m in re.finditer(r"`+", line)}
-            ticks = 0
+        last_tick = {
+            len(mark[0]): (number, mark.start())
+            for number, line in enumerate(block)
+            for mark in re.finditer(r"`+", line)
+        }
+        ticks = 0
+        for number, line in enumerate(block):
+            starts_in_code_span = bool(ticks)
+            if not in_comment and "`" not in line and "<!--" not in line:
+                if not starts_in_code_span:
+                    yield line
+                continue
             visible = []
             start = 0
             for mark in re.finditer(r"`+|<!--|-->", line):
@@ -320,14 +381,19 @@ def _has_default_invocation(text: str) -> bool:
                     width = len(token)
                     if ticks == width:
                         ticks = 0
-                    elif not ticks and last_tick[width] > mark.start():
+                    elif not ticks and last_tick[width] > (number, mark.start()):
                         ticks = width
                 elif token == "<!--" and not ticks:
                     visible.append(line[start:mark.start()])
                     in_comment = True
             if not in_comment:
                 visible.append(line[start:])
-            line = "".join(visible)
+            if not starts_in_code_span:
+                yield "".join(visible)
+
+
+def _has_default_invocation(text: str) -> bool:
+    for line in _visible_instruction_lines(text[_frontmatter_end(text):]):
         if line == DEFAULT_INVOCATION_LINE:
             return True
         for prefix in USER_GLOBAL_INVOCATION_PREFIXES:
@@ -352,9 +418,9 @@ def _prepare_default_invocation(agents_path: Path) -> tuple[bytes | None, bytes 
         # Separate the new instruction from both delimiters and existing body.
         separator = newline if prefix.endswith(("\n", "\r")) else newline * 2
         updated = f"{prefix}{separator}{DEFAULT_INVOCATION_LINE}{newline}{newline}{body}"
-    elif ("<!--" in first_line
-            or re.match(r"^ {0,3}(`{3,}|~{3,})", first_line)):
-        updated = f"{DEFAULT_INVOCATION_LINE}{newline}{text}"
+    elif "`" in first_line or "<!--" in first_line or re.match(r"^ {0,3}~{3,}", first_line):
+        # The first line could open markup that continues across the next line.
+        updated = f"{DEFAULT_INVOCATION_LINE}{newline}{newline}{text}"
     elif text:
         first_break = re.search(r"\r\n|\r|\n", text)
         if first_break is None:
@@ -373,6 +439,8 @@ def _prepare_default_invocation(agents_path: Path) -> tuple[bytes | None, bytes 
         replacement = codecs.BOM_UTF8 + replacement
     if len(replacement) > MAX_AGENTS_BYTES:
         raise InstallError("updated global AGENTS.md exceeds 1 MiB")
+    if original is not None:
+        _updates.preflight_existing(agents_path, expected=original)
     return original, replacement, mode
 
 
@@ -386,8 +454,9 @@ def _preflight_result(agents_path: Path, replacement: bytes | None) -> dict[str,
 
 def _apply_default_invocation(agents_path: Path, original: bytes | None,
                               replacement: bytes | None, mode: int) -> dict[str, Any]:
+    recovery: dict[str, str] | None = None
     if replacement is not None:
-        _atomic_replace(
+        recovery = _atomic_replace(
             agents_path, expected_original=original, replacement=replacement, mode=mode,
         )
     elif _read_agents(agents_path)[0] != original:
@@ -398,6 +467,7 @@ def _apply_default_invocation(agents_path: Path, original: bytes | None,
         "modified": replacement is not None,
         "agents_path": str(agents_path),
         "line": DEFAULT_INVOCATION_LINE,
+        **(recovery or {}),
     }
 
 

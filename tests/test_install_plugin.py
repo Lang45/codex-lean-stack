@@ -382,11 +382,11 @@ class PluginInstallTests(unittest.TestCase):
         self.assertEqual(calls, 0)
         self.assertEqual(self.agents.read_bytes(), original)
 
-    def test_atomic_replace_failure_preserves_original_and_cleans_temporary(self) -> None:
+    def test_atomic_replace_failure_preserves_original_and_recovery_candidate(self) -> None:
         original = b"preserve\n"
         self.agents.write_bytes(original)
         with mock.patch.object(
-            install_plugin.os, "replace", side_effect=OSError("replace failed")
+            install_plugin._updates, "_exchange", side_effect=OSError("replace failed")
         ):
             with self.assertRaisesRegex(OSError, "replace failed"):
                 install_plugin.ensure_default_invocation(self.codex_home)
@@ -396,6 +396,11 @@ class PluginInstallTests(unittest.TestCase):
             list(self.codex_home.glob(".AGENTS.md.*.tmp")),
             [],
         )
+        records = list(self.codex_home.glob(".AGENTS.md.recovery-*/operation.json"))
+        self.assertEqual(len(records), 1)
+        record = json.loads(records[0].read_text(encoding="utf-8"))
+        candidate = records[0].parent / record["candidate"]
+        self.assertIn(install_plugin.DEFAULT_INVOCATION_LINE.encode("utf-8"), candidate.read_bytes())
         # A stable empty anchor is retained; actual reacquisition proves release.
         self.assertTrue((self.codex_home / ".AGENTS.md.lean-stack.lock").is_file())
         with install_plugin.update_lock(self.agents):
@@ -470,6 +475,53 @@ class PluginInstallTests(unittest.TestCase):
                 self.assertFalse(install_plugin.ensure_default_invocation(self.codex_home)["modified"])
                 self.assertEqual(self.agents.read_bytes(), original)
 
+    def test_multiline_code_span_preserves_the_later_active_instruction(self) -> None:
+        line = install_plugin.DEFAULT_INVOCATION_LINE
+        examples = (
+            f"Example `code\nshows <!-- markup`.\n{line}\n",
+            f"---\r\nnote: example\r\n---\r\n"
+            f"Example ``code\r\nshows `nested` and <!-- markup``.\r\n{line}\r\n",
+        )
+        for source in examples:
+            with self.subTest(source=source):
+                original = codecs.BOM_UTF8 + source.encode("utf-8")
+                self.agents.write_bytes(original)
+                self.assertEqual(
+                    install_plugin.preflight_default_invocation(self.codex_home)["action"],
+                    "agents_default_present",
+                )
+                for _ in range(2):
+                    self.assertFalse(install_plugin.ensure_default_invocation(self.codex_home)["modified"])
+                    self.assertEqual(self.agents.read_bytes(), original)
+
+    def test_instruction_inside_multiline_code_span_is_only_an_example(self) -> None:
+        line = install_plugin.DEFAULT_INVOCATION_LINE
+        original = f"Example ``\n{line}\n`` end\n".encode("utf-8")
+        self.agents.write_bytes(original)
+        self.assertEqual(
+            install_plugin.preflight_default_invocation(self.codex_home)["action"],
+            "agents_default_ready",
+        )
+        self.assertEqual(self.agents.read_bytes(), original)
+        self.assertTrue(install_plugin.ensure_default_invocation(self.codex_home)["modified"])
+        updated = self.agents.read_bytes()
+        self.assertIn(original, updated)
+        self.assertEqual(updated.count(line.encode("utf-8")), 2)
+        self.assertFalse(install_plugin.ensure_default_invocation(self.codex_home)["modified"])
+        self.assertEqual(self.agents.read_bytes(), updated)
+
+    def test_unmatched_backtick_cannot_hide_a_comment_in_the_next_paragraph(self) -> None:
+        line = install_plugin.DEFAULT_INVOCATION_LINE
+        for boundary in ("", "***", "# Heading", "---", "- Item", "> Quote"):
+            with self.subTest(boundary=boundary):
+                original = f"An unmatched `\n{boundary}\nText <!-- a real comment\n{line}\n-->\n".encode("utf-8")
+                self.agents.write_bytes(original)
+                self.assertEqual(
+                    install_plugin.preflight_default_invocation(self.codex_home)["action"],
+                    "agents_default_ready",
+                )
+                self.assertEqual(self.agents.read_bytes(), original)
+
     def test_concurrent_first_creation_preserves_the_other_writers_bytes(self) -> None:
         operation = "rename" if install_plugin.os.name == "nt" else "link"
         publish = getattr(install_plugin.os, operation)
@@ -480,14 +532,84 @@ class PluginInstallTests(unittest.TestCase):
             with self.assertRaisesRegex(install_plugin.InstallError, "created after"):
                 install_plugin.ensure_default_invocation(self.codex_home)
         self.assertEqual(self.agents.read_bytes(), b"concurrent user creation")
+        candidates = list(self.codex_home.glob(".AGENTS.md.*.tmp"))
+        self.assertEqual(len(candidates), 1)
+        self.assertIn(install_plugin.DEFAULT_INVOCATION_LINE.encode("utf-8"), candidates[0].read_bytes())
 
-    def test_failed_replace_and_cleanup_report_both_causes(self):
-        self.agents.write_bytes(b"original")
-        with mock.patch.object(install_plugin.os, "replace", side_effect=OSError("replace failed")), \
-             mock.patch.object(Path, "unlink", side_effect=PermissionError("staging locked")):
-            with self.assertRaisesRegex(install_plugin.InstallError, "replace failed.*staging locked"):
+    def test_interrupted_first_publication_is_not_reported_as_success(self):
+        operation = "rename" if install_plugin.os.name == "nt" else "link"
+        with mock.patch.object(install_plugin.os, operation, side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
                 install_plugin.ensure_default_invocation(self.codex_home)
+        self.assertFalse(self.agents.exists())
+        candidates = list(self.codex_home.glob(".AGENTS.md.*.tmp"))
+        self.assertEqual(len(candidates), 1)
+        self.assertIn(install_plugin.DEFAULT_INVOCATION_LINE.encode("utf-8"), candidates[0].read_bytes())
+
+    def test_failed_existing_replacement_keeps_recovery_without_destructive_cleanup(self):
+        self.agents.write_bytes(b"original")
+        with mock.patch.object(install_plugin._updates, "_exchange", side_effect=OSError("replace failed")), \
+             mock.patch.object(Path, "unlink", side_effect=PermissionError("staging locked")) as cleanup:
+            with self.assertRaisesRegex(OSError, "retained work.*replace failed"):
+                install_plugin.ensure_default_invocation(self.codex_home)
+            cleanup.assert_not_called()
         self.assertEqual(self.agents.read_bytes(), b"original")
+
+    @unittest.skipUnless(install_plugin.os.name == "nt", "Windows partial-replacement state")
+    def test_partial_replacement_retries_refuse_to_drop_base_or_override_rules(self):
+        for filename in ("AGENTS.md", "AGENTS.override.md"):
+            with self.subTest(filename=filename):
+                home = self.codex_home / filename
+                home.mkdir()
+                target = home / filename
+                original = b"Keep all of these user instructions.\n"
+                target.write_bytes(original)
+
+                def partial_publish(path, candidate, previous):
+                    install_plugin.os.rename(path, previous)
+                    raise OSError(1177, "replacement could not be moved")
+
+                with mock.patch.object(install_plugin._updates, "_exchange", side_effect=partial_publish):
+                    with self.assertRaisesRegex(OSError, "retained work"):
+                        install_plugin.ensure_default_invocation(home)
+                self.assertFalse(target.exists())
+                records = list(home.glob(f".{filename}.recovery-*/operation.json"))
+                self.assertEqual(len(records), 1)
+                record = json.loads(records[0].read_text(encoding="utf-8"))
+                previous = records[0].parent / record["displaced"]
+                self.assertEqual(previous.read_bytes(), original)
+                for operation in (install_plugin.preflight_default_invocation, install_plugin.ensure_default_invocation):
+                    with self.assertRaisesRegex(install_plugin.InstallError, "recovery"):
+                        operation(home)
+                runner = mock.Mock(side_effect=AssertionError("CLI must not run before recovery"))
+                with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+                    with self.assertRaisesRegex(install_plugin.InstallError, "recovery"):
+                        install_plugin.install_plugin(
+                            self.plugin_root, marketplace_path=self.marketplace, codex_home=home, runner=runner,
+                        )
+                runner.assert_not_called()
+                self.assertFalse(target.exists())
+                self.assertFalse((home / "AGENTS.md").exists())
+                self.assertEqual(previous.read_bytes(), original)
+
+    def test_known_hard_link_blocker_is_reported_before_installing(self):
+        self.agents.write_bytes(b"original instructions\n")
+        alias = self.codex_home / "same-object.txt"
+        install_plugin.os.link(self.agents, alias)
+        for operation in (install_plugin.preflight_default_invocation, install_plugin.ensure_default_invocation):
+            with self.assertRaisesRegex((OSError, install_plugin.InstallError), "single-link"):
+                operation(self.codex_home)
+        runner = mock.Mock(side_effect=AssertionError("CLI must not run for a known blocker"))
+        with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+            with self.assertRaisesRegex((OSError, install_plugin.InstallError), "single-link"):
+                install_plugin.install_plugin(
+                    self.plugin_root, marketplace_path=self.marketplace, codex_home=self.codex_home, runner=runner,
+                )
+        runner.assert_not_called()
+        self.assertEqual(self.agents.read_bytes(), alias.read_bytes())
+        self.agents.write_text(install_plugin.DEFAULT_INVOCATION_LINE + "\n", encoding="utf-8")
+        self.assertEqual(install_plugin.preflight_default_invocation(self.codex_home)["action"], "agents_default_present")
+        self.assertFalse(install_plugin.ensure_default_invocation(self.codex_home)["modified"])
 
     def test_marketplace_edit_during_add_blocks_activation_even_with_matching_receipt(self):
         self.agents.write_bytes(b"untouched")

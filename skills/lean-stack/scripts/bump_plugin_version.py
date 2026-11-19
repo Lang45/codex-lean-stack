@@ -12,7 +12,6 @@ import os
 import re
 import stat
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -25,6 +24,13 @@ _lock_spec = importlib.util.spec_from_file_location(
 assert _lock_spec is not None and _lock_spec.loader is not None
 _locks = importlib.util.module_from_spec(_lock_spec)
 _lock_spec.loader.exec_module(_locks)
+
+_update_spec = importlib.util.spec_from_file_location(
+    "_lean_stack_atomic_file_update", Path(__file__).with_name("_atomic_file_update.py")
+)
+assert _update_spec is not None and _update_spec.loader is not None
+_updates = importlib.util.module_from_spec(_update_spec)
+_update_spec.loader.exec_module(_updates)
 
 
 MAX_MANIFEST_BYTES = 1024 * 1024
@@ -176,42 +182,21 @@ def release_lock(manifest_path: Path) -> Iterator[None]:
 
 
 def atomic_replace_json(manifest_path: Path, data: bytes, expected_original: bytes,
-                        next_version: str) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{manifest_path.name}.", suffix=".tmp", dir=manifest_path.parent
+                        next_version: str) -> dict[str, str]:
+    if _manifest_bytes(manifest_path) != expected_original:
+        raise VersionError("manifest changed after it was read; refusing to overwrite")
+    recovery = _updates.replace_existing(
+        manifest_path, expected=expected_original, replacement=data,
+        recovery_parent=manifest_path.parent.parent.parent,
     )
-    temporary = Path(temporary_name)
-    staging_owned = True
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            ensure_plain_path(manifest_path, label="manifest", directory=False)
-            if os.name != "nt":
-                os.fchmod(handle.fileno(), stat.S_IMODE(os.lstat(manifest_path).st_mode))
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if _manifest_bytes(manifest_path) != expected_original:
-            raise VersionError("manifest changed after it was read; refusing to overwrite")
-        os.replace(temporary, manifest_path)
-        staging_owned = False
-        try:
-            fsync_directory(manifest_path.parent)
-        except OSError as exc:
-            raise DurabilityError(
-                "manifest was replaced with "
-                f"{next_version!r}, but directory durability confirmation failed; "
-                "inspect the current manifest before any retry"
-            ) from exc
-    finally:
-        if staging_owned:
-            primary = sys.exc_info()[1]
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError as cleanup:
-                if primary is None:
-                    raise
-                if isinstance(primary, Exception):
-                    raise VersionError(f"{primary}; staging cleanup also failed for {temporary}: {cleanup}") from primary
+        fsync_directory(manifest_path.parent)
+    except OSError as exc:
+        raise DurabilityError(
+            f"manifest was replaced with {next_version!r}, but directory durability confirmation failed; "
+            f"inspect the current manifest and previous file at {recovery['previous_path']} before any retry"
+        ) from exc
+    return recovery
 
 
 def update_plugin_version(
@@ -254,12 +239,13 @@ def update_plugin_version(
         encoded.extend(b"\n")
         return original, bytes(encoded), current, next_base, next_version
 
+    recovery: dict[str, str] = {}
     if dry_run:
         _, _, current, next_base, next_version = prepare()
     else:
         with release_lock(manifest_path):
             original, updated, current, next_base, next_version = prepare()
-            atomic_replace_json(manifest_path, updated, original, next_version)
+            recovery = atomic_replace_json(manifest_path, updated, original, next_version)
 
     return {
         "ok": True,
@@ -271,6 +257,7 @@ def update_plugin_version(
         "new_version": next_version,
         "cachebuster": token,
         "modified": not dry_run,
+        **recovery,
     }
 
 

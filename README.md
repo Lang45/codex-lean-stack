@@ -85,6 +85,12 @@ Standard plugin installation does not edit global instructions. The optional
 explicitly asks to configure default invocation. It may only ensure the plugin's single invocation line; it does
 not copy delegation rules into the user's global file.
 
+Existing-file updates retain the actual displaced object and return `previous_path`. A late external edit produces
+an explicit publication conflict with its recovery location, and interrupted instruction updates require recovery
+before another activation. See the [maintenance and recovery contract](skills/lean-stack/references/versioning.md).
+Current native recovery paths are verified on local Windows NTFS and Linux filesystems; unsupported capture
+operations fail without falling back to an overwrite. Normal plugin installation still leaves global instructions alone.
+
 ## Usage
 
 ```text

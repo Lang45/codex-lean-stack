@@ -46,15 +46,21 @@ class PluginVersionTests(unittest.TestCase):
     def read_manifest(self) -> dict[str, object]:
         return json.loads(self.manifest.read_text(encoding="utf-8"))
 
-    def test_failed_replace_and_cleanup_report_both_causes(self):
+    def test_failed_replacement_keeps_original_and_recovery_without_cleanup(self):
         original = self.write_manifest()
-        with mock.patch.object(bump_plugin_version.os, "replace", side_effect=OSError("replace failed")), \
-             mock.patch.object(Path, "unlink", side_effect=PermissionError("staging locked")):
-            with self.assertRaisesRegex(bump_plugin_version.VersionError, "replace failed.*staging locked"):
+        with mock.patch.object(bump_plugin_version._updates, "_exchange", side_effect=OSError("replace failed")), \
+             mock.patch.object(Path, "unlink", side_effect=PermissionError("staging locked")) as cleanup:
+            with self.assertRaisesRegex(OSError, "retained work.*replace failed"):
                 bump_plugin_version.update_plugin_version(
                     self.root, change="fix", expected_version="0.1.0+codex.old", cachebuster="fixed",
                 )
+            cleanup.assert_not_called()
         self.assertEqual(self.manifest.read_bytes(), original)
+        records = list(self.root.parent.glob(".plugin.json.recovery-*/operation.json"))
+        self.assertEqual(len(records), 1)
+        record = json.loads(records[0].read_text(encoding="utf-8"))
+        candidate = records[0].parent / record["candidate"]
+        self.assertEqual(json.loads(candidate.read_text(encoding="utf-8"))["version"], "0.1.1+codex.fixed")
 
     def test_preview_and_commit_reject_output_the_next_release_cannot_read(self):
         long_version = "9" * 110 + ".0.0"
@@ -168,7 +174,7 @@ class PluginVersionTests(unittest.TestCase):
         lock.unlink()
 
         with mock.patch.object(
-            bump_plugin_version.os, "replace", side_effect=OSError("replace failed")
+            bump_plugin_version._updates, "_exchange", side_effect=OSError("replace failed")
         ):
             with self.assertRaises(OSError):
                 bump_plugin_version.update_plugin_version(
