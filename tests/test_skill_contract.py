@@ -664,6 +664,16 @@ class SkillContractTests(unittest.TestCase):
         for phrase in ("复杂取舍", "高风险修改", "最终审查结论", "至少使用合适的Sol", "已保留身份也不能绕过"):
             self.assertIn(phrase, compact)
 
+    def test_computer_use_activates_before_the_first_read_only_operation(self) -> None:
+        frontmatter = self.stack.split("---", 2)[1]
+        self.assertRegex(frontmatter, r"(?m)^description: .*Computer Use 操作前.*只读界面观察、应用清单.*或首次准备委派")
+
+        activation = self.stack.split("## 何时使用", 1)[1].split("\n## ", 1)[0]
+        activation = " ".join(activation.split())
+        self.assertIn("Computer Use 操作前独立触发", activation)
+        self.assertIn("只读界面观察、应用清单", activation)
+        self.assertIn("不等到已经决定委派才读取", activation)
+
     def test_computer_use_defaults_to_sol_with_parent_guidance_and_child_tool_access(self) -> None:
         route = self.stack.split("## Computer Use：父代理指导，Sol 操作", 1)[1].split("\n## ", 1)[0]
         for term in (
@@ -678,6 +688,10 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(term, route)
         self.assertRegex(route, r"由父代理指导 `gpt-6\.2-sol`\s+实际执行")
         self.assertNotIn("Terra", route)
+        observations = " ".join(route.split("Computer Use 工具自身", 1)[1].split("\n\n", 1)[0].split())
+        self.assertIn("应用/窗口清单、UI 树和截图等只读观察也属于本节", observations)
+        self.assertRegex(observations, r"不能因接口名是 API.+只有一次调用，就由父代理直接执行或绕过本入口")
+        self.assertIn("普通业务连接器、API 和 CLI 的原分工保持", observations)
 
         anchor = "#computer-use父代理指导sol-操作"
         for label, surface in (

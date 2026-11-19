@@ -65,6 +65,7 @@ Historical profiles remain readable. Old Sol/Astra requests normalize to their 6
 For Computer Use, the parent directs and verifies while GPT-6.2 Sol performs the UI operations, including
 read-only observation. Complex decisions stay with the parent or a suitable Sol/Astra. One operator owns a shared
 desktop, window, or tab; direct tool access and permissions must be valid in the executing child.
+Read `$lean-stack` before the first Computer Use operation, including an application listing or UI tree query.
 Astra is selected only when the strongest suitable `gpt-6.2-sol` option still has a decision-changing quality gap.
 Its reasoning effort is chosen per task from `medium`, `high`, or `xhigh`; `xhigh` is the upper bound,
 not the default.
