@@ -46,6 +46,45 @@ class PluginVersionTests(unittest.TestCase):
     def read_manifest(self) -> dict[str, object]:
         return json.loads(self.manifest.read_text(encoding="utf-8"))
 
+    def test_failed_replace_and_cleanup_report_both_causes(self):
+        original = self.write_manifest()
+        with mock.patch.object(bump_plugin_version.os, "replace", side_effect=OSError("replace failed")), \
+             mock.patch.object(Path, "unlink", side_effect=PermissionError("staging locked")):
+            with self.assertRaisesRegex(bump_plugin_version.VersionError, "replace failed.*staging locked"):
+                bump_plugin_version.update_plugin_version(
+                    self.root, change="fix", expected_version="0.1.0+codex.old", cachebuster="fixed",
+                )
+        self.assertEqual(self.manifest.read_bytes(), original)
+
+    def test_preview_and_commit_reject_output_the_next_release_cannot_read(self):
+        long_version = "9" * 110 + ".0.0"
+        cases = [
+            (long_version, "x" * 64, "128 characters"),
+            ("1.0.0", "", "cachebuster"),
+            ("1\u0662.0.0", "fixed", "SemVer"),
+        ]
+        for version, token, error in cases:
+            original = self.write_manifest(version)
+            for dry_run in (True, False):
+                with self.subTest(version=version, token=token, dry_run=dry_run):
+                    with self.assertRaisesRegex(bump_plugin_version.VersionError, error):
+                        bump_plugin_version.update_plugin_version(
+                            self.root, change="fix", expected_version=version,
+                            cachebuster=token, dry_run=dry_run,
+                        )
+                    self.assertEqual(self.manifest.read_bytes(), original)
+
+        original = json.dumps({"name": "example", "version": "1.0.0",
+                               "text": "中" * 200_000}, ensure_ascii=False).encode("utf-8")
+        self.manifest.write_bytes(original)
+        for dry_run in (True, False):
+            with self.assertRaisesRegex(bump_plugin_version.VersionError, "updated.*exceeds"):
+                bump_plugin_version.update_plugin_version(
+                    self.root, change="fix", expected_version="1.0.0",
+                    cachebuster="fixed", dry_run=dry_run,
+                )
+            self.assertEqual(self.manifest.read_bytes(), original)
+
     def test_release_contract(self) -> None:
         cases = {
             "feature": "0.2.0+codex.fixed",

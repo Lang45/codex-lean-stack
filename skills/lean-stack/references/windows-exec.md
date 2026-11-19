@@ -31,14 +31,17 @@ Windows exec 已是 PowerShell 时，简单命令直接执行，不额外套 She
 3. 新生成的复杂 `.ps1` 在执行前使用 `Parser.ParseFile` 做语法预检；预检有错误时只修脚本文件，
    不继续执行。预检通过不代表逻辑正确，脚本仍须检查实际内容、结果和外部程序退出码；不能用
    最后一句“成功”掩盖前面失败。
-   必要检查与后续同步、打包或发布有依赖时，每次原生程序返回后立即保存并检查
-   `$LASTEXITCODE`；非零时停止这条依赖链。分号只表示顺序执行，`$ErrorActionPreference`
-   也不能代替原生退出码检查；最后一个命令的 exit0 不证明前面的检查通过。最小写法：
+   必要检查与后续同步、打包或发布有依赖时，调用原生程序后立即在同一条语句中保存 `$?` 和
+   `$LASTEXITCODE`。程序未启动时，`$LASTEXITCODE` 可能仍是上一条原生命令的退出码。调用失败
+   或退出码非零时停止依赖链。分号只表示顺序执行，`$ErrorActionPreference` 也不能代替原生
+   退出码检查；最后一个命令的 exit0 不证明前面的检查通过。最小写法：
 
    ```powershell
    & $taskCheckExe @taskCheckArgs
-   $taskCheckExitCode = $LASTEXITCODE
-   if ($taskCheckExitCode -ne 0) { throw "必要检查失败，退出码 $taskCheckExitCode" }
+   $taskCheckSucceeded, $taskCheckExitCode = $?, $LASTEXITCODE
+   if (-not $taskCheckSucceeded -or $taskCheckExitCode -ne 0) {
+       throw "必要检查失败（PowerShell 调用状态 $taskCheckSucceeded，LASTEXITCODE $taskCheckExitCode）"
+   }
    # 仅在检查通过后执行依赖它的同步或发布。
    ```
 

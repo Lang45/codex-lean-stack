@@ -1,7 +1,7 @@
 {
   "name": "codex-lean-stack",
-  "version": "9.6.0+codex.20261119034857",
-  "description": "9.6.0：普通电脑操作用 Terra，复杂高风险用 Sol 子代理。",
+  "version": "9.7.0+codex.20261119130108",
+  "description": "9.7.0：持续补派子代理，修复台账与安装保护。",
   "author": {
     "name": "Lang45",
     "url": "https://github.com/Lang45"
@@ -20,8 +20,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex子代理调用与精简流程",
-    "shortDescription": "9.6.0：普通电脑操作用 Terra，复杂高风险用 Sol 子代理。",
-    "longDescription": "9.6.0 根据同工具、同任务的电脑操作快速对照，将常规、输入清楚、低风险 Computer Use 默认交给父代理指导的 GPT-6.1 Terra；复杂界面状态、难判断多步依赖或高风险变更至少使用 GPT-6.2 Sol。保留首次操作前读取、用户明确指定优先、单操作者及权限保护。现有型号、旧参数和保留身份兼容保持。",
+    "shortDescription": "9.7.0：持续补派子代理，修复台账与安装保护。",
+    "longDescription": "9.7.0 平时依照三原则，用户特殊要求后随任务进度和槽位释放持续补派，高负载且切片就绪时填满实际可用并发容量；明确专家与执行者指令优先。修复台账迁移与读取一致性、进程锁、安装来源和并发指令保护、版本输出边界及 Windows 检查失败传播。现有型号、权限、旧参数与保留身份兼容保持。",
     "developerName": "Lang45",
     "category": "Productivity",
     "capabilities": [

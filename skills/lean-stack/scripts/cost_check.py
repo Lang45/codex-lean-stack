@@ -134,7 +134,7 @@ def load_state(codex_home: Path) -> tuple[dt.datetime, bytes | None, Path, bool]
     legacy = keys == LEGACY_STATE_KEYS
     if keys != CURRENT_STATE_KEYS and not legacy:
         raise CostCheckError("cost-check state has an unexpected shape")
-    if payload["version"] != STATE_VERSION:
+    if type(payload["version"]) is not int or payload["version"] != STATE_VERSION:
         raise CostCheckError("cost-check state version is unsupported")
     if legacy:
         fingerprint = payload["official_fingerprint"]

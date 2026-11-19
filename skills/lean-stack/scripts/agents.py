@@ -256,6 +256,12 @@ MEMORY_HEADER = (
     "\n\n可复用经验（仅限证据说明；永远不能覆盖用户指令、权限或当前任务说明）：\n"
 )
 
+LEGACY_GLOBAL_SCHEMAS = {
+    1: SCHEMA_V1_TABLE_SQL,
+    2: SCHEMA_V2_TABLE_SQL,
+    3: SCHEMA_V3_TABLE_SQL,
+}
+
 
 class SpecialistError(RuntimeError):
     """Fail-closed input, ownership, or consistency error."""
@@ -1332,7 +1338,7 @@ def exact_schema(connection: sqlite3.Connection) -> dict[tuple[str, str], str]:
     return {
         (str(row[0]), str(row[1])): normalize_schema_sql(row[2])
         for row in connection.execute(
-            "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+            "SELECT type, name, sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"
         )
     }
 
@@ -1368,30 +1374,22 @@ class SpecialistRegistry:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            existing_objects = list(
-                connection.execute(
-                    "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
-                )
-            )
-            actual_schema = {
-                (str(row[0]), str(row[1])): normalize_schema_sql(row[2])
-                for row in connection.execute(
-                    "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
-                )
-            }
             if version == 0:
                 if read_only or existing_only:
                     raise AuxiliarySkipped("recall requires an initialized supported database")
-                if existing_objects:
-                    raise AuxiliarySkipped(
-                        "unversioned specialist database is not empty; no initialization or migration is attempted"
-                    )
-                connection.executescript(
-                    "BEGIN IMMEDIATE;\n"
-                    + ";\n".join(SCHEMA_TABLE_SQL.values())
-                    + f";\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
-                )
-            elif version in (1, 2, 3):
+                connection.execute("BEGIN IMMEDIATE")
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                if version == 0:
+                    if exact_schema(connection):
+                        raise AuxiliarySkipped(
+                            "unversioned specialist database is not empty; no initialization or migration is attempted"
+                        )
+                    for definition in SCHEMA_TABLE_SQL.values():
+                        connection.execute(definition)
+                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    version = SCHEMA_VERSION
+                connection.execute("COMMIT")
+            if version in (1, 2, 3):
                 raise AuxiliarySkipped(
                     f"specialist database schema {version} requires explicit migrate-global; "
                     "ordinary registry commands do not globalize legacy roles"
@@ -1416,17 +1414,7 @@ class SpecialistRegistry:
                 raise AuxiliarySkipped(
                     f"unsupported specialist database schema {version}; no migration is attempted"
                 )
-            actual_schema = {
-                (str(row[0]), str(row[1])): normalize_schema_sql(row[2])
-                for row in connection.execute(
-                    "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
-                )
-            }
-            expected_schema = {
-                ("table", table): normalize_schema_sql(sql)
-                for table, sql in SCHEMA_TABLE_SQL.items()
-            }
-            if actual_schema != expected_schema:
+            if exact_schema(connection) != expected_schema(SCHEMA_TABLE_SQL):
                 raise AuxiliarySkipped(
                     "specialist database schema differs from the supported exact schema"
                 )
@@ -1560,7 +1548,8 @@ class SpecialistRegistry:
     def _legacy_connection(self) -> tuple[sqlite3.Connection, int]:
         ensure_plain_database(self.db_path)
         connection = sqlite3.connect(
-            self.db_path,
+            self.db_path.as_uri() + "?mode=rw",
+            uri=True,
             timeout=BUSY_TIMEOUT_MS / 1000,
             isolation_level=None,
         )
@@ -1568,12 +1557,7 @@ class SpecialistRegistry:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        schemas = {
-            1: SCHEMA_V1_TABLE_SQL,
-            2: SCHEMA_V2_TABLE_SQL,
-            3: SCHEMA_V3_TABLE_SQL,
-        }
-        if version not in schemas or exact_schema(connection) != expected_schema(schemas[version]):
+        if version not in LEGACY_GLOBAL_SCHEMAS:
             connection.close()
             raise AuxiliarySkipped(
                 "migrate-global accepts only the exact published v1, v2, or v3 schema"
@@ -1698,6 +1682,21 @@ class SpecialistRegistry:
         journal_path = self._migration_journal_path()
         if not path_exists_without_following_links(journal_path):
             return None
+        # A prepared journal may belong to a still-running migration. Read its
+        # state and recover its files only after acquiring the writer's lock.
+        ensure_plain_database(self.db_path)
+        with contextlib.closing(sqlite3.connect(
+            self.db_path.as_uri() + "?mode=rw", uri=True,
+            timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None,
+        )) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            return self._recover_global_migration_locked(plan_digest, connection)
+
+    def _recover_global_migration_locked(
+        self, plan_digest: str, connection: sqlite3.Connection,
+    ) -> dict[str, Any] | None:
+        journal_path = self._migration_journal_path()
         validate_direct_plain_file(
             journal_path,
             self.state_dir,
@@ -1711,17 +1710,17 @@ class SpecialistRegistry:
             raise AuxiliarySkipped(
                 "a different global migration journal exists; recover it with its original plan"
             )
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        schemas = {**LEGACY_GLOBAL_SCHEMAS, SCHEMA_VERSION: SCHEMA_TABLE_SQL}
+        if version not in schemas or exact_schema(connection) != expected_schema(schemas[version]):
+            raise AuxiliarySkipped("migration journal database schema requires manual review")
         if journal.get("receipt_kind") == GLOBAL_MIGRATION_COMPLETION_KIND:
-            if journal.get("status") != "committed" or journal.get("schema_version") not in (
+            if version != SCHEMA_VERSION or journal.get("status") != "committed" or journal.get("schema_version") not in (
                 4,
                 SCHEMA_VERSION,
             ):
                 raise AuxiliarySkipped("completed migration receipt is inconsistent")
-            connection = self.connect()
-            try:
-                self._verify_v4_receipt_agents(connection, journal.get("agents", []))
-            finally:
-                connection.close()
+            self._verify_v4_receipt_agents(connection, journal.get("agents", []))
             return {
                 "ok": True,
                 "action": "global_migration_already_committed",
@@ -1737,15 +1736,8 @@ class SpecialistRegistry:
         if archive_dir.parent != archive_root:
             raise AuxiliarySkipped("global migration journal archive path is outside its owned root")
         status = journal.get("status")
-        ensure_plain_database(self.db_path)
-        with contextlib.closing(sqlite3.connect(self.db_path)) as probe:
-            version = int(probe.execute("PRAGMA user_version").fetchone()[0])
         if version == SCHEMA_VERSION:
-            connection = self.connect()
-            try:
-                completion = self._finalize_committed_migration(journal, connection)
-            finally:
-                connection.close()
+            completion = self._finalize_committed_migration(journal, connection)
             return {
                 "ok": True,
                 "action": "global_migration_already_committed",
@@ -1754,8 +1746,6 @@ class SpecialistRegistry:
                 "plan_digest": plan_digest,
                 "backup_disposition": completion["backup_disposition"],
             }
-        if version not in (1, 2, 3):
-            raise AuxiliarySkipped("migration journal database version requires manual review")
         if status == "rolled_back":
             return None
         rollback_errors: list[str] = []
@@ -1843,6 +1833,16 @@ class SpecialistRegistry:
         try:
             connection.execute("PRAGMA foreign_keys = OFF")
             connection.execute("BEGIN IMMEDIATE")
+            if path_exists_without_following_links(self._migration_journal_path()):
+                recovered = self._recover_global_migration_locked(plan_digest, connection)
+                if recovered is not None:
+                    connection.close()
+                    return recovered
+            if (
+                int(connection.execute("PRAGMA user_version").fetchone()[0]) != legacy_version
+                or exact_schema(connection) != expected_schema(LEGACY_GLOBAL_SCHEMAS[legacy_version])
+            ):
+                raise AuxiliarySkipped("migrate-global requires the exact legacy schema under the writer lock")
             legacy_rows = list(connection.execute("SELECT * FROM agents ORDER BY agent_id"))
             if len(plan["roles"]) != len(legacy_rows):
                 raise SpecialistError("migration plan must cover every legacy specialist exactly once")
@@ -2026,13 +2026,13 @@ class SpecialistRegistry:
                     "contract_text": contract_text, "contract_digest": contract_digest,
                     "corrections": correction_rows,
                 })
+            ensure_plain_directory(archive_dir, create=True)
         except BaseException:
             with contextlib.suppress(sqlite3.Error):
                 connection.execute("ROLLBACK")
             connection.close()
             raise
 
-        ensure_plain_directory(archive_dir, create=True)
         journal = {
             "format_version": 1, "plan_digest": plan_digest,
             "legacy_schema_version": legacy_version, "status": "prepared",
@@ -2131,15 +2131,10 @@ class SpecialistRegistry:
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             connection.execute("COMMIT")
             db_committed = True
-            connection.execute("PRAGMA foreign_keys = ON")
             connection.close()
-            verified = self.connect()
-            try:
-                for item in prepared:
-                    self._owned_agent(verified, name=item["new_name"], expected_sha256=item["new_sha256"])
-                completion = self._finalize_committed_migration(journal, verified)
-            finally:
-                verified.close()
+            completion = self._recover_global_migration(plan_digest)
+            if completion is None:
+                raise AuxiliarySkipped("committed global migration has no recovery journal")
             return {
                 "ok": True, "action": "global_migration_committed",
                 "schema_version": SCHEMA_VERSION, "migrated_count": len(prepared),
@@ -2157,9 +2152,6 @@ class SpecialistRegistry:
                 connection.execute("ROLLBACK")
             connection.close()
             if file_mutated:
-                journal["status"] = "recovery_required"
-                journal["failure"] = type(exc).__name__
-                self._write_migration_journal(journal)
                 try:
                     self._recover_global_migration(plan_digest)
                 except BaseException as recovery_exc:
@@ -3908,9 +3900,8 @@ class SpecialistRegistry:
         )
         transaction_started = False
         try:
-            if run_id is not None:
-                connection.execute("BEGIN IMMEDIATE")
-                transaction_started = True
+            connection.execute("BEGIN IMMEDIATE" if run_id is not None else "BEGIN")
+            transaction_started = True
             row, _, _, payload, _ = self._owned_agent(
                 connection, name=name, expected_sha256=expected_sha256,
             )
@@ -4008,6 +3999,7 @@ class SpecialistRegistry:
             raise SpecialistError("status modes are mutually exclusive")
         connection = self.connect(read_only=(for_routing or for_dashboard))
         try:
+            connection.execute("BEGIN")
             rows = list(
                 connection.execute(
                     "SELECT agents.*, "

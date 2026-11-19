@@ -84,6 +84,15 @@ def fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _read_limited(path: Path, *, label: str, limit: int) -> bytes:
+    ensure_plain_path(path, label=label, directory=False)
+    with path.open("rb") as handle:
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise InstallError(f"{label} exceeds {limit // (1024 * 1024)} MiB")
+    return data
+
+
 @contextlib.contextmanager
 def update_lock(agents_path: Path) -> Iterator[None]:
     """Hold a process-lifetime lock; keep the stable anchor after release."""
@@ -101,13 +110,10 @@ def read_manifest(plugin_root: Path) -> tuple[str, str]:
     ensure_plain_path(root, label="plugin root", directory=True)
     manifest_path = root / ".codex-plugin" / "plugin.json"
     ensure_plain_path(manifest_path.parent, label="plugin metadata directory", directory=True)
-    ensure_plain_path(manifest_path, label="plugin manifest", directory=False)
-    data = manifest_path.read_bytes()
-    if len(data) > MAX_MANIFEST_BYTES:
-        raise InstallError("plugin manifest exceeds 1 MiB")
+    data = _read_limited(manifest_path, label="plugin manifest", limit=MAX_MANIFEST_BYTES)
     try:
         payload = json.loads(data.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+    except (UnicodeError, ValueError, RecursionError) as exc:
         raise InstallError("plugin manifest is not valid UTF-8 JSON") from exc
     if not isinstance(payload, dict):
         raise InstallError("plugin manifest must contain a JSON object")
@@ -133,13 +139,10 @@ def verify_marketplace_source(
     plugin_root: Path,
 ) -> None:
     path = marketplace_path.expanduser().absolute()
-    ensure_plain_path(path, label="marketplace file", directory=False)
-    data = path.read_bytes()
-    if len(data) > MAX_MARKETPLACE_BYTES:
-        raise InstallError("marketplace file exceeds 4 MiB")
+    data = _read_limited(path, label="marketplace file", limit=MAX_MARKETPLACE_BYTES)
     try:
         payload = json.loads(data.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+    except (UnicodeError, ValueError, RecursionError) as exc:
         raise InstallError("marketplace file is not valid UTF-8 JSON") from exc
     if not isinstance(payload, dict) or payload.get("name") != marketplace:
         raise InstallError(
@@ -162,7 +165,7 @@ def verify_marketplace_source(
     if not isinstance(source, dict) or source.get("source") != "local":
         raise InstallError("plugin marketplace source must be a local source object")
     relative = source.get("path")
-    if not isinstance(relative, str) or not relative.startswith("./"):
+    if not isinstance(relative, str) or not relative.startswith("./") or "\x00" in relative:
         raise InstallError("plugin marketplace source path must start with './'")
     if len(path.parents) < 3:
         raise InstallError("marketplace path does not have a repository or home root")
@@ -187,10 +190,7 @@ def resolve_codex_home(explicit: Path | None = None) -> Path:
 def _read_agents(path: Path) -> tuple[bytes | None, str, bool, str, int]:
     if not path_lexists(path):
         return None, "", False, "\n", 0o600
-    ensure_plain_path(path, label="global AGENTS.md", directory=False)
-    original = path.read_bytes()
-    if len(original) > MAX_AGENTS_BYTES:
-        raise InstallError("global AGENTS.md exceeds 1 MiB")
+    original = _read_limited(path, label="global AGENTS.md", limit=MAX_AGENTS_BYTES)
     has_bom = original.startswith(codecs.BOM_UTF8)
     body = original[len(codecs.BOM_UTF8) :] if has_bom else original
     try:
@@ -216,25 +216,50 @@ def _atomic_replace(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
     temporary = Path(temporary_name)
+    staging_owned = True
     try:
-        if os.name != "nt":
-            os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "wb") as handle:
+            if os.name != "nt":
+                os.fchmod(handle.fileno(), mode)
             handle.write(replacement)
             handle.flush()
             os.fsync(handle.fileno())
         if path_lexists(path):
-            ensure_plain_path(path, label="global AGENTS.md", directory=False)
-            current = path.read_bytes()
+            current = _read_limited(path, label="global AGENTS.md", limit=MAX_AGENTS_BYTES)
         else:
             current = None
         if current != expected_original:
             raise InstallError("global AGENTS.md changed after it was read")
-        os.replace(temporary, path)
-        fsync_directory(path.parent)
+        if expected_original is None:
+            # Do not overwrite a file created after the final read. Windows
+            # rename already has no-replace semantics, POSIX link does too.
+            try:
+                if os.name == "nt":
+                    os.rename(temporary, path)
+                    staging_owned = False
+                else:
+                    os.link(temporary, path)
+            except FileExistsError as exc:
+                raise InstallError("global AGENTS.md was created after it was read") from exc
+        else:
+            os.replace(temporary, path)
+            staging_owned = False
+        try:
+            fsync_directory(path.parent)
+        except OSError as exc:
+            raise InstallError(
+                "global instructions were replaced, but directory durability could not be confirmed"
+            ) from exc
     finally:
-        with contextlib.suppress(FileNotFoundError):
-            temporary.unlink()
+        if staging_owned:
+            primary = sys.exc_info()[1]
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup:
+                if primary is None:
+                    raise InstallError(f"global instructions were written, but staging cleanup failed: {cleanup}") from cleanup
+                if isinstance(primary, Exception):
+                    raise InstallError(f"{primary}; staging cleanup also failed for {temporary}: {cleanup}") from primary
 
 
 def effective_agents_path(home: Path) -> Path:
@@ -261,23 +286,48 @@ def _frontmatter_end(text: str) -> int:
 
 
 def _has_default_invocation(text: str) -> bool:
-    # Examples and HTML comments are not active instructions. Preserve the
-    # original bytes; this filtered view is only used for detection.
-    body = text[_frontmatter_end(text):]
-    visible = re.sub(r"<!--.*?(?:-->|\Z)", "", body, flags=re.DOTALL)
-    lines = visible.splitlines()
+    # A literal "<!--" inside fenced code or a code span cannot open a comment.
+    # Examine fences before interpreting inline markup on their contents.
     fence = ""
-    for line in lines:
-        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
-        if marker:
-            run, suffix = marker.groups()
-            if not fence:
-                fence = run
-            elif run[0] == fence[0] and len(run) >= len(fence) and not suffix.strip():
-                fence = ""
-            continue
-        if fence:
-            continue
+    in_comment = False
+    for line in text[_frontmatter_end(text):].splitlines():
+        if not in_comment:
+            marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            if marker:
+                run, suffix = marker.groups()
+                if fence:
+                    if run[0] == fence[0] and len(run) >= len(fence) and not suffix.strip():
+                        fence = ""
+                    continue
+                if run[0] == "~" or "`" not in suffix:
+                    fence = run
+                    continue
+            if fence:
+                continue
+        if in_comment or "<!--" in line:
+            # Only a matching, equally long backtick run closes a code span.
+            last_tick = {len(m[0]): m.start() for m in re.finditer(r"`+", line)}
+            ticks = 0
+            visible = []
+            start = 0
+            for mark in re.finditer(r"`+|<!--|-->", line):
+                token = mark[0]
+                if in_comment:
+                    if token == "-->":
+                        in_comment = False
+                        start = mark.end()
+                elif token.startswith("`"):
+                    width = len(token)
+                    if ticks == width:
+                        ticks = 0
+                    elif not ticks and last_tick[width] > mark.start():
+                        ticks = width
+                elif token == "<!--" and not ticks:
+                    visible.append(line[start:mark.start()])
+                    in_comment = True
+            if not in_comment:
+                visible.append(line[start:])
+            line = "".join(visible)
         if line == DEFAULT_INVOCATION_LINE:
             return True
         for prefix in USER_GLOBAL_INVOCATION_PREFIXES:
@@ -289,29 +339,10 @@ def _has_default_invocation(text: str) -> bool:
     return False
 
 
-def _preflight_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
-    _, text, _, _, _ = _read_agents(agents_path)
-    return {
-        "ok": True,
-        "action": (
-            "agents_default_present"
-            if _has_default_invocation(text)
-            else "agents_default_ready"
-        ),
-        "agents_path": str(agents_path),
-    }
-
-
-def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
+def _prepare_default_invocation(agents_path: Path) -> tuple[bytes | None, bytes | None, int]:
     original, text, has_bom, newline, mode = _read_agents(agents_path)
     if _has_default_invocation(text):
-        return {
-            "ok": True,
-            "action": "agents_default_present",
-            "modified": False,
-            "agents_path": str(agents_path),
-            "line": DEFAULT_INVOCATION_LINE,
-        }
+        return original, None, mode
 
     first_line = text.splitlines()[0] if text else ""
     frontmatter_end = _frontmatter_end(text)
@@ -340,16 +371,31 @@ def _ensure_default_invocation_locked(agents_path: Path) -> dict[str, Any]:
     replacement = updated.encode("utf-8")
     if has_bom:
         replacement = codecs.BOM_UTF8 + replacement
-    _atomic_replace(
-        agents_path,
-        expected_original=original,
-        replacement=replacement,
-        mode=mode,
-    )
+    if len(replacement) > MAX_AGENTS_BYTES:
+        raise InstallError("updated global AGENTS.md exceeds 1 MiB")
+    return original, replacement, mode
+
+
+def _preflight_result(agents_path: Path, replacement: bytes | None) -> dict[str, Any]:
     return {
         "ok": True,
-        "action": "agents_default_added",
-        "modified": True,
+        "action": "agents_default_present" if replacement is None else "agents_default_ready",
+        "agents_path": str(agents_path),
+    }
+
+
+def _apply_default_invocation(agents_path: Path, original: bytes | None,
+                              replacement: bytes | None, mode: int) -> dict[str, Any]:
+    if replacement is not None:
+        _atomic_replace(
+            agents_path, expected_original=original, replacement=replacement, mode=mode,
+        )
+    elif _read_agents(agents_path)[0] != original:
+        raise InstallError("global AGENTS.md changed after it was read")
+    return {
+        "ok": True,
+        "action": "agents_default_added" if replacement is not None else "agents_default_present",
+        "modified": replacement is not None,
         "agents_path": str(agents_path),
         "line": DEFAULT_INVOCATION_LINE,
     }
@@ -359,17 +405,72 @@ def ensure_default_invocation(codex_home: Path | None = None) -> dict[str, Any]:
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
     with update_lock(home / "AGENTS.md"):
-        return _ensure_default_invocation_locked(effective_agents_path(home))
+        target = effective_agents_path(home)
+        return _apply_default_invocation(target, *_prepare_default_invocation(target))
 
 
 def preflight_default_invocation(codex_home: Path | None = None) -> dict[str, Any]:
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
     with update_lock(home / "AGENTS.md"):
-        return _preflight_default_invocation_locked(effective_agents_path(home))
+        target = effective_agents_path(home)
+        _, replacement, _ = _prepare_default_invocation(target)
+        return _preflight_result(target, replacement)
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def _cli_listing(command: list[str], key: str, runner: Runner,
+                 options: dict[str, Any]) -> list[Any]:
+    result = runner(command, **options)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no diagnostic").strip()
+        raise InstallError(f"Codex {key} lookup failed with exit code {result.returncode}: {detail}")
+    try:
+        payload = json.loads(result.stdout)
+    except (ValueError, RecursionError) as exc:
+        raise InstallError(f"Codex {key} lookup returned invalid JSON") from exc
+    entries = payload.get(key) if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise InstallError(f"Codex lookup did not return the {key} list")
+    return entries
+
+
+def _verify_cli_marketplace(executable: str, marketplace: str, marketplace_path: Path,
+                           runner: Runner, options: dict[str, Any]) -> None:
+    entries = _cli_listing([executable, "plugin", "marketplace", "list", "--json"],
+                           "marketplaces", runner, options)
+    roots = [entry.get("root") for entry in entries
+             if isinstance(entry, dict) and entry.get("name") == marketplace]
+    if (len(roots) != 1 or not isinstance(roots[0], str) or "\x00" in roots[0]
+            or not Path(roots[0]).is_absolute()):
+        raise InstallError(f"Codex did not resolve one local root for marketplace {marketplace!r}")
+    selected = Path(roots[0]) / ".agents" / "plugins" / "marketplace.json"
+    if selected.resolve() != marketplace_path.expanduser().resolve():
+        raise InstallError(f"Codex selected a different marketplace file: {selected}")
+
+
+def _verify_installed(executable: str, marketplace: str, plugin_root: Path, version: str,
+                      runner: Runner, options: dict[str, Any]) -> None:
+    entries = _cli_listing([executable, "plugin", "list", "--marketplace", marketplace, "--json"],
+                           "installed", runner, options)
+    matches = [entry for entry in entries if isinstance(entry, dict)
+               and entry.get("pluginId") == f"{PLUGIN_NAME}@{marketplace}"]
+    if len(matches) != 1:
+        raise InstallError("Codex did not report exactly one installed copy of the requested plugin")
+    entry = matches[0]
+    if entry.get("installed") is not True or entry.get("enabled") is not True:
+        raise InstallError("Codex did not confirm that the requested plugin is installed and enabled")
+    if entry.get("version") != version:
+        raise InstallError(f"Codex reports installed version {entry.get('version')!r}, expected {version!r}")
+    source = entry.get("source")
+    if not isinstance(source, dict) or source.get("source") != "local":
+        raise InstallError("Codex did not report a local source for the installed plugin")
+    path = source.get("path")
+    if (not isinstance(path, str) or "\x00" in path or not Path(path).is_absolute()
+            or Path(path).resolve() != plugin_root.expanduser().resolve()):
+        raise InstallError("Codex reports a different source for the installed plugin")
 
 
 def install_plugin(
@@ -402,20 +503,19 @@ def install_plugin(
     home = resolve_codex_home(codex_home)
     ensure_plain_path(home, label="Codex home", directory=True)
     environment["CODEX_HOME"] = str(home)
+    options = dict(capture_output=True, text=True, encoding="utf-8", errors="replace",
+                   env=environment, check=False)
     # One home-level lock coordinates both files, including older helpers that
     # only knew about AGENTS.md. Never edit an inactive base behind an override.
     with update_lock(home / "AGENTS.md"):
         agents_path = effective_agents_path(home)
-        agents_preflight = _preflight_default_invocation_locked(agents_path)
-        completed = runner(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=environment,
-            check=False,
+        prepared = _prepare_default_invocation(agents_path)
+        agents_preflight = _preflight_result(agents_path, prepared[1])
+        _verify_cli_marketplace(executable, marketplace, verified_marketplace_path, runner, options)
+        verify_marketplace_source(
+            verified_marketplace_path, marketplace=marketplace, plugin_root=plugin_root,
         )
+        completed = runner(command, **options)
         if completed.returncode != 0:
             detail = (
                 completed.stderr or completed.stdout or "unknown install failure"
@@ -423,12 +523,20 @@ def install_plugin(
             raise InstallError(
                 f"plugin install failed with exit code {completed.returncode}: {detail}"
             )
-        if effective_agents_path(home) != agents_path:
-            raise InstallError(
-                "active global instructions changed during installation; "
-                "the plugin may be installed, but activation was not written"
+        try:
+            _verify_installed(executable, marketplace, plugin_root, version, runner, options)
+            verify_marketplace_source(
+                verified_marketplace_path, marketplace=marketplace, plugin_root=plugin_root,
             )
-        agents_result = _ensure_default_invocation_locked(agents_path)
+            if read_manifest(plugin_root) != (name, version):
+                raise InstallError("plugin identity or version changed during installation")
+            if effective_agents_path(home) != agents_path:
+                raise InstallError("active global instructions changed during installation")
+            agents_result = _apply_default_invocation(agents_path, *prepared)
+        except (OSError, InstallError) as exc:
+            raise InstallError(
+                f"Codex plugin add succeeded, but global activation could not be confirmed: {exc}"
+            ) from exc
     return {
         "ok": True,
         "action": "plugin_installed_with_default_invocation",

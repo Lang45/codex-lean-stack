@@ -4741,6 +4741,155 @@ else:
         self.assertNotIn("owner_token", json.dumps(journal))
         self.assertNotIn("旧插件专属经验", json.dumps(journal, ensure_ascii=False))
 
+    def test_similar_to_reserved_name_is_still_a_user_table(self) -> None:
+        with contextlib.closing(self.db()) as connection:
+            connection.execute("CREATE TABLE sqliteNotes (content TEXT)")
+            connection.commit()
+        with self.assertRaisesRegex(agents.AuxiliarySkipped, "not empty"):
+            self.registry.connect()
+        with contextlib.closing(self.db()) as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT name FROM sqlite_master").fetchall()[0][0], "sqliteNotes")
+
+    def test_initialization_rechecks_empty_database_after_acquiring_writer_lock(self) -> None:
+        real_connect = sqlite3.connect
+        initialized_elsewhere = False
+
+        def connect_during_initialization(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+
+            def concurrent_writer(statement):
+                nonlocal initialized_elsewhere
+                if not initialized_elsewhere and statement.strip().upper().startswith("BEGIN IMMEDIATE"):
+                    initialized_elsewhere = True
+                    with contextlib.closing(real_connect(self.registry.db_path)) as other:
+                        other.execute("CREATE TABLE local_notes (content TEXT)")
+                        other.execute("INSERT INTO local_notes VALUES ('existing content')")
+                        other.commit()
+
+            connection.set_trace_callback(concurrent_writer)
+            return connection
+
+        with mock.patch.object(agents.sqlite3, "connect", side_effect=connect_during_initialization):
+            with self.assertRaises(agents.AuxiliarySkipped):
+                self.registry.connect()
+        self.assertTrue(initialized_elsewhere)
+        with contextlib.closing(self.db()) as check:
+            self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], 0)
+            self.assertEqual(list(agents.exact_schema(check)), [("table", "local_notes")])
+            self.assertEqual(check.execute("SELECT * FROM local_notes").fetchone()[0], "existing content")
+
+    def test_status_reads_one_snapshot_while_a_run_finishes(self) -> None:
+        created = self.ensure()
+        with contextlib.closing(self.db()) as setup:
+            self.assertEqual(setup.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        writer = agents.SpecialistRegistry(self.codex_home)
+        read_owned = self.registry._owned_agent
+
+        def finish_run_during_status(*args, **kwargs):
+            writer.record_run(name=created["name"], expected_sha256=created["sha256"],
+                              run_id=str(uuid.uuid4()), invocation_kind="spawn_agent")
+            return read_owned(*args, **kwargs)
+
+        with mock.patch.object(self.registry, "_owned_agent", side_effect=finish_run_during_status):
+            snapshot = self.registry.status()
+        item = snapshot["registered_agents"][0]
+        self.assertEqual(item["attempt_count"], item["retention_state"]["attempt_count"])
+        self.assertEqual(snapshot["recorded_attempt_count"], item["attempt_count"])
+        self.assertEqual(self.registry.status()["recorded_attempt_count"], 1)
+
+    def test_global_migration_does_not_replace_another_plans_prepared_journal(self) -> None:
+        self.ensure(role_key="journal-owner")
+        rows = self.downgrade_registry(3)
+        earlier_plan = self.write_migration_plan(rows)
+        later_plan = self.write_migration_plan(rows)
+        payload = json.loads(later_plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["new_role_key"] = "different-plan"
+        later_plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        earlier = agents.SpecialistRegistry(self.codex_home)
+        write_journal = earlier._write_migration_journal
+        interrupted = []
+
+        def stop_after_preparation(journal):
+            write_journal(journal)
+            interrupted.append(earlier._migration_journal_path().read_bytes())
+            raise OSError("interrupted after preparation")
+
+        open_legacy = self.registry._legacy_connection
+
+        def publish_earlier_plan():
+            connection = open_legacy()
+            with mock.patch.object(earlier, "_write_migration_journal", side_effect=stop_after_preparation):
+                with self.assertRaisesRegex(OSError, "interrupted after preparation"):
+                    earlier.migrate_global(plan_path=earlier_plan)
+            return connection
+
+        original_bytes = Path(rows[0]["path"]).read_bytes()
+        with mock.patch.object(self.registry, "_legacy_connection", side_effect=publish_earlier_plan):
+            with self.assertRaisesRegex(agents.AuxiliarySkipped, "different global migration journal"):
+                self.registry.migrate_global(plan_path=later_plan)
+        self.assertEqual(earlier._migration_journal_path().read_bytes(), interrupted[0])
+        self.assertEqual(Path(rows[0]["path"]).read_bytes(), original_bytes)
+        with contextlib.closing(self.db()) as check:
+            self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], 3)
+
+    def test_global_migration_rechecks_exact_schema_under_writer_lock(self) -> None:
+        self.ensure(role_key="schema-guard")
+        rows = self.downgrade_registry(3)
+        plan = self.write_migration_plan(rows)
+        payload = json.loads(plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["new_role_key"] = "changed-schema-role"
+        plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        open_legacy = self.registry._legacy_connection
+
+        def insert_extra_table():
+            connection = open_legacy()
+            with contextlib.closing(self.db()) as other:
+                other.execute("CREATE TABLE user_preferences (value TEXT)")
+                other.commit()
+            return connection
+
+        original_bytes = Path(rows[0]["path"]).read_bytes()
+        with mock.patch.object(self.registry, "_legacy_connection", side_effect=insert_extra_table):
+            with self.assertRaisesRegex(agents.AuxiliarySkipped, "schema"):
+                self.registry.migrate_global(plan_path=plan)
+        with contextlib.closing(self.db()) as check:
+            self.assertEqual(check.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertIn(("table", "user_preferences"), agents.exact_schema(check))
+        self.assertEqual(Path(rows[0]["path"]).read_bytes(), original_bytes)
+        self.assertFalse(self.registry._migration_journal_path().exists())
+        self.assertFalse((self.registry.state_dir / agents.GLOBAL_MIGRATION_ARCHIVE_DIR).exists())
+
+    def test_second_migration_cannot_recover_files_while_first_writer_is_active(self) -> None:
+        original = self.ensure(role_key="migration-owner")
+        rows = self.downgrade_registry(3)
+        plan = self.write_migration_plan(rows)
+        payload = json.loads(plan.read_text(encoding="utf-8"))
+        payload["roles"][0]["new_role_key"] = "migrated-owner"
+        plan.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        competitor = agents.SpecialistRegistry(self.codex_home)
+        write_journal = self.registry._write_migration_journal
+        observed = []
+
+        def compete_after_files_are_published(journal):
+            write_journal(journal)
+            if journal["status"] == "files_replaced":
+                item = journal["files"][0]
+                with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
+                    competitor.migrate_global(plan_path=plan)
+                self.assertFalse(Path(item["old_path"]).exists())
+                self.assertEqual(agents.sha256_bytes(Path(item["new_path"]).read_bytes()), item["new_sha256"])
+                observed.append(item)
+
+        with mock.patch.object(self.registry, "_write_migration_journal", side_effect=compete_after_files_are_published):
+            result = self.registry.migrate_global(plan_path=plan)
+        self.assertEqual(result["action"], "global_migration_committed")
+        self.assertEqual(len(observed), 1)
+        retained = self.registry.recall(name=Path(observed[0]["new_path"]).stem)
+        self.assertEqual(retained["sha256"], observed[0]["new_sha256"])
+        self.assertEqual(observed[0]["agent_id"], original["agent_id"])
+        self.assertEqual(competitor.migrate_global(plan_path=plan)["action"], "global_migration_already_committed")
+
     def test_migration_commit_failure_restores_all_legacy_files_and_database(self) -> None:
         self.ensure(role_key="commit-failure-review")
         rows = self.downgrade_registry(3)

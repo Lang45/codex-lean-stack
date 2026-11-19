@@ -31,9 +31,9 @@ MAX_MANIFEST_BYTES = 1024 * 1024
 PLUGIN_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$")
 CACHEBUSTER_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 SEMVER_RE = re.compile(
-    r"^(?P<major>0|[1-9]\d*)\."
-    r"(?P<minor>0|[1-9]\d*)\."
-    r"(?P<patch>0|[1-9]\d*)"
+    r"^(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)"
     r"(?:-(?P<prerelease>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
     r"(?:\+(?P<build>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
@@ -126,13 +126,20 @@ def manifest_path_for(plugin_root: Path) -> Path:
     return manifest
 
 
-def read_manifest(manifest_path: Path) -> tuple[bytes, dict[str, Any]]:
-    data = manifest_path.read_bytes()
+def _manifest_bytes(manifest_path: Path) -> bytes:
+    ensure_plain_path(manifest_path, label="manifest", directory=False)
+    with manifest_path.open("rb") as handle:
+        data = handle.read(MAX_MANIFEST_BYTES + 1)
     if len(data) > MAX_MANIFEST_BYTES:
         raise VersionError("manifest exceeds 1 MiB")
+    return data
+
+
+def read_manifest(manifest_path: Path) -> tuple[bytes, dict[str, Any]]:
+    data = _manifest_bytes(manifest_path)
     try:
         payload = json.loads(data.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:
+    except (UnicodeError, ValueError, RecursionError) as exc:
         raise VersionError(f"manifest is not valid UTF-8 JSON: {manifest_path}") from exc
     if not isinstance(payload, dict):
         raise VersionError("manifest must contain a JSON object")
@@ -168,46 +175,43 @@ def release_lock(manifest_path: Path) -> Iterator[None]:
         yield
 
 
-def atomic_replace_json(
-    manifest_path: Path,
-    payload: dict[str, Any],
-    expected_original: bytes,
-) -> None:
-    data = (json.dumps(payload, ensure_ascii=True, indent=2) + "\n").encode("utf-8")
-    try:
-        parsed = json.loads(data.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError) as exc:  # pragma: no cover - defensive
-        raise VersionError("generated manifest failed JSON validation") from exc
-    if not isinstance(parsed, dict) or parsed.get("version") != payload.get("version"):
-        raise VersionError("generated manifest failed version validation")
-
+def atomic_replace_json(manifest_path: Path, data: bytes, expected_original: bytes,
+                        next_version: str) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{manifest_path.name}.", suffix=".tmp", dir=manifest_path.parent
     )
     temporary = Path(temporary_name)
+    staging_owned = True
     try:
-        ensure_plain_path(manifest_path, label="manifest", directory=False)
-        if os.name != "nt":
-            os.fchmod(descriptor, stat.S_IMODE(os.lstat(manifest_path).st_mode))
         with os.fdopen(descriptor, "wb") as handle:
+            ensure_plain_path(manifest_path, label="manifest", directory=False)
+            if os.name != "nt":
+                os.fchmod(handle.fileno(), stat.S_IMODE(os.lstat(manifest_path).st_mode))
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        ensure_plain_path(manifest_path, label="manifest", directory=False)
-        if manifest_path.read_bytes() != expected_original:
+        if _manifest_bytes(manifest_path) != expected_original:
             raise VersionError("manifest changed after it was read; refusing to overwrite")
         os.replace(temporary, manifest_path)
+        staging_owned = False
         try:
             fsync_directory(manifest_path.parent)
         except OSError as exc:
             raise DurabilityError(
                 "manifest was replaced with "
-                f"{payload.get('version')!r}, but directory durability confirmation failed; "
+                f"{next_version!r}, but directory durability confirmation failed; "
                 "inspect the current manifest before any retry"
             ) from exc
     finally:
-        if temporary.exists():
-            temporary.unlink()
+        if staging_owned:
+            primary = sys.exc_info()[1]
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as cleanup:
+                if primary is None:
+                    raise
+                if isinstance(primary, Exception):
+                    raise VersionError(f"{primary}; staging cleanup also failed for {temporary}: {cleanup}") from primary
 
 
 def update_plugin_version(
@@ -220,10 +224,10 @@ def update_plugin_version(
 ) -> dict[str, Any]:
     if change not in CHANGE_TO_AXIS:
         raise VersionError(f"unsupported change type: {change}")
-    token = validate_cachebuster(cachebuster or default_cachebuster())
+    token = validate_cachebuster(default_cachebuster() if cachebuster is None else cachebuster)
     manifest_path = manifest_path_for(plugin_root)
 
-    def prepare() -> tuple[bytes, dict[str, Any], str, str, str]:
+    def prepare() -> tuple[bytes, bytes, str, str, str]:
         original, manifest = read_manifest(manifest_path)
         current = manifest["version"]
         assert isinstance(current, str)
@@ -233,16 +237,29 @@ def update_plugin_version(
             )
         next_base = bump_base(current, change)
         next_version = f"{next_base}+codex.{token}"
+        parse_semver(next_version)
         updated = dict(manifest)
         updated["version"] = next_version
-        return original, updated, current, next_base, next_version
+        encoded = bytearray()
+        encoder = json.JSONEncoder(ensure_ascii=True, allow_nan=False, indent=2)
+        try:
+            for chunk in encoder.iterencode(updated):
+                # ensure_ascii guarantees one byte per character. Reserve the
+                # trailing newline and stop before nested indentation can balloon.
+                if len(encoded) + len(chunk) + 1 > MAX_MANIFEST_BYTES:
+                    raise VersionError("updated manifest exceeds 1 MiB")
+                encoded.extend(chunk.encode("ascii"))
+        except (ValueError, RecursionError) as exc:
+            raise VersionError("cannot serialize the updated manifest as valid JSON") from exc
+        encoded.extend(b"\n")
+        return original, bytes(encoded), current, next_base, next_version
 
     if dry_run:
         _, _, current, next_base, next_version = prepare()
     else:
         with release_lock(manifest_path):
             original, updated, current, next_base, next_version = prepare()
-            atomic_replace_json(manifest_path, updated, original)
+            atomic_replace_json(manifest_path, updated, original, next_version)
 
     return {
         "ok": True,

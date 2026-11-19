@@ -76,7 +76,7 @@ class SkillContractTests(unittest.TestCase):
         for boundary in (
             "职责和预期交付",
             "输入形式与证据使用规则写进任务卡",
-            "模型档位按本次任务的质量、成本和时间选择，不另设复用条件",
+            "模型档位按本次任务的质量和当前用户优先级选择，不另设复用条件",
             "完成状态本身不妨碍续用",
         ):
             self.assertIn(boundary, compact)
@@ -535,12 +535,13 @@ class SkillContractTests(unittest.TestCase):
             "已完成且采用、验收满足的Astra",
             "无新要求、新证据、未满足验收或明确纠错时停止",
             "第一阶段",
+            "落实用户明确指定的专家切片",
             "当前质量要求是否仍需Astra",
             "第二阶段",
             "续用旧Astra线程还是新建或改派另一条兼容Astra路线",
             "旧线程上下文无边际价值",
             "不能因此降到Sol/Terra",
-            "只有当前切片不再需要Astra",
+            "只有当前切片没有指定专家且不再需要Astra",
             "工具、兼容保留身份或满足质量的更便宜路线",
             "历史使用Astra不锁定未来模型",
         ):
@@ -680,7 +681,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertRegex(routing, r"输入清楚[^。；]*风险低[^。；]*默认 `gpt-6\.1-terra`")
         self.assertRegex(routing, r"界面状态复杂[^。；]*多步依赖[^。；]*高风险变更[^。；]*至少使用 `gpt-6\.2-sol`")
         for term in (
-            "用户未另行明确指定可用操作者或工具",
+            "分别落实操作者和工具",
+            "用户只指定工具时",
+            "用户只指定操作者时",
             "#用户明确指令优先",
             "只读界面观察",
             "父代理指导与验收",

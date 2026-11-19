@@ -60,10 +60,23 @@ class InstallationChainTests(unittest.TestCase):
         }), encoding="utf-8")
 
     def install(self, runner):
+        def cli(command, **kwargs):
+            if command[1:] == ["plugin", "marketplace", "list", "--json"]:
+                listing = {"marketplaces": [{"name": "personal", "root": str(self.root)}]}
+                return SimpleNamespace(returncode=0, stdout=json.dumps(listing), stderr="")
+            if command[1:] == ["plugin", "list", "--marketplace", "personal", "--json"]:
+                listing = {"installed": [{
+                    "pluginId": "codex-lean-stack@personal", "installed": True, "enabled": True,
+                    "version": "5.2.13+codex.test",
+                    "source": {"source": "local", "path": str(self.plugin)},
+                }]}
+                return SimpleNamespace(returncode=0, stdout=json.dumps(listing), stderr="")
+            return runner(command, **kwargs)
+
         with mock.patch.object(installer.shutil, "which", return_value="codex.exe"):
             return installer.install_plugin(
                 self.plugin, marketplace_path=self.marketplace,
-                codex_home=self.home, runner=runner,
+                codex_home=self.home, runner=cli,
             )
 
     def test_explicit_home_is_forwarded_to_the_install_subprocess(self):

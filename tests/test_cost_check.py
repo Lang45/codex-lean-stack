@@ -205,6 +205,23 @@ class CostCheckTests(unittest.TestCase):
                     now=dt.datetime(2026, 9, 2, tzinfo=UTC),
                 )
 
+    def test_state_version_requires_an_integer_not_json_boolean_or_float(self) -> None:
+        for invalid_version in (True, False, 1.0, "1", None):
+            with self.subTest(version=invalid_version):
+                temporary = tempfile.mkdtemp(prefix="cost-version-regression-")
+                home = self.make_home(temporary)
+                state_dir = home / "lean-stack"
+                state_dir.mkdir()
+                state_path = state_dir / COST_CHECK.STATE_NAME
+                state_path.write_text(json.dumps({
+                    "version": invalid_version,
+                    "checked_at": "2026-09-01T00:00:00Z",
+                }), encoding="utf-8")
+                before = state_path.read_bytes()
+                with self.assertRaisesRegex(COST_CHECK.CostCheckError, "version"):
+                    COST_CHECK.status(codex_home=home, now=dt.datetime(2026, 9, 2, tzinfo=UTC))
+                self.assertEqual(state_path.read_bytes(), before)
+
     def test_state_with_multiple_hard_links_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = self.make_home(temporary)

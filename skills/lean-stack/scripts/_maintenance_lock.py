@@ -17,6 +17,50 @@ from typing import Iterator
 
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
+if os.name != "nt":
+    from _thread import allocate_lock
+
+    _fork_gate = allocate_lock()
+    _lock_descriptors: set[int] = set()
+
+    def _close_inherited_descriptors() -> None:
+        # flock belongs to the open file description shared across fork.
+        # Drop the child's references without unlocking the parent's copies.
+        try:
+            for descriptor in _lock_descriptors:
+                os.close(descriptor)
+            _lock_descriptors.clear()
+        finally:
+            _fork_gate.release()
+
+    os.register_at_fork(before=_fork_gate.acquire, after_in_parent=_fork_gate.release,
+                        after_in_child=_close_inherited_descriptors)
+
+
+@contextlib.contextmanager
+def _open_descriptor(path: Path, flags: int, mode: int = 0o600) -> Iterator[int]:
+    if os.name == "nt":
+        descriptor = os.open(path, flags, mode)
+        try:
+            yield descriptor
+        finally:
+            os.close(descriptor)
+        return
+
+    owner = os.getpid()
+    with _fork_gate:
+        descriptor = os.open(path, flags, mode)
+        _lock_descriptors.add(descriptor)
+    try:
+        yield descriptor
+    finally:
+        # The fork hook already closed this descriptor in the child. Its
+        # numeric slot may now belong to an unrelated file.
+        if os.getpid() == owner:
+            with _fork_gate:
+                _lock_descriptors.remove(descriptor)
+                os.close(descriptor)
+
 
 def _plain(metadata: os.stat_result, *, directory: bool, error_type: type[RuntimeError]) -> None:
     linked = stat.S_ISLNK(metadata.st_mode) or bool(
@@ -50,16 +94,6 @@ def _acquire(descriptor: int, *, error_type: type[RuntimeError], busy_message: s
         raise
 
 
-def _release(descriptor: int) -> None:
-    if os.name == "nt":
-        import msvcrt
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-
-
 @contextlib.contextmanager
 def exclusive_lock(
     anchor: Path, *, error_type: type[RuntimeError], busy_message: str,
@@ -76,14 +110,12 @@ def exclusive_lock(
     with contextlib.ExitStack() as cleanup:
         if os.name != "nt":
             flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-            parent_fd = os.open(anchor.parent, flags)
-            cleanup.callback(os.close, parent_fd)
+            parent_fd = cleanup.enter_context(_open_descriptor(anchor.parent, flags))
             parent_opened = os.fstat(parent_fd)
             _plain(parent_opened, directory=True, error_type=error_type)
             if not os.path.samestat(parent_before, parent_opened):
                 raise error_type("maintenance lock directory changed while opening")
             _acquire(parent_fd, error_type=error_type, busy_message=busy_message)
-            cleanup.callback(_release, parent_fd)
             _same_path(anchor.parent, parent_opened, directory=True, error_type=error_type)
 
         before = os.lstat(anchor) if os.path.lexists(anchor) else None
@@ -94,15 +126,14 @@ def exclusive_lock(
         flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         if before is None:
             try:
-                descriptor = os.open(anchor, flags | os.O_CREAT | os.O_EXCL, 0o600)
+                descriptor = cleanup.enter_context(_open_descriptor(anchor, flags | os.O_CREAT | os.O_EXCL))
             except FileExistsError:
-                descriptor = os.open(anchor, flags)
+                descriptor = cleanup.enter_context(_open_descriptor(anchor, flags))
         else:
             # Never create through a path changed to a dangling link, including
             # on platforms without O_NOFOLLOW. Opening an existing anchor only
             # needs read/write access, not permission to create a new target.
-            descriptor = os.open(anchor, flags)
-        cleanup.callback(os.close, descriptor)
+            descriptor = cleanup.enter_context(_open_descriptor(anchor, flags))
         opened = os.fstat(descriptor)
         _plain(opened, directory=False, error_type=error_type)
         if before is not None and not os.path.samestat(before, opened):
@@ -111,7 +142,6 @@ def exclusive_lock(
             raise error_type("legacy lock already exists; inspect it before migration")
         _same_path(anchor, opened, directory=False, error_type=error_type)
         _acquire(descriptor, error_type=error_type, busy_message=busy_message)
-        cleanup.callback(_release, descriptor)
         _same_path(anchor, opened, directory=False, error_type=error_type)
         # No code here or in the callers unlinks the anchor on normal release.
         yield

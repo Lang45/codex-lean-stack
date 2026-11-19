@@ -68,6 +68,21 @@ class PluginInstallTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def with_marketplace_lookup(self, add_runner):
+        def cli(command, **kwargs):
+            if command[1:] == ["plugin", "marketplace", "list", "--json"]:
+                listing = {"marketplaces": [{"name": "personal", "root": str(self.root)}]}
+                return SimpleNamespace(returncode=0, stdout=json.dumps(listing), stderr="")
+            if command[1:] == ["plugin", "list", "--marketplace", "personal", "--json"]:
+                listing = {"installed": [{
+                    "pluginId": "codex-lean-stack@personal", "installed": True, "enabled": True,
+                    "version": "2.10.0+codex.test",
+                    "source": {"source": "local", "path": str(self.plugin_root)},
+                }]}
+                return SimpleNamespace(returncode=0, stdout=json.dumps(listing), stderr="")
+            return add_runner(command, **kwargs)
+        return cli
+
     def test_default_invocation_line_declares_plugin_without_copying_policy(self) -> None:
         line = install_plugin.DEFAULT_INVOCATION_LINE
         self.assertIn("必须使用已安装的 `codex-lean-stack`", line)
@@ -123,7 +138,7 @@ class PluginInstallTests(unittest.TestCase):
                 marketplace="personal",
                 marketplace_path=self.marketplace,
                 codex_home=self.codex_home,
-                runner=successful_runner,
+                runner=self.with_marketplace_lookup(successful_runner),
             )
 
         self.assertEqual(preflight["action"], "agents_default_present")
@@ -183,7 +198,7 @@ class PluginInstallTests(unittest.TestCase):
                 marketplace="personal",
                 marketplace_path=self.marketplace,
                 codex_home=self.codex_home,
-                runner=successful_runner,
+                runner=self.with_marketplace_lookup(successful_runner),
             )
         ensured = install_plugin.ensure_default_invocation(self.codex_home)
 
@@ -211,7 +226,7 @@ class PluginInstallTests(unittest.TestCase):
                 marketplace="personal",
                 marketplace_path=self.marketplace,
                 codex_home=self.codex_home,
-                runner=successful_runner,
+                runner=self.with_marketplace_lookup(successful_runner),
             )
 
         self.assertEqual(preflight["action"], "agents_default_present")
@@ -254,7 +269,7 @@ class PluginInstallTests(unittest.TestCase):
                 marketplace="personal",
                 marketplace_path=self.marketplace,
                 codex_home=self.codex_home,
-                runner=successful_runner,
+                runner=self.with_marketplace_lookup(successful_runner),
             )
 
         self.assertEqual(
@@ -280,7 +295,7 @@ class PluginInstallTests(unittest.TestCase):
                     self.plugin_root,
                     marketplace_path=self.marketplace,
                     codex_home=self.codex_home,
-                    runner=failed_runner,
+                    runner=self.with_marketplace_lookup(failed_runner),
                 )
         self.assertEqual(self.agents.read_bytes(), original)
 
@@ -297,7 +312,7 @@ class PluginInstallTests(unittest.TestCase):
                     self.plugin_root,
                     marketplace_path=self.marketplace,
                     codex_home=self.codex_home,
-                    runner=broken_runner,
+                    runner=self.with_marketplace_lookup(broken_runner),
                 )
         self.assertEqual(self.agents.read_bytes(), original)
         # A stable empty anchor is retained; actual reacquisition proves release.
@@ -414,6 +429,118 @@ class PluginInstallTests(unittest.TestCase):
                 marketplace="personal",
                 plugin_root=self.plugin_root,
             )
+
+    def test_different_same_named_cli_marketplace_prevents_install(self) -> None:
+        wrong = {"marketplaces": [{"name": "personal", "root": str(self.root / "elsewhere")}]}
+        runner = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout=json.dumps(wrong)))
+        with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+            with self.assertRaisesRegex(install_plugin.InstallError, "different marketplace"):
+                install_plugin.install_plugin(
+                    self.plugin_root, marketplace_path=self.marketplace,
+                    codex_home=self.codex_home, runner=runner,
+                )
+        self.assertEqual(runner.call_count, 1)
+        self.assertEqual(runner.call_args.args[0][1:], ["plugin", "marketplace", "list", "--json"])
+        self.assertFalse(self.agents.exists())
+
+    def test_instruction_growth_limit_is_checked_before_cli(self) -> None:
+        original = b"x" * (install_plugin.MAX_AGENTS_BYTES - 1)
+        self.agents.write_bytes(original)
+        runner = mock.Mock()
+        with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+            with self.assertRaisesRegex(install_plugin.InstallError, "updated.*exceeds"):
+                install_plugin.install_plugin(
+                    self.plugin_root, marketplace_path=self.marketplace,
+                    codex_home=self.codex_home, runner=runner,
+                )
+        runner.assert_not_called()
+        self.assertEqual(self.agents.read_bytes(), original)
+
+    def test_literal_html_examples_do_not_hide_a_later_active_instruction(self) -> None:
+        line = install_plugin.DEFAULT_INVOCATION_LINE
+        examples = [
+            f"```html\n<!--\n```\n{line}\n",
+            f"See `<!--` and ``x`<!--``.\n{line}\n",
+            f"<!-- example\n```\n-->\n{line}\n",
+        ]
+        for source in examples:
+            with self.subTest(source=source):
+                original = source.encode("utf-8")
+                self.agents.write_bytes(original)
+                self.assertFalse(install_plugin.ensure_default_invocation(self.codex_home)["modified"])
+                self.assertEqual(self.agents.read_bytes(), original)
+
+    def test_concurrent_first_creation_preserves_the_other_writers_bytes(self) -> None:
+        operation = "rename" if install_plugin.os.name == "nt" else "link"
+        publish = getattr(install_plugin.os, operation)
+        def create_before_publish(temporary, destination):
+            destination.write_bytes(b"concurrent user creation")
+            publish(temporary, destination)
+        with mock.patch.object(install_plugin.os, operation, side_effect=create_before_publish):
+            with self.assertRaisesRegex(install_plugin.InstallError, "created after"):
+                install_plugin.ensure_default_invocation(self.codex_home)
+        self.assertEqual(self.agents.read_bytes(), b"concurrent user creation")
+
+    def test_failed_replace_and_cleanup_report_both_causes(self):
+        self.agents.write_bytes(b"original")
+        with mock.patch.object(install_plugin.os, "replace", side_effect=OSError("replace failed")), \
+             mock.patch.object(Path, "unlink", side_effect=PermissionError("staging locked")):
+            with self.assertRaisesRegex(install_plugin.InstallError, "replace failed.*staging locked"):
+                install_plugin.ensure_default_invocation(self.codex_home)
+        self.assertEqual(self.agents.read_bytes(), b"original")
+
+    def test_marketplace_edit_during_add_blocks_activation_even_with_matching_receipt(self):
+        self.agents.write_bytes(b"untouched")
+        def redirect(command, **kwargs):
+            market = json.loads(self.marketplace.read_text(encoding="utf-8"))
+            market["plugins"][0]["source"]["path"] = "./another-plugin"
+            self.marketplace.write_text(json.dumps(market), encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+            with self.assertRaisesRegex(install_plugin.InstallError, "add succeeded.*does not match"):
+                install_plugin.install_plugin(
+                    self.plugin_root, marketplace_path=self.marketplace, codex_home=self.codex_home,
+                    runner=self.with_marketplace_lookup(redirect),
+                )
+        self.assertEqual(self.agents.read_bytes(), b"untouched")
+
+    def test_unconfirmed_installed_version_source_or_enablement_preserves_instructions(self):
+        self.agents.write_bytes(b"untouched")
+        for difference in ({"version": "1.0.0"}, {"source": {"source": "local", "path": str(self.root)}},
+                           {"enabled": False}, {"pluginId": "other@personal"}):
+            with self.subTest(difference=difference):
+                def runner(command, **kwargs):
+                    if command[1:3] == ["plugin", "list"]:
+                        entry = {"pluginId": "codex-lean-stack@personal", "installed": True,
+                                 "enabled": True, "version": "2.10.0+codex.test",
+                                 "source": {"source": "local", "path": str(self.plugin_root)}, **difference}
+                        return SimpleNamespace(returncode=0, stdout=json.dumps({"installed": [entry]}))
+                    return self.with_marketplace_lookup(
+                        lambda *a, **k: SimpleNamespace(returncode=0, stdout="{}", stderr="")
+                    )(command, **kwargs)
+                with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+                    with self.assertRaisesRegex(install_plugin.InstallError, "add succeeded"):
+                        install_plugin.install_plugin(
+                            self.plugin_root, marketplace_path=self.marketplace, codex_home=self.codex_home,
+                            runner=runner,
+                        )
+                self.assertEqual(self.agents.read_bytes(), b"untouched")
+
+    def test_same_path_edit_during_add_is_preserved_and_partial_install_reported(self) -> None:
+        for initial in ("Initial", install_plugin.DEFAULT_INVOCATION_LINE):
+            with self.subTest(initial=initial):
+                self.agents.write_text(initial, encoding="utf-8")
+                def edit_during_add(command, **kwargs):
+                    self.agents.write_bytes(b"external replacement")
+                    return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+                with mock.patch.object(install_plugin.shutil, "which", return_value="codex.exe"):
+                    with self.assertRaisesRegex(install_plugin.InstallError, "add succeeded.*changed"):
+                        install_plugin.install_plugin(
+                            self.plugin_root, marketplace_path=self.marketplace,
+                            codex_home=self.codex_home,
+                            runner=self.with_marketplace_lookup(edit_during_add),
+                        )
+                self.assertEqual(self.agents.read_bytes(), b"external replacement")
 
 
 if __name__ == "__main__":
