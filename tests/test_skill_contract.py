@@ -241,7 +241,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("CAS", self.dispatch)
 
     def test_62_error_prevention_reaches_task_card_and_result_consumers(self) -> None:
-        policy = self.dispatch.split("## 6.2 调用防错", 1)[1].split("## ", 1)[0]
+        policy = self.dispatch.split("## 6.2 调用防错", 1)[1].split("\n## ", 1)[0]
         for term in ("具名关键事实", "未知项", "最窄成功条件", "工具失败", "实际错误",
                      "无新增证据", "停止原样循环", "决定性检查", "必要安全与数据完整性检查"):
             self.assertIn(term, policy)
@@ -250,16 +250,65 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("#62-调用防错", card)
         self.assertIn("../SKILL.md#原生调用与任务卡", card)
         entry_card = self.stack.split("## 原生调用与任务卡", 1)[1].split("\n## ", 1)[0]
-        execution = re.search(r"```text\n(按关键要求.+?)\n```", entry_card, re.S)
+        execution = re.search(r"```text\n(.*?)\n```", entry_card, re.S)
         self.assertIsNotNone(execution)
         assert execution is not None
+        condition = entry_card[:execution.start()]
+        for term in ("`gpt-6.2-sol`", "`gpt-6.2-astra`", "完整执行句原样随任务卡"):
+            self.assertIn(term, condition)
         self.assertNotIn("按关键要求给出结果与对应证据", self.dispatch)
-        for term in ("对应证据", "工具失败或阻断", "实际错误", "无新增证据", "停止原样循环", "具名缺口"):
+        for term in (
+            "对应证据",
+            "数量、边界和例外",
+            "未知事实先核对",
+            "工具失败或阻断",
+            "实际错误",
+            "不伪报测试或完成",
+            "用户可观察的完成条件",
+            "常规实现选择自行推进",
+            "继续独立部分",
+            "审查发现附触发条件并核对严重性",
+            "视觉结果逐项检查",
+            "真实交互",
+            "无新增证据",
+            "停止原样循环",
+            "具名缺口",
+        ):
             self.assertIn(term, execution.group(1))
+        self.assertIn("已确认缺陷数", policy)
+        self.assertIn("不用假设补造关键输入", policy)
         for heading in ("最终结果", "父代理采用"):
             consumer = self.results.split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
             self.assertIn("dispatch-start.md#62-调用防错", consumer)
             self.assertIn("关键要求对应证据", consumer)
+        self.assertIn("6.2 调用防错", self.openai_yaml)
+
+    def test_62_error_prevention_has_a_model_scoped_retirement_checklist(self) -> None:
+        policy = self.dispatch.split("## 6.2 调用防错", 1)[1].split("\n## ", 1)[0]
+        lifecycle = policy.split("适用与退出", 1)[1].split("\n\n", 1)[0]
+        for term in (
+            "`gpt-6.2-sol`",
+            "`gpt-6.2-astra`",
+            "旧别名",
+            "从当前可调用路线移除时",
+            "同一更新中移除本节",
+            "完整随卡执行句",
+            "任务卡引用",
+            "结果返回与父采用",
+            "内置提示",
+            "README",
+            "发布流程中的 6.2 清单及链接",
+            "专属测试",
+            "不得只替换型号",
+            "后继模型",
+            "各自通用合同",
+        ):
+            with self.subTest(term=term):
+                self.assertIn(term, lifecycle)
+        self.assertIn("versioning.md#型号更新与专属纠错退出", lifecycle)
+        release = self.versioning.split("## 型号更新与专属纠错退出", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("dispatch-start.md#62-调用防错", release)
+        self.assertIn("通用证据、安全和数据保护回归保留", release)
 
     def test_task_card_has_five_opening_lines_and_three_final_lines(self) -> None:
         block = re.search(r"```text\n(子代理名称：.+?)\n```", self.dispatch, re.S)
@@ -329,13 +378,17 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("不构成交付", self.results)
 
     def test_missing_child_progress_has_evidence_based_fallback(self) -> None:
-        section = self.dispatch.split("这条随卡执行句是输出合同", 1)[1].split(
-            "独立窄任务优先", 1
-        )[0]
-        self.assertIn("宿主没有向用户显示", section)
+        card = self.dispatch.split("## 任务卡、上下文与所有权", 1)[1].split("\n## ", 1)[0]
+        section = next(paragraph for paragraph in card.split("\n\n") if "宿主没有向用户显示" in paragraph)
+        self.assertIn("是输出合同", section)
         self.assertIn("原生调用回执", section)
         self.assertIn("已核验的保留子代理读取状态", section)
         self.assertIn("不得猜测", section)
+        self.assertIn("不能声称调用没有发生", section)
+
+    def test_parent_requires_result_evidence_for_all_models(self) -> None:
+        adoption = self.results.split("## 父代理采用", 1)[1].split("\n## ", 1)[0]
+        self.assertRegex(adoption, r"所有型号的模型自报[^。]+不补足缺失的工具、来源或实际入口证据")
 
     def test_adopted_runtime_family_uses_the_bounded_retention_conditions(self) -> None:
         self.assertIn("references/agent-results.md#父代理采用", self.stack)
@@ -610,6 +663,42 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn(phrase, compact)
         for phrase in ("复杂取舍", "高风险修改", "最终审查结论", "至少使用合适的Sol", "已保留身份也不能绕过"):
             self.assertIn(phrase, compact)
+
+    def test_computer_use_defaults_to_sol_with_parent_guidance_and_child_tool_access(self) -> None:
+        route = self.stack.split("## Computer Use：父代理指导，Sol 操作", 1)[1].split("\n## ", 1)[0]
+        for term in (
+            "用户未另行明确指定可用操作者或工具",
+            "只读界面观察",
+            "父代理指导与验收",
+            "委派不扩大现有授权",
+            "同一桌面、窗口或标签页保持一个操作者",
+            "模型和工具须在执行子代理中真实可用",
+            "报告具体缺口",
+        ):
+            self.assertIn(term, route)
+        self.assertRegex(route, r"由父代理指导 `gpt-6\.2-sol`\s+实际执行")
+        self.assertNotIn("Terra", route)
+
+        anchor = "#computer-use父代理指导sol-操作"
+        for label, surface in (
+            ("lean-stack", self.stack),
+            ("dispatch", self.dispatch),
+            ("lean-simplify", self.simplify),
+            ("README", self.readme),
+        ):
+            with self.subTest(surface=label):
+                self.assertIn(anchor, surface)
+                self.assertNotIn("#computer-use父代理指导terra-操作", surface)
+
+        for surface in (self.stack, self.dispatch, self.openai_yaml, self.readme):
+            self.assertNotRegex(surface, r"(?i)Computer Use[^；。\n]*\bTerra\b")
+            for clause in re.split(r"[；。]|\n", surface):
+                if re.search(r"(?i)\bterra\b", clause):
+                    self.assertNotIn("明确界面操作", clause)
+        terra_role = self.readme.split("`gpt-6.1-terra` handles", 1)[1].split("For Computer Use", 1)[0]
+        self.assertNotIn("defined screen operations", terra_role)
+        for surface in (self.openai_yaml, self.readme):
+            self.assertRegex(surface, r"(?i)Computer Use[^；。\n]*GPT-6\.2[- ]Sol")
 
     def test_machine_identity_and_display_name_are_distinct(self) -> None:
         for term in ("agent_ref", "display_name", "lean_*", "中文展示名"):
