@@ -2,9 +2,9 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.7.0**
+Current version: **9.7.1**
 
-- Keep the three default principles; explicit acceleration requests continuously refill real available capacity as work progresses. This release also protects registry migrations, installation provenance, and failed command handling.
+- Preserve currently authorized work when a restriction applies to future tasks. Stop unnecessary expensive prerequisites, reuse valid evidence, and replace uninformative waiting loops with a concrete next action at a safe boundary.
 
 Codex Lean Stack provides two independent skills:
 
