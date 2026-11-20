@@ -2,7 +2,7 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.7.1**
+Current version: **9.7.2**
 
 - Ask before adding backup or readback steps to a write workflow; skip them without a reply. For a necessary project runtime or dependency upgrade, ask promptly and use the user's standing authorization to upgrade after a reasonable reply opportunity. Other additional long steps still require concrete approval.
 - Respond promptly to priority changes and preserve the latest effective requirements across context compression, including withdrawn temporary speedup modes. Reuse valid evidence; ten minutes without material change requires diagnosis and a changed next action at a safe boundary.
@@ -27,9 +27,9 @@ The defaults below fill only decisions the user has not explicitly made, includi
 - **Quality, cost, and time by context.** Use the Astra expert route for difficult high-value work when it has a
   decision-changing quality advantage; compare total cost
   after ordinary options meet the same reliability bar; add parallel help for speed within an acceptable cost range.
-  An explicit request to ignore cost, add agents, allow unlimited parallelism, or keep a high-load task at capacity activates [continued parallel speedup](skills/lean-stack/SKILL.md#用户要求持续并行提速) for the requested turn or task. Refill available slots as work progresses; when enough independent work is ready, keep the actual available capacity full. Quality, permissions, real capacity, dependencies, and write ownership still apply.
+  The default has no fixed headcount. At initial assignment, new input, dependency completion, or released capacity, assign useful ready work under the same quality, combined-cost, and completion-time principles. [Explicit parallel arrangements](skills/lean-stack/SKILL.md#用户要求持续并行提速) change only what the user specified: more agents or unlimited headcount does not waive cost constraints or require saturation; ignoring cost and keeping capacity full are separate instructions. Quality, permissions, real capacity, dependencies, and write ownership still apply.
 - **Necessity before model selection.** Apply the [whole-task decision](skills/lean-stack/SKILL.md#先判断是否委派再选模型与复用) before selecting or reusing a child. Means, defined formulas, event aggregation, and file comparisons stay with parent tools; an independent recalculation does not automatically require another model.
-- **Parent participation.** Keep suitable implementation, research, or critical-path work with the parent, then delegate the remaining useful slices. By default, compare end-to-end completion time and combined cost, including handoffs, waiting, integration, and verification. Continued parallel speedup keeps parent participation and timely completion while removing the default cost gate.
+- **Parent participation.** Keep suitable implementation, research, or critical-path work with the parent, then delegate the remaining useful slices. By default, compare end-to-end completion time and combined cost, including handoffs, waiting, integration, and verification. Explicit cost relaxation alone removes the default cost gate; dynamic parallel work keeps parent participation.
 - **Tools first by default.** Deterministic work goes directly to tools; explicit user assignments take priority. Computer Use keeps parent-guided execution: Terra for routine low-risk operations and Sol for complex or high-risk operations when the user has not specified another available operator or tool.
 - **Reuse one capability family by default.** Explicit user choices of a new or available executor take priority. Small follow-ups within an unfinished semantic task continue a compatible live child without a new
   model-selection pass. New deterministic calculations stay with parent tools even when a child is already available. For a new capability with no suitable current child, perform one bounded registry lookup. A retained
@@ -127,7 +127,7 @@ The parent adopts a child result only from its final response or an equivalent r
 确定性工作直接用工具。高价值难题先守正确性并派专家；普通工作可靠性相当后比较总成本；
 总成本可接受时可增派子代理提速。三项无需每次同时获益。
 
-用户特殊要求不计成本、增开代理、不限并行数量或高负载顶满时，在指定当轮或任务启用[持续并行提速](skills/lean-stack/SKILL.md#用户要求持续并行提速)：随进度和实际槽位释放持续补派，就绪的独立切片充足时持续填满实际可用容量。任务交付或用户撤回后恢复默认；安全、权限、依赖和写入边界继续适用。
+默认三原则没有固定人数；首派、新输入就绪、依赖解除或容量释放时，对未分配的独立工作一次快判并及时增派，不冻结首批队伍。[用户特殊安排](skills/lean-stack/SKILL.md#用户要求持续并行提速)分别生效：多开或不限数量不等于不计成本或顶满；明确不计成本才放宽成本比较，明确高负载持续顶满才要求占满真实可用容量。任务交付或对应安排撤回后退出该项；安全、权限、依赖和写入边界继续适用。
 
 决定委派后按当前优先级选择：
 
@@ -137,7 +137,7 @@ The parent adopts a child result only from its final response or an equivalent r
    失败但当前会话已加载类型中已有符合三项条件的明确候选时，仍只读取该候选一次；读取成功就复用。
    只有没有可核对候选或读取失败时，本次才新建运行时子代理；查询失败不得当成空台账建档；
 3. 查询结果和候选条件未变化时复用本轮结果，不重复查；当前子代理与保留子代理都可用时，在质量
-   达标后默认比较父子合计总成本，选更低成本的一条；持续并行激活时按进度派发独立就绪切片，不为复用串行排队。不为统计台账复用强制换线程。
+   达标后默认比较父子合计总成本，选更低成本的一条；默认也按进度派发有收益的独立就绪切片，不为复用串行排队；成本优先级按用户对成本的明确要求。不为统计台账复用强制换线程。
 
 同一能力族有多个独立已就绪切片时，可以按各自任务卡创建运行时复制；只有存在真实选配疑问并
 且结果可比较时才形成配置变体。两者都只属于当前运行；比较、采用和未来保留仍走原有权威分支。
