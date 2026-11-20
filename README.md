@@ -4,7 +4,8 @@
 
 Current version: **9.7.1**
 
-- Preserve currently authorized work when a restriction applies to future tasks. Stop unnecessary expensive prerequisites, reuse valid evidence, and replace uninformative waiting loops with a concrete next action at a safe boundary.
+- Ask before adding backup or readback steps to a write workflow; skip them without a reply. For a necessary project runtime or dependency upgrade, ask promptly and use the user's standing authorization to upgrade after a reasonable reply opportunity. Other additional long steps still require concrete approval.
+- Respond promptly to priority changes and preserve the latest effective requirements across context compression, including withdrawn temporary speedup modes. Reuse valid evidence; ten minutes without material change requires diagnosis and a changed next action at a safe boundary.
 
 Codex Lean Stack provides two independent skills:
 
