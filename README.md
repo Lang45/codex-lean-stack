@@ -2,9 +2,9 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.7.2**
+Current version: **9.7.3**
 
-- Ask before adding backup or readback steps that are lengthy or add substantial I/O to a write workflow; skip them without a reply. Necessary low-cost checks taking seconds proceed under the existing authorization. For a necessary project runtime or dependency upgrade, ask promptly and use the user's standing authorization to upgrade after a reasonable reply opportunity. Other additional long steps still require concrete approval.
+- Continue necessary diagnosis, fixes, builds, and narrow acceptance checks within the authorized repair scope, even when they take longer. Ask before optional lengthy backups, scans, repeat readbacks, or other marginal work; skip that added work without a reply. Necessity comes from the requested outcome, a real blocker or concrete risk, and existing evidence; duration or a tool default does not establish it. Actual permission gaps and scope expansion still require authorization. Necessary project component upgrades retain the standing ask-then-upgrade default.
 - Respond promptly to priority changes and preserve the latest effective requirements across context compression, including withdrawn temporary speedup modes. Reuse valid evidence; ten minutes without material change requires diagnosis and a changed next action at a safe boundary.
 
 - Child-task opening and final replies keep all five configuration/status fields, including verified counts and experience. New-task openings precede business tools; continuing the same task reuses its confirmed status.
