@@ -532,7 +532,7 @@ class SpecialistRegistryTests(unittest.TestCase):
         declaration = instructions.index(opening, communication)
         status = instructions.index("后两行只采用父代理读取本保留子代理", declaration)
         execution = instructions.index("只完成任务卡分配的当前子任务", status)
-        final_result = instructions.index("最终回复顶部原样写当前任务卡前三行实际值", execution)
+        final_result = instructions.index("最终回复顶部", execution)
         final_task = instructions.index("子任务：<当前子任务>", final_result)
         self.assertEqual(instructions.count(opening), 1)
         self.assertLess(role, communication)
@@ -542,12 +542,12 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertLess(final_result, final_task)
         for child_contract in (
             "任务卡必须提供五行实际值",
-            "第一条可见进展说明必须原样以这五行开头",
-            "新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理",
+            "顶部原样展示这五行",
+            "新任务卡缺少任一行的实际值时，先通过 collaboration.send_message 向父代理",
             "报告具体缺失字段并暂停该子任务，由父代理补齐或改派运行时子代理",
             "任务卡后两行包含“任务卡未提供”“未核验”或“未核验持久化经验”时同样视为缺失",
             "不得在用户可见进展中展示；先按上述内部消息流程补齐",
-            "只发送增量信息，不要求重复任务卡，也不重复开场",
+            "不要求重复任务卡，也不重复开场",
             "该固定配置只约束当前保留身份",
             "下游保留身份按自己的五行实际值开场",
             "继承到下游的上级保留身份固定配置不得覆盖下游任务卡",
@@ -587,9 +587,28 @@ class SpecialistRegistryTests(unittest.TestCase):
         ):
             self.assertNotIn(parent_owned_contract, instructions)
 
-    def test_retained_role_new_task_requires_five_recalled_opening_lines(self) -> None:
+    def test_retained_role_uses_five_recalled_lines_for_opening_and_final(self) -> None:
         created = self.ensure()
-        recalled = self.registry.recall(name=created["name"])
+        improved = self.improve_with_lesson(
+            name=created["name"], expected_sha256=created["sha256"],
+            event_id=str(uuid.uuid4()),
+            lesson="适用情境：已确认来源；做法：复用真实证据；证据：完成检查。",
+        )
+        success_id = str(uuid.uuid4())
+        loaded = self.registry.recall(
+            name=created["name"], expected_sha256=improved["sha256"], run_id=success_id,
+        )
+        self.registry.record_run(
+            name=created["name"], expected_sha256=improved["sha256"],
+            run_id=success_id, invocation_kind="spawn_agent",
+            loaded_experience_digest=loaded["retention_state"]["experience_digest"],
+            experience_receipt=loaded["experience_receipt"],
+        )
+        self.registry.record_run(
+            name=created["name"], expected_sha256=improved["sha256"],
+            run_id=str(uuid.uuid4()), invocation_kind="followup_task", outcome="failure",
+        )
+        recalled = self.registry.recall(name=created["name"], expected_sha256=improved["sha256"])
         opening_lines = (
             recalled["opening_declaration"] + recalled["opening_status"]
         ).splitlines()
@@ -597,8 +616,10 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertEqual(opening_lines[:3], [
             "子代理名称：QML 绑定诊断员（复用）", "模型：gpt-6.2-sol", "思考程度：high"
         ])
-        self.assertTrue(opening_lines[3].startswith("存活轮次："))
-        self.assertTrue(opening_lines[4].startswith("经验："))
+        self.assertEqual(opening_lines[3:], [
+            "存活轮次：1（已记录任务 2，失败 1）",
+            "经验：当前配置 1 条；此版本关联的后续结果 1 成功、0 失败",
+        ])
         self.assertEqual(
             agents.opening_configuration_declaration(
                 display_name="QML 绑定诊断员（复用）",
@@ -616,22 +637,24 @@ class SpecialistRegistryTests(unittest.TestCase):
             Path(created["path"]).read_text(encoding="utf-8")
         )["developer_instructions"]
         self.assertIn("首次 spawn_agent 或 followup_task 明确开始新当前子任务时", instructions)
-        self.assertIn("第一条可见进展说明必须原样以这五行开头", instructions)
+        self.assertRegex(instructions, r"首个业务工具调用前单独发送，顶部原样展示这五行")
         self.assertIn("名称第一行须带真实调用类型标记", instructions)
         self.assertIn("选中本保留身份并读取该保留子代理后使用“（复用）”", instructions)
         self.assertIn("运行时新角色由父代理填写“（新建）”", instructions)
         self.assertIn("同一个当前子代理明确开始新子任务时使用“（复用）”", instructions)
-        self.assertIn("其中名称标记与首条进展保持一致", instructions)
         self.assertIn("后两行只采用父代理读取本保留子代理", instructions)
-        self.assertIn("新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理", instructions)
+        self.assertIn("新任务卡缺少任一行的实际值时，先通过 collaboration.send_message 向父代理", instructions)
         self.assertIn("报告具体缺失字段并暂停该子任务", instructions)
         self.assertIn(
             "任务卡后两行包含“任务卡未提供”“未核验”或“未核验持久化经验”时同样视为缺失",
             instructions,
         )
         self.assertIn("不得在用户可见进展中展示；先按上述内部消息流程补齐", instructions)
-        self.assertIn("同一当前子任务", instructions)
-        self.assertIn("最终回复只重复当前任务卡前三行实际值", instructions)
+        self.assertRegex(instructions, r"同一任务恢复执行后的首条实质进展[^。]*存活轮次和经验")
+        self.assertRegex(instructions, r"最终回复顶部[^。]*五行[^。]*名称标记[^。]*存活轮次与经验[^。]*快照")
+        self.assertNotRegex(instructions, r"最终回复[^。；]*前三行")
+        for status_line in opening_lines[3:]:
+            self.assertNotIn(status_line, instructions)
         self.assertNotIn("存活轮次和经验是保留角色的可选状态", instructions)
 
     def test_role_instructions_cannot_collide_with_internal_memory_heading(self) -> None:
@@ -757,7 +780,7 @@ class SpecialistRegistryTests(unittest.TestCase):
             instructions.index("只完成任务卡分配的当前子任务"),
         )
         self.assertLess(
-            instructions.index("最终回复顶部原样写当前任务卡前三行实际值"),
+            instructions.index("最终回复顶部"),
             instructions.index("子任务：<当前子任务>"),
         )
 

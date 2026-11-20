@@ -4,8 +4,10 @@
 
 Current version: **9.7.2**
 
-- Ask before adding backup or readback steps to a write workflow; skip them without a reply. For a necessary project runtime or dependency upgrade, ask promptly and use the user's standing authorization to upgrade after a reasonable reply opportunity. Other additional long steps still require concrete approval.
+- Ask before adding backup or readback steps that are lengthy or add substantial I/O to a write workflow; skip them without a reply. Necessary low-cost checks taking seconds proceed under the existing authorization. For a necessary project runtime or dependency upgrade, ask promptly and use the user's standing authorization to upgrade after a reasonable reply opportunity. Other additional long steps still require concrete approval.
 - Respond promptly to priority changes and preserve the latest effective requirements across context compression, including withdrawn temporary speedup modes. Reuse valid evidence; ten minutes without material change requires diagnosis and a changed next action at a safe boundary.
+
+- Child-task opening and final replies keep all five configuration/status fields, including verified counts and experience. New-task openings precede business tools; continuing the same task reuses its confirmed status.
 
 Codex Lean Stack provides two independent skills:
 
@@ -152,7 +154,7 @@ Computer Use 由父代理指导：常规、输入清楚、低风险操作默认 
 6.2 的任务卡与结果采用按[调用防错](skills/lean-stack/references/dispatch-start.md#62-调用防错)核对关键要求、完成条件与证据，减少例行停等，分别验收审查发现和视觉细节，如实报告阻断，无新增证据时停止原样循环；这降低风险，不保证零错误。专属附加指令只对实际 6.2 型号生效，随最后一款 6.2 退出同步清理入口、任务卡、结果采用与提示，不自动继承给后继型号；通用证据和安全要求保留，详见[型号更新与专属纠错退出](skills/lean-stack/references/versioning.md#型号更新与专属纠错退出)。旧 Sol/Astra 资料仍可读取并按 CAS 迁至 6.2，已加载旧角色须在新任务核验实际型号。
 
 新子代理任务卡写五行真实配置与状态，名称后按实际派发标一次“（复用）”或“（新建）”，并把
-“首条用户可见进展说明展示五行、最终回复顶部重复前三行”的执行句直接交给子代理，再写唯一
+“首条用户可见进展说明展示五行、最终回复顶部完整展示五行”的执行句直接交给子代理，再写唯一
 目标、必要来源、权限或写入所有权、成功条件和停止
 条件。选中已加载保留类型后，只读取该保留子代理一次；保留经验已在角色指令中，任务卡只传五行
 状态，子代理读完经验便开始任务。读取失败

@@ -310,7 +310,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("dispatch-start.md#62-调用防错", release)
         self.assertIn("通用证据、安全和数据保护回归保留", release)
 
-    def test_task_card_has_five_opening_lines_and_three_final_lines(self) -> None:
+    def test_task_card_and_final_result_have_the_same_five_line_fields(self) -> None:
         block = re.search(r"```text\n(子代理名称：.+?)\n```", self.dispatch, re.S)
         self.assertIsNotNone(block)
         assert block is not None
@@ -326,7 +326,13 @@ class SkillContractTests(unittest.TestCase):
         ])
         self.assertEqual(len(lines), 5)
         self.assertIn("执行句", self.dispatch)
-        self.assertIn("第一条用户可见进展说明顶部必须原样展示以上五行，最终回复顶部重复前三行实际配置", self.dispatch)
+        final_block = re.search(r"```text\n(子代理名称：.+?)\n```", self.results, re.S)
+        self.assertIsNotNone(final_block)
+        assert final_block is not None
+        self.assertEqual(
+            [line.split("：", 1)[0] for line in final_block.group(1).splitlines()],
+            [line.split("：", 1)[0] for line in lines],
+        )
         self.assertIn("opening_declaration", self.dispatch)
         self.assertIn("opening_status", self.dispatch)
         self.assertNotIn("存活轮次：未核验", self.dispatch + self.stack + self.openai_yaml)
@@ -341,17 +347,13 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("经验：复用当前线程上下文", self.dispatch + self.stack + self.openai_yaml)
         self.assertIn("读取保留子代理失败时改派最小合规运行时子代理", self.dispatch)
         self.assertIn("不声称复用了保留类型", self.dispatch)
-        self.assertIn("状态无法确认时改派", self.dispatch)
+        self.assertRegex(self.dispatch, r"状态无法确认时[^。]*无法确认[就则]改派")
         self.assertIn("五行", self.stack)
-        self.assertIn("五行真实开场与最终回复三行的唯一详细规则见", self.stack)
-        self.assertIn("最终回复顶部重复前三行实际配置", self.dispatch)
-        self.assertIn("最终回复顶部保留三行实际配置", self.results)
         self.assertIn("只读取该保留子代理一次", self.memory)
         self.assertIn("复用当前子代理或已选中且读取成功的保留子代理用 `（复用）`", self.dispatch)
         self.assertIn("最小运行时新角色用 `（新建）`", self.dispatch)
         self.assertIn("候选匹配但未成功派发不得预标复用", self.dispatch)
         self.assertIn("名称标 `（新建）`", self.memory)
-        self.assertIn("最终回复顶部保留三行实际配置，第一行沿用开场的同一名称标记", self.results)
         self.assertIn("缺少实际状态时先向父代理内部报告", self.results)
         self.assertIn("最终回复保持相同标记", read(REFS / "collaboration.md"))
         self.assertIn("名称标新建", self.flowcharts)
@@ -776,26 +778,27 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("图的数量没有目标或上限", self.flowcharts)
         self.assertIn("不为凑总数拆图", self.flowcharts)
 
-    def test_five_line_opening_is_consistent_in_delegation_documents(self) -> None:
-        documents = (
+    def test_five_line_disclosure_is_consistent_in_delegation_documents(self) -> None:
+        fallback_documents = (
             self.dispatch,
-            read(REFS / "collaboration.md"),
+            self.collaboration,
             self.versioning,
             self.openai_yaml,
             self.readme,
         )
-        for document in documents:
+        for document in (self.stack, self.results, *fallback_documents):
             self.assertIn("五行", document)
             self.assertIn("最终回复", document)
-            self.assertIn("前三行", document)
+            self.assertNotRegex(document, r"最终回复(?:顶部)?[只仅]?(?:重复|保留|展示)?前?三行")
             self.assertNotRegex(document, r"(?m)^经验：未核验")
             self.assertNotIn("经验：未加载保留经验", document)
+        for document in fallback_documents:
             self.assertIn("本次任务上下文", document)
 
     def test_skill_prompt_and_authoritative_rules_publish_current_behavior(self) -> None:
         # Manifest starters fit the host's 128-character field and route to skills.
         # Detailed dispatch contracts belong to the skill and its references.
-        for term in ("$lean-stack", "当前子代理", "保留子代理", "三行", "进展说明"):
+        for term in ("$lean-stack", "当前子代理", "保留子代理", "五行", "进展"):
             self.assertIn(term, self.openai_yaml)
         self.assertIn("`xhigh` 是上限，不是默认值", self.stack)
         self.assertIn("当前会话已经加载、属于同一能力族、质量兼容", self.openai_yaml)
