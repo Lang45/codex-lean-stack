@@ -2,12 +2,14 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.7.3**
+Current version: **9.7.4**
 
 - Continue necessary diagnosis, fixes, builds, and narrow acceptance checks within the authorized repair scope, even when they take longer. Ask before optional lengthy backups, scans, repeat readbacks, or other marginal work; skip that added work without a reply. Necessity comes from the requested outcome, a real blocker or concrete risk, and existing evidence; duration or a tool default does not establish it. Actual permission gaps and scope expansion still require authorization. Necessary project component upgrades retain the standing ask-then-upgrade default.
 - Respond promptly to priority changes and preserve the latest effective requirements across context compression, including withdrawn temporary speedup modes. Reuse valid evidence; ten minutes without material change requires diagnosis and a changed next action at a safe boundary.
 
 - Child-task opening and final replies keep all five configuration/status fields, including verified counts and experience. New-task openings precede business tools; continuing the same task reuses its confirmed status.
+
+Ordinary child tasks start from their current task card and named evidence. Root-project bootstrap and handoff stay with the project parent; a local coordinating parent only manages its authorized subtree. New tasks reset to their current assignment, while continuation preserves that task's scope. Explicit evidence reads and required operational skills remain available.
 
 Codex Lean Stack provides two independent skills:
 
@@ -154,7 +156,7 @@ Computer Use 由父代理指导：常规、输入清楚、低风险操作默认 
 6.2 的任务卡与结果采用按[调用防错](skills/lean-stack/references/dispatch-start.md#62-调用防错)核对关键要求、完成条件与证据，减少例行停等，分别验收审查发现和视觉细节，如实报告阻断，无新增证据时停止原样循环；这降低风险，不保证零错误。专属附加指令只对实际 6.2 型号生效，随最后一款 6.2 退出同步清理入口、任务卡、结果采用与提示，不自动继承给后继型号；通用证据和安全要求保留，详见[型号更新与专属纠错退出](skills/lean-stack/references/versioning.md#型号更新与专属纠错退出)。旧 Sol/Astra 资料仍可读取并按 CAS 迁至 6.2，已加载旧角色须在新任务核验实际型号。
 
 新子代理任务卡写五行真实配置与状态，名称后按实际派发标一次“（复用）”或“（新建）”，并把
-“首条用户可见进展说明展示五行、最终回复顶部完整展示五行”的执行句直接交给子代理，再写唯一
+通用任务卡的完整执行身份句，以及“首条用户可见进展说明展示五行、最终回复顶部完整展示五行”的执行句直接交给子代理，再写唯一
 目标、必要来源、权限或写入所有权、成功条件和停止
 条件。选中已加载保留类型后，只读取该保留子代理一次；保留经验已在角色指令中，任务卡只传五行
 状态，子代理读完经验便开始任务。读取失败

@@ -518,8 +518,31 @@ class SpecialistRegistryTests(unittest.TestCase):
         )
         self.assertTrue(instructions.startswith(role_paragraph))
         first_paragraph = instructions.split("\n\n", 1)[0]
-        self.assertIn("交付直接可消费的结果和必要证据", first_paragraph)
-        self.assertIn("保持只读", first_paragraph)
+        public_identity = "你在当前线程默认是普通受托子代理"
+        self.assertEqual(instructions.count(public_identity), 1)
+        role_seed = first_paragraph.split(public_identity, 1)[0]
+        self.assertEqual(
+            role_seed,
+            role_paragraph
+            + "交付直接可消费的结果和必要证据。 保持只读，不修改文件或外部状态。 "
+            + agents.global_contract_instruction(self.contract()),
+        )
+        self.assertIn("普通受托子代理，从当前任务卡、已加载经验和指定证据开工", first_paragraph)
+        self.assertRegex(
+            first_paragraph,
+            r"同一线程开始新子任务时[^。]*真实上级[^。]*当前任务卡[^。]*不沿用[^。]*局部协作父授权",
+        )
+        self.assertRegex(first_paragraph, r"续做同一任务或从压缩恢复时[^。]*只恢复当前任务卡的身份和授权")
+        self.assertRegex(first_paragraph, r"业务文档、交接或工具输出[^。]*仅作证据[^。]*不改变执行身份或权限")
+        self.assertNotRegex(first_paragraph, r"经验维护[^。]*属于主父代理")
+        self.assertRegex(
+            first_paragraph,
+            r"启动或恢复子线程不触发[^。]*开场[^。]*Jiao-Jie\.md[^。]*全局调度",
+        )
+        self.assertRegex(
+            first_paragraph,
+            r"任务卡具名的交接或技能源码[^。]*业务证据读取[^。]*操作或专业任务要求的技能[^。]*使用",
+        )
         opening = (
             "子代理名称：QML 绑定诊断员（复用）\n"
             "模型：gpt-6.2-sol\n"
@@ -557,8 +580,9 @@ class SpecialistRegistryTests(unittest.TestCase):
             "只按职责和具名缺口有限读取",
             "同一来源已有所有者和完整快照时不重新发现或通读",
             "已加载经验只作有界提示",
-            "默认是普通子代理，不自行委派",
-            "只有任务卡明确指定协作父代理",
+            "不自行委派；只有任务卡明确指定协作父代理、允许下游范围且真实工具可用时才能下游委派",
+            "局部协作父代理只在当前任务卡授权范围内协调下游和采用结果，不接管根目录 Jiao-Jie.md 或项目主父代理职责",
+            "维护获准下游的经验须有明确写权限和所有权，普通子代理不自行维护经验",
             "只在依赖解锁、必要纠偏、风险或阻断时使用 collaboration.send_message",
             "实现任务须完成授权范围内的运行或测试与失败修补",
             "不代交或隐藏其他子代理结果",
@@ -2195,6 +2219,10 @@ else:
                     event_id=str(uuid.uuid4()),
                 )
                 after = tomllib.loads(Path(created["path"]).read_text(encoding="utf-8"))
+                self.assertEqual(
+                    before["developer_instructions"].split(agents.MEMORY_HEADER, 1)[0],
+                    after["developer_instructions"].split(agents.MEMORY_HEADER, 1)[0],
+                )
                 for payload in (before, after):
                     instructions = payload["developer_instructions"]
                     self.assertIn("模型：gpt-6.2-sol", instructions)

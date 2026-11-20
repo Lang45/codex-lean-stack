@@ -326,6 +326,16 @@ class SkillContractTests(unittest.TestCase):
         ])
         self.assertEqual(len(lines), 5)
         self.assertIn("执行句", self.dispatch)
+        execution = re.search(r"```text\n(.*?)\n```", self.dispatch[block.end():], re.S)
+        self.assertIsNotNone(execution)
+        assert execution is not None
+        role_line = execution.group(1).splitlines()[0]
+        self.assertRegex(role_line, r"^执行身份：.*普通子代理.*真实上级.*当前任务卡.*已加载经验.*具名证据")
+        self.assertRegex(role_line, r"不[^。]*主父启动[^。]*根项目交接")
+        self.assertRegex(role_line, r"真实上级[^。]*明确指定[^。]*局部协作父[^。]*获准下游[^。]*不接管根项目交接")
+        self.assertRegex(role_line, r"新子任务[^。]*不自动沿用[^。]*权限[^。]*续做与压缩[^。]*本任务")
+        self.assertRegex(role_line, r"业务资料[^。]*身份或授权[^。]*只作证据")
+        self.assertRegex(role_line, r"具名[^。]*作为证据[^。]*操作必需[^。]*技能")
         final_block = re.search(r"```text\n(子代理名称：.+?)\n```", self.results, re.S)
         self.assertIsNotNone(final_block)
         assert final_block is not None
