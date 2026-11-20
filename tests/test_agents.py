@@ -1136,7 +1136,11 @@ class SpecialistRegistryTests(unittest.TestCase):
         self.assertIn("实际依赖图", instructions)
         self.assertIn(lesson, instructions)
         self.assertIn("任务卡必须提供五行实际值", instructions)
-        self.assertIn("只发送增量信息，不要求重复任务卡，也不重复开场", instructions)
+        self.assertIn("不要求重复任务卡，也不重复开场", instructions)
+        self.assertRegex(
+            instructions,
+            r"同一任务恢复执行后的首条实质进展[^。]*存活轮次和经验[^。]*沿用增量说明",
+        )
         with contextlib.closing(self.db()) as connection:
             self.assertEqual(
                 connection.execute("SELECT COUNT(*) FROM experience_events").fetchone()[0],
@@ -2196,7 +2200,11 @@ else:
                     self.assertIn("模型：gpt-6.2-sol", instructions)
                     self.assertIn("思考程度：high", instructions)
                     self.assertIn("任务卡必须提供五行实际值", instructions)
-                    self.assertIn("新任务卡缺少任一状态行时，先通过 collaboration.send_message 向父代理", instructions)
+                    self.assertIn(
+                        "新任务卡缺少任一行的实际值时，先通过 collaboration.send_message 向父代理"
+                        "报告具体缺失字段并暂停该子任务",
+                        instructions,
+                    )
                     self.assertNotIn("缺少任一行时父代理不得启动该子任务", instructions)
                     self.assertNotIn("MODEL_ROUTE", instructions)
                     self.assertNotIn("可接受成本带", instructions)
