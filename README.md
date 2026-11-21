@@ -2,7 +2,7 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.7.4**
+Current version: **9.8.0**
 
 - Continue necessary diagnosis, fixes, builds, and narrow acceptance checks within the authorized repair scope, even when they take longer. Ask before optional lengthy backups, scans, repeat readbacks, or other marginal work; skip that added work without a reply. Necessity comes from the requested outcome, a real blocker or concrete risk, and existing evidence; duration or a tool default does not establish it. Actual permission gaps and scope expansion still require authorization. Necessary project component upgrades retain the standing ask-then-upgrade default.
 - Respond promptly to priority changes and preserve the latest effective requirements across context compression, including withdrawn temporary speedup modes. Reuse valid evidence; ten minutes without material change requires diagnosis and a changed next action at a safe boundary.
@@ -20,6 +20,13 @@ Codex Lean Stack provides two independent skills:
 
 Either skill can be used alone. Both preserve the requested result, permission boundaries, data integrity, and the
 evidence required to support a conclusion.
+
+For [multiple goals](skills/lean-simplify/SKILL.md#多目标推进与逐项交付), keep each undelivered outcome, its evidence,
+owner, authorization, and next action or dependency in the existing task snapshot. Research can require running,
+debugging, reverse engineering, or changing an isolated research tool within the authorized scope. Adopt each result
+into the next operation, implementation, or acceptance check; continue requested delegation beyond the first wave,
+and deliver accepted slices while other goals proceed. Compression restores every remaining goal and the latest
+effective scope, rather than restarting completed work or treating one blocked goal as a project-wide stop.
 
 For 6.2, the [calling safeguards](skills/lean-stack/references/dispatch-start.md#62-调用防错) address missing facts, omitted blockers, and unproductive loops. They reduce risk and do not guarantee error-free output. User instructions and permission boundaries still apply.
 
@@ -47,7 +54,7 @@ The defaults below fill only decisions the user has not explicitly made, includi
   configuration variants only when comparable evidence can answer a real routing question.
 - **Explicit native configuration.** Every `spawn_agent` supplies `fork_turns="none"`. Runtime roles also supply the actual model and reasoning effort; fixed retained roles use their loaded configuration and omit unsupported overrides. Verify the actual configuration in the task card.
 - **Small task cards.** New children receive five verified opening lines, the instruction to display them in
-  the first progress note and repeat the first three in the final, one goal, needed evidence, ownership,
+  the first progress note and repeat all five in the final, one complete work package tied to an active outcome or dependency, needed evidence, ownership,
   success conditions, and stop conditions. Retained experience stays in the loaded role instructions. A reused
   live child without verified retained recall says only `经验：复用当前线程上下文`; a new runtime role says
   `经验：本次任务上下文`; unverified persistence placeholders are forbidden.

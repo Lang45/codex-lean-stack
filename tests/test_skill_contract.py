@@ -876,12 +876,36 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("静态合同只能证明公开文字与链接", self.simplify)
         self.assertIn("不能由当前源码读取", self.simplify)
 
-    def test_simplification_preserves_active_work_and_decisive_recheck(self) -> None:
-        method = self.simplify.split("## 最小完整方法", 1)[1].split(
+    def test_active_goals_and_delivery_are_guided_before_method_selection(self) -> None:
+        entry = self.simplify.split("\n## 最小完整方法\n", 1)[0]
+        _, heading, body = entry.partition("\n## 多目标推进与逐项交付\n")
+        self.assertTrue(heading, "active-goal guidance must precede method selection")
+        goals = re.sub(r"\s+", "", body.split("\n## ", 1)[0])
+        self.assertRegex(goals, r"最早[^。]*尚未(?:完成|交付)")
+        self.assertRegex(goals, r"已交付[^。]*退出[^。]*活动")
+
+    def test_recovery_and_adoption_consume_the_active_goal_contract(self) -> None:
+        target = "../../lean-simplify/SKILL.md#多目标推进与逐项交付"
+        recovery = read(REFS / "long-running.md")
+        adoption = self.results.split("## 父代理采用", 1)[1].split("\n## ", 1)[0]
+        for consumer, source in (("recovery", recovery), ("result adoption", adoption)):
+            with self.subTest(consumer=consumer):
+                self.assertIn(f"]({target})", source)
+
+    def test_active_research_routes_to_the_investigation_contract(self) -> None:
+        routes = self.simplify.split("\n## 条件路由\n", 1)[1]
+        self.assertRegex(
+            routes,
+            r"(?m)^\|[^|\n]*(?:运行|调试|逆向)[^|\n]*\|"
+            r"[^\n]*\]\(\.\./lean-stack/references/investigation\.md(?:#[^)\n]+)?\) *\|$",
+        )
+
+    def test_simplification_preserves_decisive_recheck_and_stops_when_covered(self) -> None:
+        progress = self.simplify.split("## 进展说明与等待", 1)[1].split(
             "## 条件路由", 1
         )[0]
-        for boundary in ("最早一个尚未完成", "已交付事项退出活动清单", "先修真实根因", "一次能区分修复前后的复验", "目标条件已覆盖就"):
-            self.assertIn(boundary, method)
+        for boundary in ("先修真实根因", "一次能区分修复前后的复验", "目标条件已覆盖就"):
+            self.assertIn(boundary, progress)
 
     def test_release_notes_and_handoff_are_not_runtime_authorities(self) -> None:
         public_runtime = self.stack + self.simplify
