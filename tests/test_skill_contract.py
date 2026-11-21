@@ -888,6 +888,22 @@ class SkillContractTests(unittest.TestCase):
         self.assertEqual(entries.count(["lean-simplify"]), 1)
         self.assertTrue(all(len(entry) == 1 for entry in entries))
 
+    def test_plugin_registers_the_coverage_guard_at_each_runtime_event(self) -> None:
+        hook_file = ROOT / self.manifest["hooks"]
+        events = json.loads(read(hook_file))["hooks"]
+        guard = '"${PLUGIN_ROOT}/skills/lean-stack/scripts/coverage_runtime.py" hook'
+        self.assertTrue({"SubagentStart", "SubagentStop"}.isdisjoint(events))
+        for event in (
+            "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionStart", "Interrupt",
+        ):
+            with self.subTest(event=event):
+                handlers = [handler for group in events[event] for handler in group["hooks"]]
+                for field in ("command", "commandWindows"):
+                    self.assertTrue(any(
+                        handler["type"] == "command" and handler.get(field, "").endswith(guard)
+                        for handler in handlers
+                    ), f"missing {field} guard for {event}")
+
     def test_host_default_prompt_bounds_reject_overlong_or_excess_starters(self) -> None:
         self.assert_host_default_prompt_bounds(["中" * 128] * 3)
         with self.assertRaisesRegex(AssertionError, r"defaultPrompt\[0\] exceeds 128 characters"):

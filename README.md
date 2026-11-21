@@ -2,7 +2,14 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.8.1**
+Current version: **9.9.0**
+
+Explicit continuous coverage now has [runtime checks](skills/lean-stack/references/runtime-coverage.md).
+Plugin hooks consume a per-session work table, track actual dispatch and return receipts, and check for ready
+unassigned work before waiting or ending. A returned slice or a blocked device action does not deliver its whole
+workstream. Compaction restores the same remaining work. Interruptions pause the guard; unchanged gaps do not
+cause an endless continuation loop. Ordinary tasks create no table. New hook definitions require the host's
+review and trust before they run; installation and prompt loading alone do not prove execution.
 
 Explicit delegation and continued workstream coverage go directly to execution. Initial dispatch, result adoption,
 dependency resolution, and released capacity reuse that decision; only unspecified delegation goes through the
