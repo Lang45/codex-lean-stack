@@ -66,6 +66,54 @@ class SkillContractTests(unittest.TestCase):
         self.assertNotIn("成本或速度有一项实际收益即可委派", decision)
         self.assertNotRegex(decision, r"最多\s*[0-9一二三四五六七八九十]+\s*个子代理")
 
+    def test_default_benefit_gate_only_applies_before_a_dispatch_decision(self) -> None:
+        default = self.stack.split("\n## 先判断是否委派，再选模型与复用\n", 1)[1]
+        default = default.split("\n## ", 1)[0]
+        self.assertRegex(default.lstrip(), r"^只有[^。]*未(?:决定|指定)[^。]*才[^。]*收益判断")
+        self.assertIn("不为普通委派查价", default)
+
+    def test_explicit_dispatch_activates_the_skill_on_receipt(self) -> None:
+        frontmatter = self.stack.split("---", 2)[1]
+        activation = self.stack.split("\n## 何时使用\n", 1)[1].split("\n## ", 1)[0]
+        explicit_request = r"收到明确[^。\n]*(?:委派|持续并行)[^。\n]*(?:要求|安排)"
+        self.assertRegex(frontmatter, r"(?m)^description: [^\n]*" + explicit_request)
+        self.assertIn("首次准备委派", frontmatter)
+        self.assertRegex(activation, explicit_request + r"[^。\n]*触发")
+
+    def test_dispatch_consumers_scope_default_routing_to_unspecified_work(self) -> None:
+        explicit = "../SKILL.md#用户明确指令优先"
+        default = re.escape("](../SKILL.md#先判断是否委派再选模型与复用)")
+        long_running = read(REFS / "long-running.md")
+        verification = read(REFS / "verification.md")
+        reuse = self.dispatch.split("\n## 选择同一能力族的执行者\n", 1)[1]
+        consumers = (
+            ("first dispatch", self.dispatch.split("\n## ", 1)[0]),
+            ("reuse and dispatch", reuse.split("\n2. ", 1)[0]),
+            ("stage dispatch", long_running.split("\n4. ", 1)[1].split("\n5. ", 1)[0]),
+            ("follow-up", next(p for p in self.results.split("\n\n") if "`followup_task`" in p)),
+            ("downstream", self.collaboration.split("\n## 其他或新建 Codex 任务\n", 1)[0]),
+            ("same-family parallel work", read(REFS / "agent-groups.md")),
+            ("verification", verification.split("\n## 需要语义复核时\n", 1)[0]),
+        )
+        for consumer, source in consumers:
+            with self.subTest(consumer=consumer):
+                self.assertIn(f"]({explicit})", source)
+                default_routes = re.findall(r"[^。；]*" + default, source)
+                self.assertTrue(default_routes, "missing default route for unspecified work")
+                for clause in default_routes:
+                    self.assertRegex(clause, r"未(?:明确)?指定|未决定")
+
+    def test_wait_and_stop_check_all_requested_undelivered_goals(self) -> None:
+        priority = self.stack.split("\n## 用户明确指令优先\n", 1)[1].split("\n## ", 1)[0]
+        adoption = self.results.split("\n## 父代理采用\n", 1)[1]
+        for consumer, source in (("dispatch policy", priority), ("result adoption", adoption)):
+            with self.subTest(consumer=consumer):
+                compact = re.sub(r"\s+", "", source)
+                match = re.search(r"等待[^。]*结束[^。]*全部[^。]*未交付主线", compact)
+                self.assertIsNotNone(match)
+                if consumer == "result adoption":
+                    self.assertIn("](../SKILL.md#用户明确指令优先)", match[0])
+
     def test_same_capability_family_reuses_without_forcing_a_thread_switch(self) -> None:
         section = self.stack.split("## 同一能力族优先复用", 1)[1].split(
             "## 原生调用与任务卡", 1
@@ -679,7 +727,7 @@ class SkillContractTests(unittest.TestCase):
 
     def test_computer_use_activates_before_the_first_read_only_operation(self) -> None:
         frontmatter = self.stack.split("---", 2)[1]
-        self.assertRegex(frontmatter, r"(?m)^description: .*Computer Use 操作前.*只读界面观察、应用清单.*或首次准备委派")
+        self.assertRegex(frontmatter, r"(?m)^description: .*Computer Use 操作前.*只读界面观察、应用清单")
 
         activation = self.stack.split("## 何时使用", 1)[1].split("\n## ", 1)[0]
         activation = " ".join(activation.split())
@@ -883,6 +931,7 @@ class SkillContractTests(unittest.TestCase):
         goals = re.sub(r"\s+", "", body.split("\n## ", 1)[0])
         self.assertRegex(goals, r"最早[^。]*尚未(?:完成|交付)")
         self.assertRegex(goals, r"已交付[^。]*退出[^。]*活动")
+        self.assertIn("](../lean-stack/SKILL.md#用户明确指令优先)", goals)
 
     def test_recovery_and_adoption_consume_the_active_goal_contract(self) -> None:
         target = "../../lean-simplify/SKILL.md#多目标推进与逐项交付"

@@ -2,7 +2,13 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.8.0**
+Current version: **9.8.1**
+
+Explicit delegation and continued workstream coverage go directly to execution. Initial dispatch, result adoption,
+dependency resolution, and released capacity reuse that decision; only unspecified delegation goes through the
+default necessity and benefit check. Before waiting or ending, fill ready but unassigned work in the requested
+undelivered goals. Cost optimization chooses executors without cancelling explicit coverage; real safety,
+permission, budget, and capacity limits still apply.
 
 - Continue necessary diagnosis, fixes, builds, and narrow acceptance checks within the authorized repair scope, even when they take longer. Ask before optional lengthy backups, scans, repeat readbacks, or other marginal work; skip that added work without a reply. Necessity comes from the requested outcome, a real blocker or concrete risk, and existing evidence; duration or a tool default does not establish it. Actual permission gaps and scope expansion still require authorization. Necessary project component upgrades retain the standing ask-then-upgrade default.
 - Respond promptly to priority changes and preserve the latest effective requirements across context compression, including withdrawn temporary speedup modes. Reuse valid evidence; ten minutes without material change requires diagnosis and a changed next action at a safe boundary.
