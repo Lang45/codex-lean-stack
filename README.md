@@ -2,11 +2,14 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **10.0.0**
+Current version: **10.1.0**
 
-The six plugin hooks, their session work-table implementation, and their setup instructions have been removed.
-Continued workstream delegation, result adoption, compaction recovery, and explicit return to the default quality,
-cost, and time principles remain in the two skills. No hook setup is required.
+Large projects that already have a native ongoing goal can use [group conversations](skills/lean-simplify/SKILL.md#大型目标项目的分组会话).
+The project owner checks whether several related workstreams need independent long-running contexts, explains a
+concrete grouping, and asks whether to adopt the mode. No conversation is created before explicit consent;
+ordinary tasks and projects without a goal stay in the current conversation. Approved groups each establish a
+scoped goal, own their files, adopt prior results, and return usable outcomes to the original coordinator for acceptance.
+No hook setup is required.
 Related workstreams finish the research needed for their joint change before implementing together; independent
 workstreams advance when ready, then integrate and verify. Reuse adopted research and connect new findings to an actual consumer.
 

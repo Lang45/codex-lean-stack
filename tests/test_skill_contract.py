@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STACK = ROOT / "skills" / "lean-stack"
 SIMPLIFY = ROOT / "skills" / "lean-simplify"
 REFS = STACK / "references"
+GROUPED_GOAL_SESSIONS = "大型目标项目的分组会话"
 
 
 def read(path: Path) -> str:
@@ -968,6 +969,49 @@ class SkillContractTests(unittest.TestCase):
         self.assertRegex(goals, r"持续派遣[^。]*继续补派")
         self.assertIn("](../lean-stack/SKILL.md#用户明确指令优先)", goals)
         self.assertIn("](../lean-simplify/SKILL.md#多目标推进与逐项交付)", self.stack)
+
+    def test_grouped_goal_sessions_require_a_native_goal_and_prior_consent(self) -> None:
+        heading = f"\n## {GROUPED_GOAL_SESSIONS}\n"
+        self.assertIn(heading, self.simplify)
+        section = self.simplify.split(heading, 1)[1].split("\n## ", 1)[0].strip()
+        paragraphs = section.split("\n\n")
+        trigger = " ".join(paragraphs[0].split())
+        self.assertRegex(trigger, r"仅适用[^。]*已(?:经)?设立原生持续目标")
+        self.assertRegex(trigger, r"未设目标[^。]*普通[^。]*不触发")
+        self.assertRegex(trigger, r"不[^。]*自行创建目标")
+
+        groups = next(paragraph for paragraph in paragraphs if "主线群" in paragraph and "及时" in paragraph)
+        self.assertRegex(groups, r"多个[^。]*长期[^。]*独立[^。]*主线群")
+        self.assertNotRegex(groups, r"主线群[，、,]\s*或")
+
+        consent = next(paragraph for paragraph in paragraphs if "询问是否采用" in paragraph)
+        self.assertRegex(consent, r"说明适用理由[^。]*建议分组[^。]*询问是否采用")
+        self.assertRegex(consent, r"用户明确同意前不得[^。]*创建会话")
+        self.assertRegex(consent, r"未答复或拒绝时[^。]*继续已授权任务")
+        self.assertRegex(consent, r"同一项目已同意[^。]*沿用[^。]*新项目[^。]*另行确认")
+
+    def test_grouped_goal_sessions_reach_execution_recovery_and_acceptance(self) -> None:
+        section = self.simplify.split(f"\n## {GROUPED_GOAL_SESSIONS}\n", 1)[1].split("\n## ", 1)[0]
+        collaboration = self.collaboration.split("\n## 其他或新建 Codex 任务\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("](../lean-stack/references/collaboration.md#其他或新建-codex-任务)", section)
+        for name, source, prefix in (
+            ("skill entry", self.stack, "../"),
+            ("cross-session execution", collaboration, "../../"),
+            ("long-running recovery", read(REFS / "long-running.md"), "../../"),
+        ):
+            with self.subTest(consumer=name):
+                self.assertIn(f"]({prefix}lean-simplify/SKILL.md#{GROUPED_GOAL_SESSIONS})", source)
+        self.assertRegex(collaboration, r"明确同意[^。]*才使用 `create_thread`")
+        self.assertRegex(collaboration, r"确认[^。]*实际开工")
+
+        self.assertRegex(section, r"每组[^。]*完整成果与验收[^。]*已采用证据[^。]*唯一写入范围[^。]*建立本组原生持续目标")
+        self.assertRegex(section, r"原会话保留唯一总目标[^。]*共享热点[^。]*成果采用[^。]*综合验收")
+        self.assertRegex(section, r"成果或依赖就绪[^。]*交下一消费者")
+        self.assertRegex(section, r"整合输入就绪后[^。]*集成会话")
+        self.assertRegex(section, r"原负责人按原完成条件验收")
+        self.assertRegex(section, r"恢复时[^。]*接续已采用成果[^。]*仍未交付项[^。]*不重复创建会话")
+        self.assertRegex(section, r"回到三原则[^。]*只撤回[^。]*实际取消[^。]*已获准[^。]*继续负责[^。]*未交付目标")
+        self.assertRegex(section, r"明确退出分组模式[^。]*交回[^。]*未完项[^。]*不取消总目标")
 
     def test_recovery_and_adoption_consume_the_active_goal_contract(self) -> None:
         target = "../../lean-simplify/SKILL.md#多目标推进与逐项交付"
