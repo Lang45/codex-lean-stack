@@ -50,8 +50,11 @@ class CoverageRuntimeTests(unittest.TestCase):
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return str(path)
 
-    def plan(self, goals: list[dict], *, session: str | None = None) -> dict:
-        source = self.input_file("plan.json", {"goals": goals})
+    def plan(self, goals: list[dict], *, session: str | None = None, mode: str | None = None) -> dict:
+        request = {"goals": goals}
+        if mode is not None:
+            request["mode"] = mode
+        source = self.input_file("plan.json", request)
         return self.successful(
             "plan", "--session", session or self.session, "--cwd", str(self.workspace), "--input", source,
         )
@@ -90,6 +93,32 @@ class CoverageRuntimeTests(unittest.TestCase):
             for index in range(1, count + 1)
         ]
 
+    def continuous_goals(self, count: int = 13) -> list[dict]:
+        goals = self.goals(count)
+        for goal in goals:
+            goal.update(
+                outcome=f"{goal['id']} 的完整用户结果",
+                acceptance="下一阶段的操作、证据与验收均已完成。",
+                milestone={"id": "M01", "title": "首批证据或试运行", "final": False},
+            )
+            goal["work"][0].update(kind="core", milestone="M01")
+        return goals
+
+    def spawn_assigned(self, goal_id: str, work_id: str) -> str:
+        goal = next(row for row in self.status()["goals"] if row["id"] == goal_id)
+        work = next(row for row in goal["work"] if row["id"] == work_id)
+        path = work["executor"]
+        name = path.rsplit("/", 1)[-1]
+        call = {
+            "tool_name": "collaborationspawn_agent", "tool_use_id": f"call-batch-{goal_id}-{work_id}",
+            "tool_input": {"task_name": name, "message": "执行当前主线的已分配工作包。"},
+        }
+        opened = self.hook("PreToolUse", **call)
+        self.assertNotEqual(self.permission(opened), "deny", opened)
+        self.hook("PostToolUse", **call, tool_response=json.dumps({"task_name": path}))
+        self.assertEqual(self.work_status(goal=goal_id, work=work_id), "running")
+        return path
+
     def work_status(self, goal: str = "G01", work: str = "W01") -> str:
         goals = self.status()["goals"]
         selected = next(item for item in goals if item["id"] == goal)
@@ -126,10 +155,13 @@ class CoverageRuntimeTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.session = str(uuid.uuid4())
                 self.hook("UserPromptSubmit", prompt=prompt)
-                self.assertEqual(self.status()["status"], "needs_plan")
+                pending = self.status()
+                self.assertEqual(pending["status"], "needs_plan")
+                self.assertEqual(pending["mode"], "continuous")
                 self.assertTrue(self.table_path().is_file())
-                self.plan(self.goals(count))
-                self.assertEqual(len(self.status()["goals"]), count)
+                table = self.plan(self.continuous_goals(count))
+                self.assertEqual(len(table["goals"]), count)
+                self.assertTrue(all(state == "ready" for state in table["coverage"].values()))
 
     def test_ready_unassigned_work_blocks_wait_and_local_work(self) -> None:
         self.plan(self.goals())
@@ -161,6 +193,116 @@ class CoverageRuntimeTests(unittest.TestCase):
         self.assertNotEqual(self.permission(output), "deny", output)
         self.successful("update", "--session", self.session, "--data-dir", str(self.plugin_data), "--json", request)
         self.assertEqual(self.work_status(), "blocked")
+
+    def test_first_batch_cannot_leave_eleven_undelivered_goals_without_coverage(self) -> None:
+        goals = self.continuous_goals()
+        goals[2]["work"].append({"id": "W02", "title": "旁路材料整理", "kind": "support", "milestone": "M01"})
+        self.plan(goals, mode="continuous")
+        paths = [self.spawn_assigned(goal["id"], "W01") for goal in goals]
+        support = self.spawn_assigned("G03", "W02")
+        self.observe_agents(
+            (paths[0], "running"), (paths[1], "running"),
+            (paths[2], {"completed": "首批证据就绪。"}), (support, "running"),
+            *((path, {"completed": "这一个首批工作包缺少输入。"}) for path in paths[3:]),
+        )
+        self.update("accept", goal="G03", work="W01", evidence="仅验收首批工作包，整条主线仍未完成。")
+        for goal in goals[3:]:
+            self.update(
+                "block", goal=goal["id"], work="W01",
+                blocker="这一个工作包的输入未就绪。", evidence="仅限这个工作包的输入清单。",
+            )
+        first_batch = self.status()
+        self.assertEqual(sum(not goal["delivered"] for goal in first_batch["goals"]), 13)
+        self.assertEqual(first_batch["coverage"], {
+            goal["id"]: "working" if index < 2 else "needs_continuation"
+            for index, goal in enumerate(goals)
+        })
+
+        wait = self.hook("PreToolUse", tool_name="collaborationwait_agent", tool_input={})
+        self.assertEqual(self.permission(wait), "deny", wait)
+        self.assertEqual(self.hook("Stop", stop_hook_active=False).get("decision"), "block")
+        local_tool = {"tool_name": "exec_command", "tool_input": {"cmd": "git status --short"}}
+        local = self.hook("PreToolUse", **local_tool)
+        self.assertNotEqual(self.permission(local), "deny", local)
+        self.assertIn("G03", local["hookSpecificOutput"]["additionalContext"])
+
+        goals[3]["work"].append({"id": "W02", "title": "取得关键缺失输入", "kind": "unblock", "milestone": "M01"})
+        self.assertEqual(self.plan(goals, mode="continuous")["coverage"]["G04"], "ready")
+        still_pending = self.hook("PreToolUse", **local_tool)
+        self.assertEqual(self.permission(still_pending), "deny", still_pending)
+        unblock = self.spawn_assigned("G04", "W02")
+        self.assertEqual(self.status()["coverage"]["G04"], "working")
+        self.observe_agents(
+            (paths[0], "running"), (paths[1], "running"), (unblock, "running"),
+            (support, {"completed": "旁路材料已整理。"}),
+        )
+        self.update("accept", goal="G03", work="W02", evidence="只验收了辅助材料。")
+        partial = self.input_file("deliver-nonfinal.json", {
+            "action": "deliver", "goal": "G03", "milestone": "M01", "evidence": "首批工作包已验收。",
+        })
+        denied = self.invoke("update", "--session", self.session, "--input", partial)
+        self.assertNotEqual(denied.returncode, 0)
+
+        goals[2]["milestone"] = {"id": "M02", "title": "实际操作和独立验收", "final": True}
+        advanced = self.plan(goals, mode="continuous")
+        self.assertEqual(advanced["coverage"]["G03"], "needs_continuation")
+        old_receipts = self.input_file("deliver-old-work.json", {
+            "action": "deliver", "goal": "G03", "milestone": "M02", "evidence": "仅有首批工作验收回执。",
+        })
+        denied = self.invoke("update", "--session", self.session, "--input", old_receipts)
+        self.assertNotEqual(denied.returncode, 0)
+        goals[2]["work"].append({"id": "W03", "title": "完成真实入口验收", "kind": "core", "milestone": "M02"})
+        self.assertEqual(self.plan(goals, mode="continuous")["coverage"]["G03"], "ready")
+        final = self.spawn_assigned("G03", "W03")
+        self.observe_agents(
+            (paths[0], "running"), (paths[1], "running"), (unblock, "running"),
+            (final, {"completed": "实际操作和独立验收已返回。"}),
+        )
+        self.update("accept", goal="G03", work="W03", evidence="独立核对实际入口和回执。")
+        self.update("deliver", goal="G03", milestone="M02", evidence="已经逐条交付第三条完整结果。")
+
+        before = self.status()
+        self.assertEqual([row["id"] for row in before["goals"] if row["delivered"]], ["G03"])
+        self.assertEqual(before["coverage"]["G03"], "delivered")
+        recovered = self.hook("SessionStart", source="compact")
+        context = recovered["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("G03", context)
+        for goal in before["goals"]:
+            if not goal["delivered"]:
+                self.assertIn(goal["id"], context)
+        self.assertEqual(self.status(), before)
+
+    def test_continuous_goal_can_stop_only_with_an_explicit_whole_goal_blocker(self) -> None:
+        self.plan(self.continuous_goals(1), mode="continuous")
+        blocker = {
+            "goal": "G01", "blocker": "决定整条主线的外部接口停用，暂无可执行替代。",
+            "evidence": "接口停用回执与替代路径核对。",
+        }
+        while_ready = self.input_file("block-ready-goal.json", {
+            "action": "block_goal", **blocker, "resume_when": "接口恢复且可读取所需实证。",
+        })
+        denied = self.invoke("update", "--session", self.session, "--input", while_ready)
+        self.assertNotEqual(denied.returncode, 0)
+        self.update(
+            "block", goal="G01", work="W01", blocker="这一个工作包缺少输入。",
+            evidence="该工作包的输入清单。",
+        )
+        self.assertEqual(self.status()["coverage"]["G01"], "needs_continuation")
+        self.assertEqual(self.hook("Stop", stop_hook_active=False).get("decision"), "block")
+        incomplete = self.input_file("block-goal-incomplete.json", {"action": "block_goal", **blocker})
+        denied = self.invoke("update", "--session", self.session, "--input", incomplete)
+        self.assertNotEqual(denied.returncode, 0)
+
+        self.update("block_goal", **blocker, resume_when="接口恢复且可读取所需实证。")
+        self.assertNotEqual(self.hook("Stop", stop_hook_active=False).get("decision"), "block")
+        stopped = self.status()
+        self.assertFalse(stopped["goals"][0]["delivered"])
+        self.assertEqual(stopped["coverage"]["G01"], "whole_blocked")
+
+        self.update("unblock_goal", goal="G01", evidence="外部接口已恢复。")
+        self.assertEqual(self.status()["coverage"]["G01"], "needs_continuation")
+        wait = self.hook("PreToolUse", tool_name="collaborationwait_agent", tool_input={})
+        self.assertEqual(self.permission(wait), "deny", wait)
 
     def test_active_dispatch_requires_an_unambiguous_ready_assignment(self) -> None:
         tools = (

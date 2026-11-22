@@ -34,6 +34,9 @@ TASK_NAME = re.compile(r"(?!root\Z)[a-z0-9_]+\Z")
 TASK_PATH = re.compile(r"/root(?:/(?!root(?:/|\Z))[a-z0-9_]+)+\Z")
 WORK_STATES = {"ready", "running", "returned", "blocked", "done"}
 BOARD_STATES = {"needs_plan", "active", "paused"}
+SUBSTANTIVE = {"core", "unblock"}
+WORK_KINDS = SUBSTANTIVE | {"support"}
+GOAL_METADATA = {"outcome", "acceptance", "milestone"}
 MAX_BOARD_BYTES = 192 * 1024
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 SCRIPT = Path(__file__).absolute()
@@ -54,7 +57,8 @@ ACTIVATE = re.compile(
 )
 MORE_AGENTS = re.compile(r"^(?:请|还要)?(?:继续|持续|一直)(?:并行|多)?派(?:更多|多个|几个|子)*代理(?:[，。！？,!?；;：:\s]|$)")
 PER_GOAL = re.compile(
-    r"^(?:请)?(?:(?:[0-9一二三四五六七八九十百零〇两]+条|每条|所有)(?:未完成)?主线"
+    r"^(?:请)?(?:(?:持续逐线|逐线持续)(?:派遣|派发|安排)(?:子)?代理|"
+    r"(?:[0-9一二三四五六七八九十百零〇两]+条|每条|所有)(?:未完成)?主线"
     r"(?:都|必须|要|需要|逐条|分别)*(?:持续|一直)(?:有|安排|保持)(?:实际工作的|在工作的|子)*代理|"
     r"按(?:[0-9一二三四五六七八九十百零〇两]+条|这[些几]条)?主线(?:表)?(?:每条|逐条)"
     r"(?:各)?(?:排|安排|派)(?:几个|多个|几名|若干)(?:子?代理)?[，,\s]*(?:继续|持续)(?:多排|多派))"
@@ -104,6 +108,48 @@ def row_id(value: Any, label: str) -> str:
 
 def is_task_path(value: Any) -> bool:
     return isinstance(value, str) and len(value) <= 256 and bool(TASK_PATH.fullmatch(value))
+
+
+def is_continuous(board: Row) -> bool:
+    return board.get("mode") == "continuous"
+
+
+def milestone_value(value: Any) -> Row:
+    row = object_value(value, "milestone")
+    fields(row, {"id", "title", "final"}, "milestone")
+    if type(row.get("final")) is not bool:
+        raise CoverageError("milestone final must be true or false")
+    return {"id": row_id(row.get("id"), "milestone ID"),
+            "title": text_value(row.get("title"), "milestone title", 160), "final": row["final"]}
+
+
+def is_substantive(goal: Row, work: Row) -> bool:
+    return work.get("kind") in SUBSTANTIVE and work.get("milestone") == goal.get("milestone", {}).get("id")
+
+
+def substantive_work(goal: Row) -> Iterator[Row]:
+    return (work for work in goal["work"] if is_substantive(goal, work))
+
+
+def goal_coverage(goal: Row) -> str:
+    if goal["delivered"]:
+        return "delivered"
+    if "goal_block" in goal:
+        return "whole_blocked"
+    if "milestone" not in goal:
+        return "needs_metadata"
+    statuses = {work["status"] for work in substantive_work(goal)}
+    for status, coverage in (("ready", "ready"), ("running", "working"), ("returned", "returned")):
+        if status in statuses:
+            return coverage
+    return "needs_continuation"
+
+
+def final_milestone_ready(goal: Row) -> bool:
+    if not goal.get("milestone", {}).get("final"):
+        return False
+    work = list(substantive_work(goal))
+    return any(item["kind"] == "core" for item in work) and all(item["status"] == "done" for item in work)
 
 
 def executor_for(goal: Row, work: Row) -> str:
@@ -220,9 +266,11 @@ def write_board(path: Path, board: Row) -> None:
 
 def validate_board(board: Row, session: str) -> None:
     fields(board, {"version", "session", "cwd", "status", "goals", "stop_fingerprint", "observations",
-                   "list_issued", "list_applied", "dispatch_attempts"}, "coverage board")
+                   "list_issued", "list_applied", "dispatch_attempts", "mode"}, "coverage board")
     if board.get("version") != 1 or board.get("session") != session or board.get("status") not in BOARD_STATES:
         raise CoverageError("coverage board version, session or status is invalid")
+    if board.get("mode", "legacy") not in {"legacy", "continuous"}:
+        raise CoverageError("invalid coverage mode")
     text_value(board.get("cwd"), "cwd", 4096)
     fingerprint = board.get("stop_fingerprint")
     if fingerprint is not None and (not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint)):
@@ -264,25 +312,41 @@ def validate_board(board: Row, session: str) -> None:
     active_executors = set()
     for entry in goals:
         goal = object_value(entry, "goal")
-        fields(goal, {"id", "title", "delivered", "delivery_evidence", "work"}, "goal")
+        fields(goal, {"id", "title", "delivered", "delivery_evidence", "work", "goal_block", "unblock_evidence"} | GOAL_METADATA, "goal")
         goal_key = row_id(goal.get("id"), "goal id")
         if goal_key in goal_ids or not isinstance(goal.get("delivered"), bool):
             raise CoverageError("invalid or duplicate goal")
         goal_ids.add(goal_key)
         text_value(goal.get("title"), "goal title", 160)
+        if GOAL_METADATA.intersection(goal):
+            text_value(goal.get("outcome"), "goal outcome", 300)
+            text_value(goal.get("acceptance"), "goal acceptance", 420)
+            milestone_value(goal.get("milestone"))
+        if "goal_block" in goal:
+            blocker = object_value(goal["goal_block"], "whole-goal blocker")
+            fields(blocker, {"blocker", "evidence", "resume_when"}, "whole-goal blocker")
+            text_value(blocker.get("blocker"), "whole-goal blocker scope", 420)
+            text_value(blocker.get("evidence"), "whole-goal blocker evidence", 420)
+            text_value(blocker.get("resume_when"), "whole-goal blocker release condition", 240)
+        if "unblock_evidence" in goal:
+            text_value(goal["unblock_evidence"], "whole-goal release evidence", 420)
         works = goal.get("work")
         if not isinstance(works, list) or not works:
             raise CoverageError("every goal needs a work package")
         work_ids = set()
         for entry in works:
             work = object_value(entry, "work")
-            fields(work, {"id", "title", "status", "evidence", "blocker", "dispatch", "executor"}, "work")
+            fields(work, {"id", "title", "status", "evidence", "blocker", "dispatch", "executor", "kind", "milestone"}, "work")
             key = row_id(work.get("id"), "work id")
             status = work.get("status")
             if key in work_ids or status not in WORK_STATES:
                 raise CoverageError("invalid or duplicate work")
             work_ids.add(key)
             text_value(work.get("title"), "work title", 160)
+            if "kind" in work or "milestone" in work:
+                if work.get("kind") not in WORK_KINDS:
+                    raise CoverageError("work kind must be core, unblock or support")
+                row_id(work.get("milestone"), "work milestone ID")
             if "executor" in work and not is_task_path(work["executor"]):
                 raise CoverageError("work executor must be a canonical native agent path")
             if status in {"returned", "done", "blocked"} or "evidence" in work:
@@ -305,11 +369,15 @@ def validate_board(board: Row, session: str) -> None:
                     raise CoverageError("executor already has ready or running work; choose another executor or verify the current work first")
                 active_executors.add(executor)
         if goal["delivered"]:
-            if any(work["status"] != "done" for work in works):
+            if "milestone" not in goal and any(work["status"] != "done" for work in works):
                 raise CoverageError("delivered goal has unfinished work")
+            if "milestone" in goal and not final_milestone_ready(goal):
+                raise CoverageError("delivered goal lacks a completed final milestone")
             text_value(goal.get("delivery_evidence"), "delivery evidence", 420)
         elif "delivery_evidence" in goal:
             raise CoverageError("delivery evidence belongs to delivered goals")
+        if "goal_block" in goal and any(work["status"] in {"ready", "running", "returned"} for work in substantive_work(goal)):
+            raise CoverageError("release the whole-goal blocker before adding substantive work")
     if board["status"] == "needs_plan" and open_goals(board):
         raise CoverageError("a coverage board awaiting a plan cannot contain open goals")
 
@@ -330,7 +398,12 @@ def validate_dispatch(dispatch: Row) -> str:
 
 
 def plan_board(board: Row, request: Row, cwd: str) -> None:
-    fields(request, {"goals"}, "plan")
+    fields(request, {"goals", "mode"}, "plan")
+    mode = request.get("mode", board.get("mode", "legacy"))
+    if mode not in {"legacy", "continuous"} or (is_continuous(board) and mode != "continuous"):
+        raise CoverageError("continuous coverage cannot be downgraded by a plan update")
+    if mode == "continuous":
+        board["mode"] = mode
     proposed = request.get("goals")
     if not isinstance(proposed, list) or not proposed:
         raise CoverageError("plan needs at least one goal")
@@ -339,7 +412,7 @@ def plan_board(board: Row, request: Row, cwd: str) -> None:
     current = {goal["id"]: goal for goal in board["goals"]}
     for entry in proposed:
         row = object_value(entry, "goal")
-        fields(row, {"id", "title", "work"}, "goal")
+        fields(row, ({"id", "title", "work"} | GOAL_METADATA) if is_continuous(board) else {"id", "title", "work"}, "goal")
         key = row_id(row.get("id"), "goal id")
         title = text_value(row.get("title"), "goal title", 160)
         if key in seen_goals:
@@ -351,7 +424,9 @@ def plan_board(board: Row, request: Row, cwd: str) -> None:
             board["goals"].append(goal)
         elif goal["title"] != title:
             raise CoverageError("existing goal IDs keep their title; use a new ID for a distinct goal")
-        merge_work(goal, row.get("work"), in_flight)
+        if is_continuous(board) and not goal["delivered"]:
+            merge_goal_scope(goal, row)
+        merge_work(goal, row.get("work"), in_flight, continuous=is_continuous(board))
     board["cwd"] = cwd
     if board["status"] == "needs_plan":
         if not open_goals(board):
@@ -359,14 +434,35 @@ def plan_board(board: Row, request: Row, cwd: str) -> None:
         board["status"] = "active"
 
 
-def merge_work(goal: Row, proposed: Any, in_flight: set[tuple[str, str]]) -> None:
+def merge_goal_scope(goal: Row, row: Row) -> None:
+    previous = goal.get("milestone")
+    if previous is not None and not GOAL_METADATA.intersection(row):
+        return
+    scope = {"outcome": text_value(row.get("outcome", goal.get("outcome")), "goal outcome", 300),
+             "acceptance": text_value(row.get("acceptance", goal.get("acceptance")), "goal acceptance", 420),
+             "milestone": milestone_value(row.get("milestone", previous))}
+    if previous is not None:
+        if scope["outcome"] != goal["outcome"] or scope["acceptance"] != goal["acceptance"]:
+            raise CoverageError("goal outcome and acceptance are stable across milestone updates")
+        if scope["milestone"]["id"] == previous["id"]:
+            if scope["milestone"] != previous:
+                raise CoverageError("an existing milestone ID cannot change its scope or final designation")
+        else:
+            if any(work["status"] in {"ready", "running", "returned"} for work in substantive_work(goal)):
+                raise CoverageError("advance the milestone after adopting or resolving the current core and unblock work")
+            if any(work.get("milestone") == scope["milestone"]["id"] for work in goal["work"]):
+                raise CoverageError("a previous milestone ID cannot be reused")
+    goal.update(scope)
+
+
+def merge_work(goal: Row, proposed: Any, in_flight: set[tuple[str, str]], *, continuous: bool) -> None:
     if not isinstance(proposed, list) or not proposed:
         raise CoverageError("every goal needs a work package")
     current = {work["id"]: work for work in goal["work"]}
     seen = set()
     for entry in proposed:
         row = object_value(entry, "work")
-        fields(row, {"id", "title", "executor"}, "work")
+        fields(row, {"id", "title", "executor", "kind", "milestone"} if continuous else {"id", "title", "executor"}, "work")
         key = row_id(row.get("id"), "work id")
         title = text_value(row.get("title"), "work title", 160)
         if "executor" in row and not is_task_path(row["executor"]):
@@ -374,10 +470,24 @@ def merge_work(goal: Row, proposed: Any, in_flight: set[tuple[str, str]]) -> Non
         if key in seen:
             raise CoverageError("duplicate work in plan")
         seen.add(key)
+        assignment = {}
+        if continuous and (key not in current or "kind" in row or "milestone" in row):
+            if row.get("kind") not in WORK_KINDS:
+                raise CoverageError("continuous work needs a kind of core, unblock or support")
+            assignment = {"kind": row["kind"], "milestone": row_id(row.get("milestone"), "work milestone ID")}
+            prior = current.get(key, {})
+            if "kind" in prior:
+                if any(prior[field] != value for field, value in assignment.items()):
+                    raise CoverageError("work contribution and milestone cannot change after registration")
+            elif prior.get("status") in {"done", "returned"}:
+                raise CoverageError("historical returned or accepted work cannot acquire a new milestone contribution; register current work")
+            elif assignment["milestone"] != goal.get("milestone", {}).get("id"):
+                raise CoverageError("new work must belong to the current milestone")
         if key in current:
             work = current[key]
             if work["title"] != title:
                 raise CoverageError("existing work IDs keep their title; use a new ID for distinct work")
+            work.update(assignment)
             if "executor" in row:
                 changed = row["executor"] != executor_for(goal, work)
                 if (goal["id"], key) in in_flight:
@@ -390,7 +500,7 @@ def merge_work(goal: Row, proposed: Any, in_flight: set[tuple[str, str]]) -> Non
             continue
         if goal["delivered"]:
             raise CoverageError("a delivered goal cannot receive new work")
-        work = {"id": key, "title": title, "status": "ready"}
+        work = {"id": key, "title": title, "status": "ready", **assignment}
         if "executor" in row:
             work["executor"] = row["executor"]
         goal["work"].append(work)
@@ -421,7 +531,7 @@ def find_work(goal: Row, key: str) -> Row | None:
 
 
 def update_board(board: Row, request: Row) -> None:
-    fields(request, {"action", "goal", "work", "evidence", "blocker", "task_path", "state", "turn_id"}, "update")
+    fields(request, {"action", "goal", "work", "evidence", "blocker", "task_path", "state", "turn_id", "milestone", "resume_when"}, "update")
     action = request.get("action")
     if action in ("pause", "resume"):
         fields(request, {"action"}, "pause or resume")
@@ -431,9 +541,35 @@ def update_board(board: Row, request: Row) -> None:
     if goal is None:
         raise CoverageError("goal is missing")
     evidence = text_value(request.get("evidence"), "evidence", 420)
+    continuous = is_continuous(board)
+    if action == "block_goal" and continuous:
+        fields(request, {"action", "goal", "evidence", "blocker", "resume_when"}, "block_goal")
+        if goal["delivered"] or "milestone" not in goal:
+            raise CoverageError("whole-goal blocker requires an undelivered goal with an outcome and milestone")
+        if any(work["status"] in {"ready", "running", "returned"} for work in substantive_work(goal)) or any(
+            attempt["goal"] == goal["id"] for attempt in board.get("dispatch_attempts", {}).values()
+        ):
+            raise CoverageError("resolve ready, running or returned substantive work and native receipts before blocking the whole goal")
+        goal["goal_block"] = {"blocker": text_value(request.get("blocker"), "whole-goal blocker scope", 420),
+                             "evidence": evidence,
+                             "resume_when": text_value(request.get("resume_when"), "whole-goal blocker release condition", 240)}
+        return
+    if action == "unblock_goal" and continuous:
+        fields(request, {"action", "goal", "evidence"}, "unblock_goal")
+        if "goal_block" not in goal:
+            raise CoverageError("goal has no active whole-goal blocker")
+        goal.pop("goal_block")
+        goal["unblock_evidence"] = evidence
+        return
     if action == "deliver":
-        fields(request, {"action", "goal", "evidence"}, "deliver")
-        if any(work["status"] != "done" for work in goal["work"]):
+        fields(request, {"action", "goal", "evidence", "milestone"} if continuous else {"action", "goal", "evidence"}, "deliver")
+        if continuous:
+            if ("goal_block" in goal or request.get("milestone") != goal.get("milestone", {}).get("id")
+                    or not final_milestone_ready(goal)):
+                raise CoverageError("goal delivery requires acceptance of the current final milestone and a completed core result")
+            if any(attempt["goal"] == goal["id"] for attempt in board.get("dispatch_attempts", {}).values()):
+                raise CoverageError("resolve in-flight native receipts before delivering the goal")
+        elif any(work["status"] != "done" for work in goal["work"]):
             raise CoverageError("goal delivery requires explicit acceptance of all its work")
         if not goal["delivered"]:
             goal.update(delivered=True, delivery_evidence=evidence)
@@ -469,6 +605,8 @@ def update_board(board: Row, request: Row) -> None:
         work.update(status="done", evidence=evidence)
     elif action == "retry":
         fields(request, {"action", "goal", "work", "evidence"}, "retry")
+        if "goal_block" in goal:
+            raise CoverageError("release the whole-goal blocker before retrying a work package")
         if status not in {"running", "returned", "blocked"} and not (status == "ready" and work_attempts):
             raise CoverageError("retry requires a prior dispatch or an unresolved dispatch attempt")
         for call_id in work_attempts:
@@ -493,6 +631,8 @@ def parse_file(path: Path) -> Row:
 
 
 def render_board(board: Row) -> Row:
+    if is_continuous(board):
+        board["coverage"] = {goal["id"]: goal_coverage(goal) for goal in board["goals"]}
     for goal in board["goals"]:
         for work in goal["work"]:
             work["executor"] = executor_for(goal, work)
@@ -582,7 +722,13 @@ def summary(board: Row) -> str:
     goals = open_goals(board)
     labels = {"ready": "待派", "running": "已派", "needs_verify": "待核对", "returned": "待采用",
               "blocked": "阻断", "done": "已验"}
+    coverage_labels = {"ready": "核心待派", "working": "实质执行中待核对", "returned": "核心待采用",
+                       "needs_continuation": "主线待接续", "needs_metadata": "待补整线验收与里程碑",
+                       "whole_blocked": "整线有据阻断"}
     for goal in goals:
+        if is_continuous(board):
+            groups.append((goal["id"], goal["title"], coverage_labels[goal_coverage(goal)]))
+            continue
         statuses = {key: 0 for key in ("ready", "running", "needs_verify", "returned", "blocked", "done")}
         for work in goal["work"]:
             key = work["status"]
@@ -606,9 +752,15 @@ def context(event: str, message: str) -> Row:
 
 
 def plan_context(board: Row, data: Path) -> str:
+    if is_continuous(board):
+        shape = ('{"mode":"continuous","goals":[{"id":"G01","title":"主线","outcome":"最终成果",'
+                 '"acceptance":"整线验收条件","milestone":{"id":"M01","title":"当前核心成果","final":false},'
+                 '"work":[{"id":"W01","title":"独立核心工作","kind":"core","milestone":"M01"}]}]}')
+    else:
+        shape = '{"goals":[{"id":"G01","title":"主线","work":[{"id":"W01","title":"工作包"}]}]}'
     return (
         "用户已明确要求持续派遣。先按原始要求整理全部仍待交付主线及可独立派遣工作包，"
-        "以 {\"goals\":[{\"id\":\"G01\",\"title\":\"主线\",\"work\":[{\"id\":\"W01\",\"title\":\"工作包\"}]}]}"
+        f"以 {shape}"
         f" 写入 plan.json 后登记。命令：{cli_command(board, data, 'plan')} --input {quote('plan.json')}。"
         "直接用工作包的 executor，启动时使用该路径的原生 task_name，复用时把完整路径传给 target。"
     )
@@ -620,7 +772,10 @@ def recovery_context(board: Row, data: Path, event: str) -> Row:
     if not open_goals(board) and board["status"] != "paused":
         return {}
     prefix = "持续派遣已暂停。" if board["status"] == "paused" else "逐线覆盖工作表仍有未交付项。"
-    return context(event, f"{prefix}{summary(board)}。完整状态：{cli_command(board, data, 'status')}")
+    message = f"{prefix}{summary(board)}。完整状态：{cli_command(board, data, 'status')}。"
+    if is_continuous(board) and any(goal_coverage(goal) == "needs_metadata" for goal in open_goals(board)):
+        message += plan_context(board, data)
+    return context(event, message)
 
 
 def stop(board: Row, data: Path) -> Row:
@@ -638,12 +793,20 @@ def stop(board: Row, data: Path) -> Row:
             "按工作包补派、核对原生代理结果或记录具体阻断，再按整条主线验收；"
             "仅在验收完成后写交付收据。最终答复应明确剩余主线和证据缺口。"
         )
-        blocked_only = all(
-            all(work["status"] in {"blocked", "done"} for work in goal["work"])
-            and any(work["status"] == "blocked" for work in goal["work"])
-            for goal in pending
-        )
-    work_states = [(goal["id"], work["id"], work["status"]) for goal, work in pending_work(board)]
+        if is_continuous(board):
+            blocked_only = all("goal_block" in goal for goal in pending)
+            reason += "局部阻断或子包验收后，接续该主线的下一核心里程碑或解除缺口；能力边界用 block_goal 记录。"
+        else:
+            blocked_only = all(
+                all(work["status"] in {"blocked", "done"} for work in goal["work"])
+                and any(work["status"] == "blocked" for work in goal["work"])
+                for goal in pending
+            )
+    if is_continuous(board):
+        work_states = [(goal["id"], sorted(work["id"] for work in goal["work"]
+                        if work.get("kind") in SUBSTANTIVE and work["status"] == "done")) for goal in pending]
+    else:
+        work_states = [(goal["id"], work["id"], work["status"]) for goal, work in pending_work(board)]
     fingerprint = hashlib.sha256(json_bytes({"status": board["status"], "work": work_states})).hexdigest()
     if blocked_only or board.get("stop_fingerprint") == fingerprint:
         return {"systemMessage": f"逐线覆盖未完成。{reason}"}
@@ -667,7 +830,7 @@ def dispatch_work(board: Row, arguments: Row, task_path: str) -> tuple[Row, Row]
     for goal, work in pending_work(board):
         if work["status"] == "running" and work["dispatch"]["task_path"] == task_path:
             return None
-        if work["status"] == "ready":
+        if work["status"] == "ready" and (not is_continuous(board) or ("goal_block" not in goal and "milestone" in goal)):
             ready.append((goal, work))
     markers = {marker for key in ("message", "task_message", "task")
                if isinstance(arguments.get(key), str) for marker in MARKER.findall(arguments[key])}
@@ -784,6 +947,11 @@ def prepare_dispatch(board: Row, event: Row, *, spawn: bool) -> str:
     if selected is None:
         return "invalid"
     goal, work = selected
+    if is_continuous(board) and not is_substantive(goal, work) and any(
+        goal_coverage(line) in {"ready", "returned", "needs_continuation", "needs_metadata"}
+        for line in open_goals(board)
+    ):
+        return "core_pending"
     attempts = board.get("dispatch_attempts", {})
     match = {"goal": goal["id"], "work": work["id"], "turn_id": turn_id, "task_path": task_path,
              "plan_path": executor_for(goal, work), "spawn": spawn}
@@ -838,12 +1006,22 @@ def pre_tool(board: Row, data: Path, event: Row, name: str) -> Row:
     approval = prepare_dispatch(board, event, spawn=name in SPAWN_TOOLS) if dispatch else None
     if approval == "allowed":
         return {}
-    ready = [(goal, work) for goal, work in pending_work(board) if work["status"] == "ready"]
+    continuous = is_continuous(board)
+    coverage = [(goal, goal_coverage(goal)) for goal in open_goals(board)] if continuous else []
+    metadata_missing = [goal["id"] for goal, state in coverage if state == "needs_metadata"]
+    need_next = [goal["id"] for goal, state in coverage
+                 if state == "needs_continuation" and not final_milestone_ready(goal)]
+    need_adopt = [goal["id"] for goal, state in coverage if state == "returned"
+                  or (state == "needs_continuation" and final_milestone_ready(goal))]
+    ready = [(goal, work) for goal, work in pending_work(board) if work["status"] == "ready"
+             and (not continuous or ("goal_block" not in goal and is_substantive(goal, work)))]
     status_command = cli_command(board, data, "status")
     update_command = cli_command(board, data, "update")
     if approval == "in_flight":
         reason = ("工作包或原生任务路径已有获准调用等待回执。先核对该调用结果。"
                   "已确认失败且宿主没有 Post 回执时，使用 update 的 retry 动作登记证据后重试。")
+    elif approval == "core_pending":
+        reason = "尚有主线需要派发、接续或验收实质工作。先推进这些主线，辅助包不能替代核心工作。"
     elif dispatch:
         if ready:
             examples = []
@@ -858,16 +1036,32 @@ def pre_tool(board: Row, data: Path, event: Row, name: str) -> Row:
             reason = ("派遣需要选择与一个待派包绑定的原生路径。当前可用：" + "、".join(examples) + "。"
                       f"任务正文填写业务内容。复用其他现有路径时，用 {plan} --json 'JSON 对象' 更新该包的 executor。")
         else:
-            reason = ("当前覆盖表没有待派工作包。先核对已派状态、验收已返回结果，"
-                      "或根据实际证据登记重试及新工作包。")
+            reason = ("当前覆盖表没有可派的实质工作包。先核对或采用结果，登记待补主线的下一核心研究或解除缺口。"
+                      if continuous else "当前覆盖表没有待派工作包。先核对已派状态、验收已返回结果，或根据实际证据登记重试及新工作包。")
     elif ready:
         packages = "、".join(f"{goal['id']}/{work['id']}" for goal, work in ready[:8])
         if len(ready) > 8:
             packages += f" 等共 {len(ready)} 项"
         reason = (f"已登记的可独立派遣工作包仍待派：{packages}。"
-                  "先用工作包的 executor 对应原生 task_name 或 target 派遣，或登记有证据的具体阻断。")
+                  "按 executor 对应的原生 task_name 或 target 派遣，或登记有证据的具体阻断。")
+    elif metadata_missing or need_next:
+        reason = ""
+        if metadata_missing:
+            lines = "、".join(metadata_missing[:16])
+            reason += f"这些主线仍需登记最终成果、验收条件和当前核心里程碑：{lines}。"
+        if need_next:
+            lines = "、".join(need_next[:16])
+            reason += (f"主线仍欠下一项实质成果或必要解阻：{lines}。"
+                       "明确替代路线的研究也可独立派遣。")
+        plan = cli_command(board, data, "plan")
+        reason += f"用 {plan} --json 'JSON 对象' 补目标或登记下一核心包。"
+        if name not in WAIT_TOOLS:
+            return context("PreToolUse", reason)
+    elif name in WAIT_TOOLS and need_adopt:
+        reason = f"这些主线已有核心结果待采用或整线验收：{'、'.join(need_adopt[:16])}。先核对结果并登记验收。"
     elif name in WAIT_TOOLS:
-        running = [(goal, work) for goal, work in pending_work(board) if work["status"] == "running"]
+        running = [(goal, work) for goal, work in pending_work(board) if work["status"] == "running"
+                   and (not continuous or ("goal_block" not in goal and is_substantive(goal, work)))]
         if not running:
             reason = ("当前覆盖表没有正在执行的工作包。先验收已返回的结果，接续就绪工作或写入交付收据。"
                       "只剩有证据的阻断时，说明剩余缺口。")
@@ -911,9 +1105,10 @@ def hook(event: Row) -> Row:
     data = data_directory()
     path = board_path(data, session)
     prompt = event.get("prompt")
-    activate = kind == "UserPromptSubmit" and isinstance(prompt, str) and any(
-        pattern.search(prompt.strip()) for pattern in (ACTIVATE, MORE_AGENTS, PER_GOAL, ACTIVATE_EN)
-    )
+    matches = [match.group() for pattern in (ACTIVATE, MORE_AGENTS, PER_GOAL, ACTIVATE_EN)
+               if kind == "UserPromptSubmit" and isinstance(prompt, str) and (match := pattern.search(prompt.strip()))]
+    activate = bool(matches)
+    continuous = any(re.search(r"主线|逐线|\b(?:each|every)\b", match, re.I) for match in matches)
     if existing(path) is None and not activate:
         return {}
     if kind == "SessionStart":
@@ -927,13 +1122,13 @@ def hook(event: Row) -> Row:
         board = deepcopy(previous) if previous else empty_board(
             session, text_value(event.get("cwd"), "cwd", 4096), "needs_plan",
         )
-        output = apply_event(board, data, event, kind, tool_name, activate)
+        output = apply_event(board, data, event, kind, tool_name, activate, continuous)
         if board != previous:
             write_board(path, board)
     return output
 
 
-def apply_event(board: Row, data: Path, event: Row, kind: str, tool_name: str, activate: bool) -> Row:
+def apply_event(board: Row, data: Path, event: Row, kind: str, tool_name: str, activate: bool, continuous: bool) -> Row:
     if kind == "UserPromptSubmit":
         prompt = event.get("prompt")
         if (board["status"] != "active" or open_goals(board)) and isinstance(prompt, str) and PAUSE.search(prompt.strip()):
@@ -941,6 +1136,8 @@ def apply_event(board: Row, data: Path, event: Row, kind: str, tool_name: str, a
             return recovery_context(board, data, kind)
         if activate or (board["status"] == "paused" and isinstance(prompt, str) and RESUME.search(prompt.strip())):
             set_paused(board, False)
+            if continuous:
+                board["mode"] = "continuous"
             if activate:
                 board.pop("stop_fingerprint", None)
             return recovery_context(board, data, kind)

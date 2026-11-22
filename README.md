@@ -2,14 +2,17 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.9.0**
+Current version: **9.9.1**
 
-Explicit continuous coverage now has [runtime checks](skills/lean-stack/references/runtime-coverage.md).
-Plugin hooks consume a per-session work table, track actual dispatch and return receipts, and check for ready
-unassigned work before waiting or ending. A returned slice or a blocked device action does not deliver its whole
-workstream. Compaction restores the same remaining work. Interruptions pause the guard; unchanged gaps do not
-cause an endless continuation loop. Ordinary tasks create no table. New hook definitions require the host's
-review and trust before they run; installation and prompt loading alone do not prove execution.
+Explicit per-workstream requests use continuous [runtime checks](skills/lean-stack/references/runtime-coverage.md)
+for each undelivered outcome, acceptance condition, and current core milestone. Finishing a first packet still
+requires the next substantive contribution; support work and local blockers do not cover an unfinished workstream.
+Related workstreams finish the research needed for their joint change before implementing together; independent
+workstreams advance when ready, then integrate and verify. Reuse adopted research and connect new findings to an actual consumer.
+Native dispatch and return receipts track real work. Final milestone acceptance retires each delivered goal;
+whole-goal suspension needs evidence and a release condition. Compaction restores the same state, interruptions
+pause the guard, and renamed packets do not reset unchanged-gap loop protection. Ordinary tasks create no table.
+Hooks require the host's review and trust for the exact content; installation and prompt loading alone do not prove execution.
 
 Explicit delegation and continued workstream coverage go directly to execution. Initial dispatch, result adoption,
 dependency resolution, and released capacity reuse that decision; only unspecified delegation goes through the
