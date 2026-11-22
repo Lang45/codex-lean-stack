@@ -30,7 +30,8 @@ class CoverageBusy(CoverageError):
 Row = dict[str, Any]
 ID = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
 MARKER = re.compile(r"\[lean-work ([A-Za-z0-9_-]{1,32})/([A-Za-z0-9_-]{1,32})\]")
-TASK_PATH = re.compile(r"/root(?:/[a-z0-9_-]+)+\Z")
+TASK_NAME = re.compile(r"(?!root\Z)[a-z0-9_]+\Z")
+TASK_PATH = re.compile(r"/root(?:/(?!root(?:/|\Z))[a-z0-9_]+)+\Z")
 WORK_STATES = {"ready", "running", "returned", "blocked", "done"}
 BOARD_STATES = {"needs_plan", "active", "paused"}
 MAX_BOARD_BYTES = 192 * 1024
@@ -99,6 +100,25 @@ def row_id(value: Any, label: str) -> str:
     if not isinstance(value, str) or not ID.fullmatch(value):
         raise CoverageError(f"{label} must be a stable identifier")
     return value
+
+
+def is_task_path(value: Any) -> bool:
+    return isinstance(value, str) and len(value) <= 256 and bool(TASK_PATH.fullmatch(value))
+
+
+def executor_for(goal: Row, work: Row) -> str:
+    explicit = work.get("executor")
+    if explicit is not None:
+        return explicit
+    if "dispatch" in work:
+        return work["dispatch"]["task_path"]
+    goal_id, work_id = goal["id"], work["id"]
+    if re.fullmatch(r"G[0-9]{1,8}", goal_id) and re.fullmatch(r"W[0-9]{1,8}", work_id):
+        suffix = f"{goal_id.lower()}_{work_id.lower()}"
+    else:
+        digest = hashlib.sha256(f"{goal_id}/{work_id}".encode("ascii")).hexdigest()
+        suffix = f"x_{digest[:20]}"
+    return f"/root/lean_{suffix}"
 
 
 def fields(row: Row, allowed: set[str], label: str) -> None:
@@ -200,7 +220,7 @@ def write_board(path: Path, board: Row) -> None:
 
 def validate_board(board: Row, session: str) -> None:
     fields(board, {"version", "session", "cwd", "status", "goals", "stop_fingerprint", "observations",
-                   "list_issued", "list_applied"}, "coverage board")
+                   "list_issued", "list_applied", "dispatch_attempts"}, "coverage board")
     if board.get("version") != 1 or board.get("session") != session or board.get("status") not in BOARD_STATES:
         raise CoverageError("coverage board version, session or status is invalid")
     text_value(board.get("cwd"), "cwd", 4096)
@@ -229,8 +249,19 @@ def validate_board(board: Row, session: str) -> None:
             raise CoverageError("invalid agent list snapshot ordering receipt")
         if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
             raise CoverageError("invalid agent list snapshot")
+    reserved_executors = {}
+    for call_id, entry in object_value(board.get("dispatch_attempts", {}), "dispatch attempts").items():
+        text_value(call_id, "tool use ID", 256)
+        attempt = object_value(entry, "dispatch attempt")
+        fields(attempt, {"goal", "work", "turn_id", "task_path", "plan_path", "spawn"}, "dispatch attempt")
+        row_id(attempt.get("goal"), "dispatch goal ID")
+        row_id(attempt.get("work"), "dispatch work ID")
+        text_value(attempt.get("turn_id"), "dispatch turn ID", 256)
+        if not is_task_path(attempt.get("task_path")) or not is_task_path(attempt.get("plan_path")) or type(attempt.get("spawn")) is not bool:
+            raise CoverageError("invalid dispatch attempt identity")
+        reserved_executors[attempt["task_path"]] = (attempt["goal"], attempt["work"])
     goal_ids = set()
-    task_paths = set()
+    active_executors = set()
     for entry in goals:
         goal = object_value(entry, "goal")
         fields(goal, {"id", "title", "delivered", "delivery_evidence", "work"}, "goal")
@@ -245,13 +276,15 @@ def validate_board(board: Row, session: str) -> None:
         work_ids = set()
         for entry in works:
             work = object_value(entry, "work")
-            fields(work, {"id", "title", "status", "evidence", "blocker", "dispatch"}, "work")
+            fields(work, {"id", "title", "status", "evidence", "blocker", "dispatch", "executor"}, "work")
             key = row_id(work.get("id"), "work id")
             status = work.get("status")
             if key in work_ids or status not in WORK_STATES:
                 raise CoverageError("invalid or duplicate work")
             work_ids.add(key)
             text_value(work.get("title"), "work title", 160)
+            if "executor" in work and not is_task_path(work["executor"]):
+                raise CoverageError("work executor must be a canonical native agent path")
             if status in {"returned", "done", "blocked"} or "evidence" in work:
                 text_value(work.get("evidence"), "work evidence", 420)
             if status == "blocked":
@@ -261,10 +294,16 @@ def validate_board(board: Row, session: str) -> None:
             if status == "running" or "dispatch" in work:
                 dispatch = object_value(work.get("dispatch"), "dispatch")
                 task_path = validate_dispatch(dispatch)
-                if status == "running":
-                    if task_path in task_paths:
-                        raise CoverageError("a live dispatch cannot cover multiple work packages")
-                    task_paths.add(task_path)
+                if status == "running" and task_path != executor_for(goal, work):
+                    raise CoverageError("running work must keep its dispatched executor")
+            if status in {"ready", "running"}:
+                executor = executor_for(goal, work)
+                owner = reserved_executors.get(executor)
+                if owner is not None and owner != (goal_key, key):
+                    raise CoverageError("executor is reserved by another dispatch awaiting its native receipt")
+                if executor in active_executors:
+                    raise CoverageError("executor already has ready or running work; choose another executor or verify the current work first")
+                active_executors.add(executor)
         if goal["delivered"]:
             if any(work["status"] != "done" for work in works):
                 raise CoverageError("delivered goal has unfinished work")
@@ -278,7 +317,7 @@ def validate_board(board: Row, session: str) -> None:
 def validate_dispatch(dispatch: Row) -> str:
     fields(dispatch, {"task_path", "tool_use_id", "agent_link", "verified_turn"}, "dispatch")
     task_path = dispatch.get("task_path")
-    if not isinstance(task_path, str) or len(task_path) > 256 or not TASK_PATH.fullmatch(task_path):
+    if not is_task_path(task_path):
         raise CoverageError("dispatch task path is invalid")
     text_value(dispatch.get("tool_use_id"), "tool use ID", 256)
     if dispatch.get("agent_link") not in {"unconfirmed", "needs_verify", "verified"}:
@@ -295,6 +334,7 @@ def plan_board(board: Row, request: Row, cwd: str) -> None:
     proposed = request.get("goals")
     if not isinstance(proposed, list) or not proposed:
         raise CoverageError("plan needs at least one goal")
+    in_flight = {(attempt["goal"], attempt["work"]) for attempt in board.get("dispatch_attempts", {}).values()}
     seen_goals = set()
     current = {goal["id"]: goal for goal in board["goals"]}
     for entry in proposed:
@@ -311,7 +351,7 @@ def plan_board(board: Row, request: Row, cwd: str) -> None:
             board["goals"].append(goal)
         elif goal["title"] != title:
             raise CoverageError("existing goal IDs keep their title; use a new ID for a distinct goal")
-        merge_work(goal, row.get("work"))
+        merge_work(goal, row.get("work"), in_flight)
     board["cwd"] = cwd
     if board["status"] == "needs_plan":
         if not open_goals(board):
@@ -319,26 +359,41 @@ def plan_board(board: Row, request: Row, cwd: str) -> None:
         board["status"] = "active"
 
 
-def merge_work(goal: Row, proposed: Any) -> None:
+def merge_work(goal: Row, proposed: Any, in_flight: set[tuple[str, str]]) -> None:
     if not isinstance(proposed, list) or not proposed:
         raise CoverageError("every goal needs a work package")
     current = {work["id"]: work for work in goal["work"]}
     seen = set()
     for entry in proposed:
         row = object_value(entry, "work")
-        fields(row, {"id", "title"}, "work")
+        fields(row, {"id", "title", "executor"}, "work")
         key = row_id(row.get("id"), "work id")
         title = text_value(row.get("title"), "work title", 160)
+        if "executor" in row and not is_task_path(row["executor"]):
+            raise CoverageError("work executor must be a canonical native agent path")
         if key in seen:
             raise CoverageError("duplicate work in plan")
         seen.add(key)
         if key in current:
-            if current[key]["title"] != title:
+            work = current[key]
+            if work["title"] != title:
                 raise CoverageError("existing work IDs keep their title; use a new ID for distinct work")
+            if "executor" in row:
+                changed = row["executor"] != executor_for(goal, work)
+                if (goal["id"], key) in in_flight:
+                    if changed:
+                        raise CoverageError("executor cannot change while its dispatch is awaiting a native receipt; use retry after confirmed failure")
+                elif work["status"] in {"ready", "blocked"}:
+                    work["executor"] = row["executor"]
+                elif changed:
+                    raise CoverageError("executor cannot change after dispatch without an explicit retry")
             continue
         if goal["delivered"]:
             raise CoverageError("a delivered goal cannot receive new work")
-        goal["work"].append({"id": key, "title": title, "status": "ready"})
+        work = {"id": key, "title": title, "status": "ready"}
+        if "executor" in row:
+            work["executor"] = row["executor"]
+        goal["work"].append(work)
 
 
 def set_paused(board: Row, paused: bool) -> None:
@@ -387,8 +442,13 @@ def update_board(board: Row, request: Row) -> None:
     if work is None or goal["delivered"]:
         raise CoverageError("work is missing or its goal was already delivered")
     status = work["status"]
+    attempts = board.get("dispatch_attempts", {})
+    work_attempts = [call_id for call_id, attempt in attempts.items()
+                     if (attempt["goal"], attempt["work"]) == (goal["id"], work["id"])]
     if action == "block" and status in {"ready", "running", "returned", "blocked"}:
         fields(request, {"action", "goal", "work", "evidence", "blocker"}, "block")
+        if work_attempts:
+            raise CoverageError("work cannot be blocked while its dispatch is awaiting a native receipt; use retry after confirmed failure")
         blocker = text_value(request.get("blocker"), "blocker", 240)
         work.update(status="blocked", evidence=evidence, blocker=blocker)
     elif action == "verify" and status == "running":
@@ -407,11 +467,19 @@ def update_board(board: Row, request: Row) -> None:
     elif action == "accept" and status == "returned":
         fields(request, {"action", "goal", "work", "evidence"}, "accept")
         work.update(status="done", evidence=evidence)
-    elif action == "retry" and status in {"running", "returned", "blocked"}:
+    elif action == "retry":
         fields(request, {"action", "goal", "work", "evidence"}, "retry")
+        if status not in {"running", "returned", "blocked"} and not (status == "ready" and work_attempts):
+            raise CoverageError("retry requires a prior dispatch or an unresolved dispatch attempt")
+        for call_id in work_attempts:
+            attempts.pop(call_id)
+        if not attempts:
+            board.pop("dispatch_attempts", None)
         work.update(status="ready", evidence=evidence)
         work.pop("blocker", None)
-        work.pop("dispatch", None)
+        if "dispatch" in work:
+            work["executor"] = executor_for(goal, work)
+            work.pop("dispatch")
     else:
         raise CoverageError("update action is incompatible with the work state")
 
@@ -424,6 +492,13 @@ def parse_file(path: Path) -> Row:
     return object_value(json.loads(data.decode("utf-8-sig")), "CLI input")
 
 
+def render_board(board: Row) -> Row:
+    for goal in board["goals"]:
+        for work in goal["work"]:
+            work["executor"] = executor_for(goal, work)
+    return board
+
+
 def cli(args: argparse.Namespace) -> Row:
     session = text_value(args.session, "session id", 256)
     path = board_path(data_directory(args.data_dir), session)
@@ -431,7 +506,8 @@ def cli(args: argparse.Namespace) -> Row:
         if existing(path) is None:
             return {"status": "inactive"}
         with board_lock(path):
-            return read_board(path, session) or {"status": "inactive"}
+            board = read_board(path, session)
+            return render_board(board) if board else {"status": "inactive"}
     if args.json is not None:
         if len(args.json.encode("utf-8")) > MAX_BOARD_BYTES:
             raise CoverageError("input exceeds the board size limit")
@@ -451,7 +527,7 @@ def cli(args: argparse.Namespace) -> Row:
             update_board(board, request)
         if board != previous:
             write_board(path, board)
-    return board
+    return render_board(board)
 
 
 def quote(argument: str) -> str:
@@ -464,7 +540,7 @@ def cli_command(board: Row, data: Path, action: str) -> str:
     launcher = "py -3 -X utf8 -B" if os.name == "nt" else "python3 -B"
     command = f"{launcher} {quote(str(SCRIPT))} {action} --session {quote(board['session'])} --data-dir {quote(str(data))}"
     if action == "plan":
-        command += f" --cwd {quote(board['cwd'])} --input {quote('plan.json')}"
+        command += f" --cwd {quote(board['cwd'])}"
     return command
 
 
@@ -533,8 +609,8 @@ def plan_context(board: Row, data: Path) -> str:
     return (
         "用户已明确要求持续派遣。先按原始要求整理全部仍待交付主线及可独立派遣工作包，"
         "以 {\"goals\":[{\"id\":\"G01\",\"title\":\"主线\",\"work\":[{\"id\":\"W01\",\"title\":\"工作包\"}]}]}"
-        f" 写入 plan.json 后登记。命令：{cli_command(board, data, 'plan')}。"
-        "派遣消息需包含 [lean-work G01/W01]。"
+        f" 写入 plan.json 后登记。命令：{cli_command(board, data, 'plan')} --input {quote('plan.json')}。"
+        "直接用工作包的 executor，启动时使用该路径的原生 task_name，复用时把完整路径传给 target。"
     )
 
 
@@ -575,18 +651,37 @@ def stop(board: Row, data: Path) -> Row:
     return {"decision": "block", "reason": reason}
 
 
-def tagged_work(board: Row, arguments: Row, *, spawn: bool) -> tuple[Row, Row] | None:
-    possible_keys = ("message", "task_message", "task") if spawn else ("message",)
-    message = next((arguments[key] for key in possible_keys if isinstance(arguments.get(key), str)), "")
-    markers = set(MARKER.findall(message))
-    if len(markers) != 1:
+def requested_path(arguments: Row, *, spawn: bool) -> str | None:
+    if not spawn:
+        target = arguments.get("target")
+        return target if is_task_path(target) else None
+    task_name = arguments.get("task_name")
+    if not isinstance(task_name, str) or not TASK_NAME.fullmatch(task_name):
         return None
-    goal_key, work_key = next(iter(markers))
-    goal = find_goal(board, goal_key)
-    if goal is None or goal["delivered"]:
+    path = f"/root/{task_name}"
+    return path if is_task_path(path) else None
+
+
+def dispatch_work(board: Row, arguments: Row, task_path: str) -> tuple[Row, Row] | None:
+    ready = []
+    for goal, work in pending_work(board):
+        if work["status"] == "running" and work["dispatch"]["task_path"] == task_path:
+            return None
+        if work["status"] == "ready":
+            ready.append((goal, work))
+    markers = {marker for key in ("message", "task_message", "task")
+               if isinstance(arguments.get(key), str) for marker in MARKER.findall(arguments[key])}
+    if len(markers) > 1:
         return None
-    work = find_work(goal, work_key)
-    return (goal, work) if work is not None and work["status"] == "ready" else None
+    marker = next(iter(markers), None)
+    matches = [(goal, work) for goal, work in ready if executor_for(goal, work) == task_path]
+    if matches:
+        goal, work = matches[0]
+        return (goal, work) if len(matches) == 1 and marker in (None, (goal["id"], work["id"])) else None
+    for goal, work in ready:
+        if marker == (goal["id"], work["id"]) and "executor" not in work and "dispatch" not in work:
+            return goal, work
+    return None
 
 
 def event_id(event: Row, key: str) -> str | None:
@@ -674,36 +769,65 @@ def success_path(response: Any) -> str | None:
     if not isinstance(result, dict) or result.keys() - {"task_name", "nickname"}:
         return None
     task_path = result.get("task_name")
-    return task_path if isinstance(task_path, str) and len(task_path) <= 256 and TASK_PATH.fullmatch(task_path) else None
+    return task_path if is_task_path(task_path) else None
 
 
-def followup_path(response: Any, target: Any) -> str | None:
-    if response != "" or not isinstance(target, str) or len(target) > 256:
-        return None
-    return target if TASK_PATH.fullmatch(target) else None
-
-
-def register_dispatch(board: Row, event: Row, *, spawn: bool) -> None:
-    call_id = event_id(event, "tool_use_id")
-    if not call_id:
-        return
+def prepare_dispatch(board: Row, event: Row, *, spawn: bool) -> str:
     arguments = event.get("tool_input")
-    if not isinstance(arguments, dict):
-        return
-    selected = tagged_work(board, arguments, spawn=spawn)
+    call_id, turn_id = event_id(event, "tool_use_id"), event_id(event, "turn_id")
+    if not call_id or not turn_id or not isinstance(arguments, dict):
+        return "invalid"
+    task_path = requested_path(arguments, spawn=spawn)
+    if task_path is None:
+        return "invalid"
+    selected = dispatch_work(board, arguments, task_path)
     if selected is None:
-        return
-    _, work = selected
+        return "invalid"
+    goal, work = selected
+    attempts = board.get("dispatch_attempts", {})
+    match = {"goal": goal["id"], "work": work["id"], "turn_id": turn_id, "task_path": task_path,
+             "plan_path": executor_for(goal, work), "spawn": spawn}
+    if call_id in attempts:
+        return "allowed" if attempts[call_id] == match else "in_flight"
+    for attempt in attempts.values():
+        same_work = attempt["goal"] == match["goal"] and attempt["work"] == match["work"]
+        same_path = attempt["task_path"] == task_path
+        if same_path or same_work:
+            return "in_flight"
+    attempts[call_id] = match
+    board["dispatch_attempts"] = attempts
+    return "allowed"
+
+
+def register_dispatch(board: Row, event: Row, *, spawn: bool) -> Row:
+    call_id = event_id(event, "tool_use_id")
+    turn_id = event_id(event, "turn_id")
+    attempt = board.get("dispatch_attempts", {}).get(call_id)
+    if attempt is None or attempt["turn_id"] != turn_id or attempt["spawn"] != spawn:
+        return {}
+    board["dispatch_attempts"].pop(call_id)
+    if not board["dispatch_attempts"]:
+        board.pop("dispatch_attempts")
+    arguments = event.get("tool_input")
     response = event.get("tool_response")
-    task_path = success_path(response) if spawn else followup_path(response, arguments.get("target"))
-    if not task_path:
-        return
-    for _, other in pending_work(board):
-        if other["status"] == "running" and other["dispatch"]["task_path"] == task_path:
-            return
-    dispatch = {"task_path": task_path, "tool_use_id": call_id, "agent_link": "unconfirmed"}
-    work.update(status="running", dispatch=dispatch)
+    task_path = success_path(response) if spawn else (
+        requested_path(arguments, spawn=False) if response == "" and isinstance(arguments, dict) else None
+    )
+    if task_path is None:
+        return {}
+    goal = find_goal(board, attempt["goal"])
+    work = find_work(goal, attempt["work"]) if goal is not None and not goal["delivered"] else None
+    work_changed = work is None or work["status"] != "ready" or executor_for(goal, work) != attempt["plan_path"]
+    path_taken = any(row is not work and row["status"] in {"ready", "running"} and executor_for(line, row) == task_path
+                     for line, row in pending_work(board))
+    if task_path != attempt["task_path"] or work_changed or path_taken:
+        return {"systemMessage": (f"派遣回执未入覆盖表。检查工作包 {attempt['goal']}/{attempt['work']} "
+                                  f"与已批准的原生路径 {attempt['task_path']}。")}
+    if task_path != attempt["plan_path"]:
+        work["executor"] = task_path
+    work.update(status="running", dispatch={"task_path": task_path, "tool_use_id": call_id, "agent_link": "unconfirmed"})
     work.pop("evidence", None)
+    return {}
 
 
 def pre_tool(board: Row, data: Path, event: Row, name: str) -> Row:
@@ -711,22 +835,37 @@ def pre_tool(board: Row, data: Path, event: Row, name: str) -> Row:
     dispatch = name in SPAWN_TOOLS | FOLLOWUP_TOOLS
     if not dispatch and (name not in LOCAL_TOOLS or own_cli(arguments)):
         return {}
-    if dispatch and isinstance(arguments, dict) and tagged_work(board, arguments, spawn=name in SPAWN_TOOLS):
+    approval = prepare_dispatch(board, event, spawn=name in SPAWN_TOOLS) if dispatch else None
+    if approval == "allowed":
         return {}
-    ready = [f"{goal['id']}/{work['id']}" for goal, work in pending_work(board) if work["status"] == "ready"]
+    ready = [(goal, work) for goal, work in pending_work(board) if work["status"] == "ready"]
     status_command = cli_command(board, data, "status")
     update_command = cli_command(board, data, "update")
-    if dispatch:
+    if approval == "in_flight":
+        reason = ("工作包或原生任务路径已有获准调用等待回执。先核对该调用结果。"
+                  "已确认失败且宿主没有 Post 回执时，使用 update 的 retry 动作登记证据后重试。")
+    elif dispatch:
         if ready:
-            reason = ("派遣前必须从当前覆盖表选择一个待派工作包，把该包对应的标记放进任务消息，"
-                      f"例如 [lean-work {ready[0]}]，每次调用对应一个包。")
+            examples = []
+            for goal, work in ready[:4]:
+                path = executor_for(goal, work)
+                if name in SPAWN_TOOLS and path.count("/") == 2:
+                    field = f"task_name={path.rsplit('/', 1)[1]}"
+                else:
+                    field = f"target={path}"
+                examples.append(f"{goal['id']}/{work['id']} {field}")
+            plan = cli_command(board, data, "plan")
+            reason = ("派遣需要选择与一个待派包绑定的原生路径。当前可用：" + "、".join(examples) + "。"
+                      f"任务正文填写业务内容。复用其他现有路径时，用 {plan} --json 'JSON 对象' 更新该包的 executor。")
         else:
             reason = ("当前覆盖表没有待派工作包。先核对已派状态、验收已返回结果，"
                       "或根据实际证据登记重试及新工作包。")
     elif ready:
-        packages = "、".join(ready[:8]) + (f" 等共 {len(ready)} 项" if len(ready) > 8 else "")
+        packages = "、".join(f"{goal['id']}/{work['id']}" for goal, work in ready[:8])
+        if len(ready) > 8:
+            packages += f" 等共 {len(ready)} 项"
         reason = (f"已登记的可独立派遣工作包仍待派：{packages}。"
-                  "先派遣并带 [lean-work G01/W01] 标记，或登记有证据的具体阻断。")
+                  "先用工作包的 executor 对应原生 task_name 或 target 派遣，或登记有证据的具体阻断。")
     elif name in WAIT_TOOLS:
         running = [(goal, work) for goal, work in pending_work(board) if work["status"] == "running"]
         if not running:
@@ -817,11 +956,10 @@ def apply_event(board: Row, data: Path, event: Row, kind: str, tool_name: str, a
             prepare_agent_list(board, event)
         elif kind == "PostToolUse":
             observe_agent_list(board, event)
-    elif board["status"] == "active":
-        if kind == "PreToolUse":
-            return pre_tool(board, data, event, tool_name)
-        if kind == "PostToolUse":
-            register_dispatch(board, event, spawn=tool_name in SPAWN_TOOLS)
+    elif kind == "PostToolUse":
+        return register_dispatch(board, event, spawn=tool_name in SPAWN_TOOLS)
+    elif board["status"] == "active" and kind == "PreToolUse":
+        return pre_tool(board, data, event, tool_name)
     return {}
 
 

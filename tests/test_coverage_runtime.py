@@ -108,6 +108,15 @@ class CoverageRuntimeTests(unittest.TestCase):
         self.assertNotEqual(self.permission(opened), "deny", opened)
         return self.hook("PostToolUse", **call, tool_response=response)
 
+    def observe_legacy_spawn(self, task_name: str) -> None:
+        call = {
+            "tool_name": "collaboration.spawn_agent", "tool_use_id": f"call-legacy-{uuid.uuid4()}",
+            "tool_input": {"task_name": task_name, "message": "[lean-work G01/W01] 执行工作包。"},
+        }
+        opened = self.hook("PreToolUse", **call)
+        self.assertNotEqual(self.permission(opened), "deny", opened)
+        self.hook("PostToolUse", **call, tool_response=json.dumps({"task_name": f"/root/{task_name}"}))
+
     def test_explicit_coverage_request_marks_the_session_for_a_plan(self) -> None:
         for prompt, count in (
             ("十三条未完成主线必须逐条持续有实际工作的代理，直到该条完成并交付才退出派遣。", 13),
@@ -153,53 +162,131 @@ class CoverageRuntimeTests(unittest.TestCase):
         self.successful("update", "--session", self.session, "--data-dir", str(self.plugin_data), "--json", request)
         self.assertEqual(self.work_status(), "blocked")
 
-    def test_active_dispatch_requires_an_unambiguous_ready_work_marker(self) -> None:
+    def test_active_dispatch_requires_an_unambiguous_ready_assignment(self) -> None:
         tools = (
-            ("collaborationspawn_agent", {"task_name": "worker"}),
-            ("collaborationfollowup_task", {"target": "/root/worker"}),
+            ("collaborationspawn_agent", "task_name"),
+            ("collaborationfollowup_task", "target"),
         )
 
-        def dispatch(tool: str, arguments: dict, message: str) -> dict:
-            return self.hook(
-                "PreToolUse", tool_name=tool, tool_use_id=f"call-marker-{uuid.uuid4()}",
-                tool_input={**arguments, "message": message},
-            )
+        def arguments(tool: str, parameter: str, value: str, message: str = "执行当前工作。") -> dict:
+            return {
+                "tool_name": tool, "tool_use_id": f"call-assignment-{uuid.uuid4()}",
+                "tool_input": {parameter: value, "message": message},
+            }
 
-        for tool, arguments in tools:
-            unrestricted = dispatch(tool, arguments, "执行当前工作。")
+        for tool, parameter in tools:
+            value = "unassigned" if parameter == "task_name" else "/root/unassigned"
+            unrestricted = self.hook("PreToolUse", **arguments(tool, parameter, value))
             self.assertNotEqual(self.permission(unrestricted), "deny", unrestricted)
         self.assertFalse(self.table_path().exists())
 
-        self.plan(self.goals(2))
+        table = self.plan(self.goals(2))
+        ready, blocked = (goal["work"][0]["executor"] for goal in table["goals"])
         self.update("block", goal="G02", work="W01", blocker="输入未就绪。", evidence="当前输入清单。")
-        for tool, arguments in tools:
-            for message in (
-                "执行当前工作。",
-                "[lean-work G03/W01] 执行表外工作。",
-                "[lean-work G02/W01] 执行尚未就绪的工作。",
-                "[lean-work G01/W01] [lean-work G02/W01] 同时执行两项。",
-            ):
-                with self.subTest(tool=tool, message=message):
-                    denied = dispatch(tool, arguments, message)
+        for tool, parameter in tools:
+            ready_value = ready.rsplit("/", 1)[-1] if parameter == "task_name" else ready
+            for path in ("/root/unassigned", blocked):
+                with self.subTest(tool=tool, path=path):
+                    value = path.rsplit("/", 1)[-1] if parameter == "task_name" else path
+                    denied = self.hook("PreToolUse", **arguments(tool, parameter, value))
                     self.assertEqual(self.permission(denied), "deny", denied)
                     reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
-                    self.assertRegex(reason, r"\[lean-work [A-Za-z0-9_-]+/[A-Za-z0-9_-]+\]")
-            permitted = dispatch(tool, arguments, "[lean-work G01/W01] 执行当前就绪工作。")
+                    self.assertIn(parameter, reason)
+                    self.assertIn(ready_value, reason)
+            call = arguments(tool, parameter, ready_value)
+            permitted = self.hook("PreToolUse", **call)
             self.assertNotEqual(self.permission(permitted), "deny", permitted)
+            self.hook("PostToolUse", **call, tool_response="Error: controlled unsuccessful dispatch")
         self.assertEqual(self.work_status(), "ready")
 
         self.hook("UserPromptSubmit", prompt="本轮不再派任何子代理，先只说明当前证据。")
         self.assertEqual(self.status()["status"], "paused")
-        for tool, arguments in tools:
-            unrestricted = dispatch(tool, arguments, "执行当前工作。")
+        for tool, parameter in tools:
+            value = "unassigned" if parameter == "task_name" else "/root/unassigned"
+            unrestricted = self.hook("PreToolUse", **arguments(tool, parameter, value))
             self.assertNotEqual(self.permission(unrestricted), "deny", unrestricted)
+
+    def test_duplicate_ready_executor_is_rejected_and_delivered_guard_releases(self) -> None:
+        goals = self.goals(2)
+        for goal in goals:
+            goal["work"][0]["executor"] = "/root/shared"
+        duplicate = self.input_file("duplicate-executor.json", {"goals": goals})
+        rejected = self.invoke("plan", "--session", self.session, "--cwd", str(self.workspace), "--input", duplicate)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertFalse(self.table_path().exists())
+
+        self.plan(self.goals(1))
+        self.observe_legacy_spawn("legacy_worker")
+        work = self.status()["goals"][0]["work"][0]
+        self.assertEqual(work["dispatch"]["task_path"], "/root/legacy_worker")
+        self.observe_agents(("/root/legacy_worker", {"completed": "工作包已返回。"}))
+        self.update("accept", goal="G01", work="W01", evidence="工作包的验收已完成。")
+        self.update("deliver", goal="G01", evidence="本表唯一主线已完整交付。")
+        untracked = self.hook(
+            "PreToolUse", tool_name="collaborationspawn_agent", tool_use_id="call-after-delivery",
+            tool_input={"task_name": "new_task", "message": "处理另一个任务。"},
+        )
+        self.assertNotEqual(self.permission(untracked), "deny", untracked)
+
+    def test_distinct_legacy_followups_cannot_reserve_the_same_actor(self) -> None:
+        self.plan(self.goals(1))
+        self.observe_legacy_spawn("shared")
+        self.observe_agents(("/root/shared", {"completed": "原工作包已返回。"}))
+        goals = self.goals(3)
+        self.plan(goals)
+
+        def call(goal: str) -> dict:
+            return {
+                "tool_name": "collaborationfollowup_task", "tool_use_id": f"call-{goal}",
+                "tool_input": {"target": "/root/shared", "message": f"[lean-work {goal}/W01] 接续工作。"},
+            }
+
+        earlier = call("G02")
+        admitted = self.hook("PreToolUse", **earlier)
+        self.assertNotEqual(self.permission(admitted), "deny", admitted)
+        before_replay = self.table_path().read_bytes()
+        self.plan(goals)
+        self.assertEqual(self.table_path().read_bytes(), before_replay)
+        replay = self.hook("PreToolUse", **earlier)
+        self.assertNotEqual(self.permission(replay), "deny", replay)
+        for goal, executor in ((goals[1], "/root/other"), (goals[2], "/root/shared")):
+            with self.subTest(goal=goal["id"], executor=executor):
+                candidate = {**goal, "work": [{**goal["work"][0], "executor": executor}]}
+                source = self.input_file("change-reserved-executor.json", {"goals": [candidate]})
+                result = self.invoke(
+                    "plan", "--session", self.session, "--cwd", str(self.workspace), "--input", source,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.table_path().read_bytes(), before_replay)
+        denied = self.hook("PreToolUse", **call("G03"))
+        self.assertEqual(self.permission(denied), "deny", denied)
+        conflicting_path = {**earlier, "tool_use_id": "call-G02-other-path"}
+        conflicting_path["tool_input"] = {**earlier["tool_input"], "target": "/root/other"}
+        denied = self.hook("PreToolUse", **conflicting_path)
+        self.assertEqual(self.permission(denied), "deny", denied)
+
+        self.hook("PostToolUse", **earlier, tool_response="Error: controlled unsuccessful dispatch")
+        pending = call("G03")
+        retry = self.hook("PreToolUse", **pending)
+        self.assertNotEqual(self.permission(retry), "deny", retry)
+        self.update("retry", goal="G03", work="W01", evidence="原生执行检查确认这次派发未启动。")
+        goals[2]["work"][0]["executor"] = "/root/other"
+        updated = self.plan(goals)
+        self.assertEqual(updated["goals"][2]["work"][0]["executor"], "/root/other")
+        self.hook("PostToolUse", **pending, tool_response="")
+        self.assertEqual(self.work_status(goal="G03"), "ready")
+        replacement = self.hook(
+            "PreToolUse", tool_name="collaborationspawn_agent", tool_use_id="call-replacement",
+            tool_input={"task_name": "other", "message": "执行已重新分配的工作包。"},
+        )
+        self.assertNotEqual(self.permission(replacement), "deny", replacement)
 
     def test_native_dispatch_failure_does_not_cover_a_work_package(self) -> None:
         self.plan(self.goals(1))
         call = {
             "tool_name": "collaboration.spawn_agent",
             "tool_use_id": "call-failed-spawn",
-            "tool_input": {"agent_type": "worker", "message": "[lean-work G01/W01] 完成指定工作包。"},
+            "tool_input": {"task_name": "retry", "message": "[lean-work G01/W01] 完成指定工作包。"},
         }
         attempt = self.hook("PreToolUse", **call)
         self.assertNotEqual(self.permission(attempt), "deny", attempt)
@@ -220,7 +307,7 @@ class CoverageRuntimeTests(unittest.TestCase):
         spawn = {
             "tool_name": "collaboration.spawn_agent",
             "tool_use_id": "call-parent-turn",
-            "tool_input": {"agent_type": "worker", "message": "[lean-work G01/W01] 执行工作包。"},
+            "tool_input": {"task_name": "worker", "message": "[lean-work G01/W01] 执行工作包。"},
         }
         child = {"agent_id": str(uuid.uuid4()), "agent_type": "worker", "turn_id": str(uuid.uuid4())}
         child_session = str(uuid.uuid4())
@@ -261,11 +348,7 @@ class CoverageRuntimeTests(unittest.TestCase):
 
     def test_returned_work_blocks_wait_when_no_agent_is_running(self) -> None:
         self.plan(self.goals(1))
-        self.hook(
-            "PostToolUse", tool_name="collaboration.spawn_agent", tool_use_id="call-returned",
-            tool_input={"message": "[lean-work G01/W01] 执行工作包。"},
-            tool_response='{"task_name":"/root/worker","nickname":"worker"}',
-        )
+        self.observe_legacy_spawn("worker")
         self.observe_agents(("/root/worker", {"completed": "工作包已返回。"}))
         self.assertEqual(self.work_status(), "returned")
 
@@ -275,11 +358,7 @@ class CoverageRuntimeTests(unittest.TestCase):
 
     def test_late_and_prior_turn_rosters_cannot_authorize_wait(self) -> None:
         self.plan(self.goals(1))
-        self.hook(
-            "PostToolUse", tool_name="collaboration.spawn_agent", tool_use_id="call-roster-order",
-            tool_input={"message": "[lean-work G01/W01] 执行工作包。"},
-            tool_response='{"task_name":"/root/worker","nickname":"worker"}',
-        )
+        self.observe_legacy_spawn("worker")
         list_tool = {"tool_name": "collaboration.list_agents", "tool_input": {}}
         older = {**list_tool, "tool_use_id": "call-list-1"}
         newer = {**list_tool, "tool_use_id": "call-list-2"}
@@ -305,33 +384,58 @@ class CoverageRuntimeTests(unittest.TestCase):
         refreshed = self.hook("PreToolUse", **wait_tool)
         self.assertNotEqual(self.permission(refreshed), "deny", refreshed)
 
-    def test_single_work_acceptance_does_not_deliver_any_goal(self) -> None:
+    def test_structured_dispatch_and_followup_preserve_individual_goal_acceptance(self) -> None:
         goals = self.goals()
-        goals[0]["work"].append({"id": "W02", "title": "仍需满足的另一项验收"})
-        self.plan(goals)
+        executor = self.plan(goals)["goals"][0]["work"][0]["executor"]
+        self.assertRegex(executor, r"^/root/[a-z0-9_]+$")
+        self.assertEqual(self.plan(goals)["goals"][0]["work"][0]["executor"], executor)
+        native_name = executor.rsplit("/", 1)[-1]
         spawn = {
             "tool_name": "collaborationspawn_agent",
             "tool_use_id": "call-spawn",
             "tool_input": {
-                "fork_turns": "none", "message": "[lean-work G01/W01] 执行第一个工作包。",
-                "model": "gpt-6.2-sol", "reasoning_effort": "medium", "task_name": "worker",
+                "fork_turns": "none", "message": "执行第一个工作包。",
+                "model": "gpt-6.2-sol", "reasoning_effort": "medium", "task_name": native_name,
             },
         }
+        receipt = json.dumps({"task_name": executor, "nickname": native_name})
+        self.hook("PostToolUse", **spawn, tool_response=receipt)
+        self.assertEqual(self.work_status(), "ready")
+        wrong_path = {**spawn, "tool_use_id": "call-spawn-wrong-path"}
+        attempted = self.hook("PreToolUse", **wrong_path)
+        self.assertNotEqual(self.permission(attempted), "deny", attempted)
+        self.hook("PostToolUse", **wrong_path, tool_response='{"task_name":"/root/other","nickname":"other"}')
+        self.assertEqual(self.work_status(), "ready")
         start = self.hook("PreToolUse", **spawn)
         self.assertNotEqual(self.permission(start), "deny", start)
-        self.hook("PostToolUse", **spawn, tool_response='{"task_name":"/root/worker","nickname":"worker"}')
-        self.assertEqual(self.work_status(), "running")
+        self.hook("PostToolUse", **spawn, tool_response=receipt)
+        active = self.status()["goals"][0]["work"][0]
+        self.assertEqual(active["status"], "running")
+        self.assertEqual(active["dispatch"]["task_path"], executor)
+        next_work = {"id": "W02", "title": "仍需满足的另一项验收", "executor": executor}
+        for works in (
+            [{**goals[0]["work"][0], "executor": "/root/other"}],
+            [*goals[0]["work"], next_work],
+        ):
+            reassign = self.input_file("reassign.json", {"goals": [{**goals[0], "work": works}]})
+            result = self.invoke(
+                "plan", "--session", self.session, "--cwd", str(self.workspace), "--input", reassign,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(self.status()["goals"][0]["work"], [active])
         premature = self.input_file("accept-premature.json", {
             "action": "accept", "goal": "G01", "work": "W01", "evidence": "只有派发回执。",
         })
         rejected = self.invoke("update", "--session", self.session, "--input", premature)
         self.assertNotEqual(rejected.returncode, 0)
         self.observe_agents(
-            ("/root/worker", {"completed": "第一个工作包已返回。"}), tool_name="collaborationlist_agents",
+            (executor, {"completed": "第一个工作包已返回。"}), tool_name="collaborationlist_agents",
         )
         self.assertEqual(self.work_status(), "returned")
 
         self.update("accept", goal="G01", work="W01", evidence="独立复核只通过第一个工作包。")
+        goals[0]["work"].append(next_work)
+        self.plan(goals)
         self.update("block", goal="G02", work="W01", blocker="缺少现场样本。", evidence="现场清单无该样本。")
         actual = self.status()["goals"]
         self.assertCountEqual((item["id"] for item in actual), (item["id"] for item in goals))
@@ -348,14 +452,20 @@ class CoverageRuntimeTests(unittest.TestCase):
         followup = {
             "tool_name": "collaborationfollowup_task",
             "tool_use_id": "call-followup",
-            "tool_input": {"target": "/root/worker", "message": "[lean-work G01/W02] 接续第二个工作包。"},
+            "tool_input": {"target": executor, "message": "接续第二个工作包。"},
         }
+        misdirected = {
+            **followup, "tool_use_id": "call-followup-wrong-path",
+            "tool_input": {"target": "/root/other", "message": "[lean-work G01/W02] 接续第二个工作包。"},
+        }
+        denied = self.hook("PreToolUse", **misdirected)
+        self.assertEqual(self.permission(denied), "deny", denied)
         reuse = self.hook("PreToolUse", **followup)
         self.assertNotEqual(self.permission(reuse), "deny", reuse)
         self.hook("PostToolUse", **followup, tool_response="")
         self.assertEqual(self.work_status(work="W02"), "running")
         self.observe_agents(
-            ("/root/worker", {"completed": "第二个工作包已返回。"}), tool_name="collaborationlist_agents",
+            (executor, {"completed": "第二个工作包已返回。"}), tool_name="collaborationlist_agents",
         )
         self.assertEqual(self.work_status(work="W02"), "returned")
         self.update("accept", goal="G01", work="W02", evidence="第二个工作包的验收已完成。")
@@ -369,7 +479,7 @@ class CoverageRuntimeTests(unittest.TestCase):
             {
                 "tool_name": "collaboration.spawn_agent",
                 "tool_use_id": f"call-worker-{index}",
-                "tool_input": {"agent_type": "worker", "message": f"[lean-work G{index:02d}/W01] 执行工作包。"},
+                "tool_input": {"task_name": f"worker_{index}", "message": f"[lean-work G{index:02d}/W01] 执行工作包。"},
             }
             for index in (1, 2)
         ]
@@ -402,11 +512,7 @@ class CoverageRuntimeTests(unittest.TestCase):
 
     def test_manual_verification_requires_the_exact_successful_dispatch_path(self) -> None:
         self.plan(self.goals(2))
-        self.hook(
-            "PostToolUse", tool_name="collaboration.spawn_agent", tool_use_id="call-verify",
-            tool_input={"message": "[lean-work G01/W01] 执行工作包。"},
-            tool_response='{"task_name":"/root/actual","nickname":"actual"}',
-        )
+        self.observe_legacy_spawn("actual")
         request = {
             "work": "W01", "state": "returned",
             "evidence": "原生代理清单中该执行者已返回。",
@@ -436,7 +542,7 @@ class CoverageRuntimeTests(unittest.TestCase):
         spawn = {
             "tool_name": "collaboration.spawn_agent",
             "tool_use_id": "call-stop-progress",
-            "tool_input": {"agent_type": "worker", "message": "[lean-work G01/W01] 执行工作包。"},
+            "tool_input": {"task_name": "worker", "message": "[lean-work G01/W01] 执行工作包。"},
         }
         self.hook("PreToolUse", **spawn)
         self.hook("PostToolUse", **spawn, tool_response='{"task_name":"/root/worker","nickname":"worker"}')
