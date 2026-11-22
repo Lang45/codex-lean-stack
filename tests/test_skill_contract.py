@@ -18,6 +18,7 @@ STACK = ROOT / "skills" / "lean-stack"
 SIMPLIFY = ROOT / "skills" / "lean-simplify"
 REFS = STACK / "references"
 GROUPED_GOAL_SESSIONS = "大型目标项目的分组会话"
+TAIL_REINFORCEMENT = "持续增派与长尾增援"
 
 
 def read(path: Path) -> str:
@@ -103,6 +104,39 @@ class SkillContractTests(unittest.TestCase):
                 self.assertTrue(default_routes, "missing default route for unspecified work")
                 for clause in default_routes:
                     self.assertRegex(clause, r"未(?:明确)?指定|未决定")
+
+    def test_tail_reinforcement_rechecks_assigned_critical_work_without_changing_ownership(self) -> None:
+        heading = f"\n### {TAIL_REINFORCEMENT}\n"
+        self.assertIn(heading, self.stack)
+        policy = re.split(r"\n#{2,3} ", self.stack.split(heading, 1)[1], maxsplit=1)[0]
+        trigger = policy.strip().split("\n\n", 1)[0]
+        self.assertRegex(trigger, r"成果采用[^。]*阶段推进[^。]*依赖解除[^。]*容量释放[^。]*全部未交付核心工作")
+        self.assertRegex(trigger, r"尚未分配[^。]*也看已分配包内[^。]*独立剩余工作")
+        self.assertRegex(trigger, r"剩余长包成为[^。]*关键路径[^。]*重新查看")
+
+        self.assertRegex(policy, r"原负责人[^。]*完整成果与验收[^。]*增援承担")
+        self.assertRegex(policy, r"负责人不等于独占执行[^。]*共享热点[^。]*唯一写者")
+        self.assertRegex(policy, r"明确的持续派遣[^。]*#用户明确指令优先[^。]*直接落实")
+        self.assertRegex(policy, r"默认三原则[^。]*成本[^。]*立即派发")
+        self.assertRegex(policy, r"没有可独立推进[^。]*真实依赖[^。]*权限[^。]*写入冲突[^。]*容量[^。]*继续原执行")
+        self.assertRegex(policy, r"不为维持人数[^。]*制造任务[^。]*重做已采用成果")
+        self.assertRegex(policy, r"只重查受影响的包[^。]*不增加全局重规划")
+
+    def test_tail_reinforcement_is_consumed_during_progress_adoption_and_recovery(self) -> None:
+        goals = self.simplify.split("\n## 多目标推进与逐项交付\n", 1)[1].split("\n## ", 1)[0]
+        adoption = self.results.split("\n## 父代理采用\n", 1)[1].split("\n## ", 1)[0]
+        recovery = read(REFS / "long-running.md").split("\n4. ", 1)[1].split("\n5. ", 1)[0]
+        group = self.collaboration.split("\n## 其他或新建 Codex 任务\n", 1)[0]
+        for name, source, target, action in (
+            ("main task", goals, "../lean-stack/SKILL.md", r"受影响包内[^。]*核心工作"),
+            ("adoption", adoption, "../SKILL.md", r"成果采用[^。]*等待[^。]*结束[^。]*已有负责人[^。]*独立核心工作"),
+            ("recovery", recovery, "../SKILL.md", r"恢复时[^。]*原负责人[^。]*剩余核心成果[^。]*增援切片"),
+            ("group execution", group, "../SKILL.md", r"独立核心工作[^。]*本组增援"),
+        ):
+            with self.subTest(consumer=name):
+                self.assertIn(f"]({target}#{TAIL_REINFORCEMENT})", source)
+                self.assertRegex(source, action)
+        self.assertRegex(self.openai_yaml, rf"入口[“\"]{TAIL_REINFORCEMENT}[^。]*已分配长包内[^。]*独立推进")
 
     def test_wait_and_stop_check_all_requested_undelivered_goals(self) -> None:
         priority = self.stack.split("\n## 用户明确指令优先\n", 1)[1].split("\n## ", 1)[0]

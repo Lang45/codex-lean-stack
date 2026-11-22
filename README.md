@@ -2,7 +2,12 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **10.1.0**
+Current version: **10.1.1**
+
+Delegation continues after the first batch. When a remaining assigned package becomes the delivery bottleneck,
+the owner checks for independent core work that additional agents can advance. The original owner retains
+acceptance and delivery responsibility; shared files keep one writer. Result adoption, waiting, stage recovery,
+and group coordination use the same rule, without creating idle agents or repeated reviews to maintain a count.
 
 Large projects that already have a native ongoing goal can use [group conversations](skills/lean-simplify/SKILL.md#大型目标项目的分组会话).
 The project owner checks whether several related workstreams need independent long-running contexts, explains a
