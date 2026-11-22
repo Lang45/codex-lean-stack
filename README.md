@@ -2,17 +2,13 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **9.9.1**
+Current version: **10.0.0**
 
-Explicit per-workstream requests use continuous [runtime checks](skills/lean-stack/references/runtime-coverage.md)
-for each undelivered outcome, acceptance condition, and current core milestone. Finishing a first packet still
-requires the next substantive contribution; support work and local blockers do not cover an unfinished workstream.
+The six plugin hooks, their session work-table implementation, and their setup instructions have been removed.
+Continued workstream delegation, result adoption, compaction recovery, and explicit return to the default quality,
+cost, and time principles remain in the two skills. No hook setup is required.
 Related workstreams finish the research needed for their joint change before implementing together; independent
 workstreams advance when ready, then integrate and verify. Reuse adopted research and connect new findings to an actual consumer.
-Native dispatch and return receipts track real work. Final milestone acceptance retires each delivered goal;
-whole-goal suspension needs evidence and a release condition. Compaction restores the same state, interruptions
-pause the guard, and renamed packets do not reset unchanged-gap loop protection. Ordinary tasks create no table.
-Hooks require the host's review and trust for the exact content; installation and prompt loading alone do not prove execution.
 
 Explicit delegation and continued workstream coverage go directly to execution. Initial dispatch, result adoption,
 dependency resolution, and released capacity reuse that decision; only unspecified delegation goes through the

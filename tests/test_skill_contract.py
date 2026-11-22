@@ -888,21 +888,39 @@ class SkillContractTests(unittest.TestCase):
         self.assertEqual(entries.count(["lean-simplify"]), 1)
         self.assertTrue(all(len(entry) == 1 for entry in entries))
 
-    def test_plugin_registers_the_coverage_guard_at_each_runtime_event(self) -> None:
-        hook_file = ROOT / self.manifest["hooks"]
-        events = json.loads(read(hook_file))["hooks"]
-        guard = '"${PLUGIN_ROOT}/skills/lean-stack/scripts/coverage_runtime.py" hook'
-        self.assertTrue({"SubagentStart", "SubagentStop"}.isdisjoint(events))
-        for event in (
-            "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionStart", "Interrupt",
+    def test_retired_coverage_hooks_have_no_declarations_or_activation_instructions(self) -> None:
+        self.assertNotIn("hooks", self.manifest)
+        for retired in (
+            ROOT / "hooks" / "hooks.json",
+            STACK / "scripts" / "coverage_runtime.py",
+            REFS / "runtime-coverage.md",
         ):
-            with self.subTest(event=event):
-                handlers = [handler for group in events[event] for handler in group["hooks"]]
-                for field in ("command", "commandWindows"):
-                    self.assertTrue(any(
-                        handler["type"] == "command" and handler.get(field, "").endswith(guard)
-                        for handler in handlers
-                    ), f"missing {field} guard for {event}")
+            with self.subTest(retired=retired.name):
+                self.assertFalse(retired.exists())
+
+        surfaces = {
+            "manifest interface": json.dumps(self.manifest["interface"], ensure_ascii=False),
+            "README": self.readme,
+            "lean-stack": self.stack,
+            "lean-simplify": self.simplify,
+            "dispatch": self.dispatch,
+            "adoption": self.results,
+            "release": self.versioning,
+            "lean-stack entry prompts": self.openai_yaml,
+            "lean-simplify entry prompts": read(SIMPLIFY / "agents" / "openai.yaml"),
+        }
+        for consumer, source in surfaces.items():
+            with self.subTest(consumer=consumer):
+                for retired in ("hooks/hooks.json", "hooks/list", "coverage_runtime.py", "runtime-coverage.md"):
+                    self.assertNotIn(retired, source)
+                self.assertNotIn("逐线持续要求使用运行检查", source)
+                self.assertNotRegex(source, r"(?:请|必须|务必)(?:先)?(?:启用|信任)(?:本插件的|该|这些)?(?:宿主|运行)?钩子")
+                self.assertNotRegex(source, r"(?:宿主|运行)钩子(?:须|需|应)[^。\n]*(?:启用|信任)")
+                self.assertNotRegex(
+                    source,
+                    r"(?im)^\s*(?:[-*]\s+)?(?:please\s+)?(?:enable|trust)\s+"
+                    r"(?:(?:the|these|plugin|runtime)\s+){0,3}hooks\b",
+                )
 
     def test_host_default_prompt_bounds_reject_overlong_or_excess_starters(self) -> None:
         self.assert_host_default_prompt_bounds(["中" * 128] * 3)
@@ -947,7 +965,9 @@ class SkillContractTests(unittest.TestCase):
         goals = re.sub(r"\s+", "", body.split("\n## ", 1)[0])
         self.assertRegex(goals, r"最早[^。]*尚未(?:完成|交付)")
         self.assertRegex(goals, r"已交付[^。]*退出[^。]*活动")
+        self.assertRegex(goals, r"持续派遣[^。]*继续补派")
         self.assertIn("](../lean-stack/SKILL.md#用户明确指令优先)", goals)
+        self.assertIn("](../lean-simplify/SKILL.md#多目标推进与逐项交付)", self.stack)
 
     def test_recovery_and_adoption_consume_the_active_goal_contract(self) -> None:
         target = "../../lean-simplify/SKILL.md#多目标推进与逐项交付"
@@ -956,6 +976,16 @@ class SkillContractTests(unittest.TestCase):
         for consumer, source in (("recovery", recovery), ("result adoption", adoption)):
             with self.subTest(consumer=consumer):
                 self.assertIn(f"]({target})", source)
+
+    def test_returning_to_three_principles_keeps_unfinished_goals_and_ends_the_override(self) -> None:
+        priority = self.stack.split("\n## 用户明确指令优先\n", 1)[1].split("\n## ", 1)[0]
+        reset = next(paragraph for paragraph in priority.split("\n\n") if "回到三原则" in paragraph)
+        self.assertRegex(reset, r"解除[^。]*(?:强制逐线覆盖|额外并行安排)")
+        self.assertRegex(reset, r"未完成目标[^。]*保留")
+        self.assertRegex(reset, r"继续[^。]*不重新启用")
+
+        scope = self.simplify.split("\n## 追加要求的作用范围\n", 1)[1].split("\n## ", 1)[0]
+        self.assertRegex(scope, r"已恢复三原则[^。]*不得重新生效")
 
     def test_active_research_routes_to_the_investigation_contract(self) -> None:
         routes = self.simplify.split("\n## 条件路由\n", 1)[1]
