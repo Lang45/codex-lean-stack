@@ -153,6 +153,47 @@ class CoverageRuntimeTests(unittest.TestCase):
         self.successful("update", "--session", self.session, "--data-dir", str(self.plugin_data), "--json", request)
         self.assertEqual(self.work_status(), "blocked")
 
+    def test_active_dispatch_requires_an_unambiguous_ready_work_marker(self) -> None:
+        tools = (
+            ("collaborationspawn_agent", {"task_name": "worker"}),
+            ("collaborationfollowup_task", {"target": "/root/worker"}),
+        )
+
+        def dispatch(tool: str, arguments: dict, message: str) -> dict:
+            return self.hook(
+                "PreToolUse", tool_name=tool, tool_use_id=f"call-marker-{uuid.uuid4()}",
+                tool_input={**arguments, "message": message},
+            )
+
+        for tool, arguments in tools:
+            unrestricted = dispatch(tool, arguments, "执行当前工作。")
+            self.assertNotEqual(self.permission(unrestricted), "deny", unrestricted)
+        self.assertFalse(self.table_path().exists())
+
+        self.plan(self.goals(2))
+        self.update("block", goal="G02", work="W01", blocker="输入未就绪。", evidence="当前输入清单。")
+        for tool, arguments in tools:
+            for message in (
+                "执行当前工作。",
+                "[lean-work G03/W01] 执行表外工作。",
+                "[lean-work G02/W01] 执行尚未就绪的工作。",
+                "[lean-work G01/W01] [lean-work G02/W01] 同时执行两项。",
+            ):
+                with self.subTest(tool=tool, message=message):
+                    denied = dispatch(tool, arguments, message)
+                    self.assertEqual(self.permission(denied), "deny", denied)
+                    reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
+                    self.assertRegex(reason, r"\[lean-work [A-Za-z0-9_-]+/[A-Za-z0-9_-]+\]")
+            permitted = dispatch(tool, arguments, "[lean-work G01/W01] 执行当前就绪工作。")
+            self.assertNotEqual(self.permission(permitted), "deny", permitted)
+        self.assertEqual(self.work_status(), "ready")
+
+        self.hook("UserPromptSubmit", prompt="本轮不再派任何子代理，先只说明当前证据。")
+        self.assertEqual(self.status()["status"], "paused")
+        for tool, arguments in tools:
+            unrestricted = dispatch(tool, arguments, "执行当前工作。")
+            self.assertNotEqual(self.permission(unrestricted), "deny", unrestricted)
+
     def test_native_dispatch_failure_does_not_cover_a_work_package(self) -> None:
         self.plan(self.goals(1))
         call = {

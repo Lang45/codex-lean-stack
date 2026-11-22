@@ -707,12 +707,23 @@ def register_dispatch(board: Row, event: Row, *, spawn: bool) -> None:
 
 
 def pre_tool(board: Row, data: Path, event: Row, name: str) -> Row:
-    if name not in LOCAL_TOOLS or own_cli(event.get("tool_input")):
+    arguments = event.get("tool_input")
+    dispatch = name in SPAWN_TOOLS | FOLLOWUP_TOOLS
+    if not dispatch and (name not in LOCAL_TOOLS or own_cli(arguments)):
+        return {}
+    if dispatch and isinstance(arguments, dict) and tagged_work(board, arguments, spawn=name in SPAWN_TOOLS):
         return {}
     ready = [f"{goal['id']}/{work['id']}" for goal, work in pending_work(board) if work["status"] == "ready"]
     status_command = cli_command(board, data, "status")
     update_command = cli_command(board, data, "update")
-    if ready:
+    if dispatch:
+        if ready:
+            reason = ("派遣前必须从当前覆盖表选择一个待派工作包，把该包对应的标记放进任务消息，"
+                      f"例如 [lean-work {ready[0]}]，每次调用对应一个包。")
+        else:
+            reason = ("当前覆盖表没有待派工作包。先核对已派状态、验收已返回结果，"
+                      "或根据实际证据登记重试及新工作包。")
+    elif ready:
         packages = "、".join(ready[:8]) + (f" 等共 {len(ready)} 项" if len(ready) > 8 else "")
         reason = (f"已登记的可独立派遣工作包仍待派：{packages}。"
                   "先派遣并带 [lean-work G01/W01] 标记，或登记有证据的具体阻断。")
@@ -753,7 +764,7 @@ def hook(event: Row) -> Row:
         return {}
     if not isinstance(tool_name, str):
         return {}
-    if kind == "PreToolUse" and tool_name not in LOCAL_TOOLS | LIST_TOOLS:
+    if kind == "PreToolUse" and tool_name not in LOCAL_TOOLS | LIST_TOOLS | SPAWN_TOOLS | FOLLOWUP_TOOLS:
         return {}
     if kind == "PostToolUse" and tool_name not in SPAWN_TOOLS | FOLLOWUP_TOOLS | LIST_TOOLS:
         return {}
