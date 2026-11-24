@@ -82,6 +82,20 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("首次准备委派", frontmatter)
         self.assertRegex(activation, explicit_request + r"[^。\n]*触发")
 
+    def test_current_user_direction_controls_approval_and_later_dispatch(self) -> None:
+        priority = self.stack.split("\n## 用户明确指令优先\n", 1)[1].split("\n## ", 1)[0]
+        default = self.stack.split("\n## 先判断是否委派，再选模型与复用\n", 1)[1].split("\n## ", 1)[0]
+        self.assertRegex(priority, r"转述[^。]*不因此成为用户原话")
+        self.assertRegex(priority, r"阻止已授权工作[^。]*才定向核对[^。]*原用户消息及适用阶段")
+        self.assertRegex(priority, r"无原话支持[^。]*禁派不作当前限制")
+        self.assertRegex(priority, r"用户说“不派子代理”[^。]*不按默认原则自行派发")
+        self.assertRegex(priority, r"仍有效的用户禁派[^。]*明确预算[^。]*真实权限[^。]*继续生效")
+        self.assertRegex(priority, r"同意建议中的首批人数[^。]*没有限定后续数量[^。]*不产生总人数上限或续派审批")
+        self.assertRegex(priority, r"明确的[^。]*数量限制[^。]*才按其人数、对象与期限约束后续调用")
+        self.assertRegex(default, r"普通协作子代理[^。]*已有任务权限[^。]*明确预算[^。]*即首派或续派[^。]*无需通用的逐次用户确认")
+        self.assertRegex(default, r"另建、分叉用户会话[^。]*明确授权")
+        self.assertRegex(read(REFS / "delegation.md"), r"#其他或新建-codex-任务[^。]*不把其确认条件移到[^。]*普通协作子代理")
+
     def test_dispatch_consumers_scope_default_routing_to_unspecified_work(self) -> None:
         explicit = "../SKILL.md#用户明确指令优先"
         default = re.escape("](../SKILL.md#先判断是否委派再选模型与复用)")
@@ -100,6 +114,10 @@ class SkillContractTests(unittest.TestCase):
         for consumer, source in consumers:
             with self.subTest(consumer=consumer):
                 self.assertIn(f"]({explicit})", source)
+                if consumer == "same-family parallel work":
+                    self.assertIn(f"](../SKILL.md#{TAIL_REINFORCEMENT})", source)
+                    self.assertRegex(source, r"明确安排直接接续[^。]*未指定才作默认快判")
+                    continue
                 default_routes = re.findall(r"[^。；]*" + default, source)
                 self.assertTrue(default_routes, "missing default route for unspecified work")
                 for clause in default_routes:
@@ -132,11 +150,12 @@ class SkillContractTests(unittest.TestCase):
             ("adoption", adoption, "../SKILL.md", r"成果采用[^。]*等待[^。]*结束[^。]*已有负责人[^。]*独立核心工作"),
             ("recovery", recovery, "../SKILL.md", r"恢复时[^。]*原负责人[^。]*剩余核心成果[^。]*增援切片"),
             ("group execution", group, "../SKILL.md", r"独立核心工作[^。]*本组增援"),
+            ("same-family copies", read(REFS / "agent-groups.md").split("\n## 复制\n", 1)[1].split("\n## ", 1)[0],
+             "../SKILL.md", r"全部剩余核心工作[^。]*已有长包[^。]*独立切片"),
         ):
             with self.subTest(consumer=name):
                 self.assertIn(f"]({target}#{TAIL_REINFORCEMENT})", source)
                 self.assertRegex(source, action)
-        self.assertRegex(self.openai_yaml, rf"入口[“\"]{TAIL_REINFORCEMENT}[^。]*已分配长包内[^。]*独立推进")
 
     def test_wait_and_stop_check_all_requested_undelivered_goals(self) -> None:
         priority = self.stack.split("\n## 用户明确指令优先\n", 1)[1].split("\n## ", 1)[0]
@@ -302,7 +321,6 @@ class SkillContractTests(unittest.TestCase):
             selection,
             self.dispatch,
             self.readme,
-            self.openai_yaml,
         ):
             positions = [surface.index(model) for model in models]
             self.assertEqual(positions, sorted(positions))
@@ -364,7 +382,7 @@ class SkillContractTests(unittest.TestCase):
             consumer = self.results.split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
             self.assertIn("dispatch-start.md#62-调用防错", consumer)
             self.assertIn("关键要求对应证据", consumer)
-        self.assertIn("6.2 调用防错", self.openai_yaml)
+        self.assertIn("references/dispatch-start.md#62-调用防错", self.stack)
 
     def test_62_error_prevention_has_a_model_scoped_retirement_checklist(self) -> None:
         policy = self.dispatch.split("## 6.2 调用防错", 1)[1].split("\n## ", 1)[0]
@@ -428,6 +446,8 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assertIn("opening_declaration", self.dispatch)
         self.assertIn("opening_status", self.dispatch)
+        self.assertRegex(self.dispatch, r"`opening_declaration`[^。]*`opening_status`[^。]*任一必需值缺失[^。]*改用真实兼容运行时角色[^。]*不先派出")
+        self.assertRegex(self.dispatch, r"明确指定不可替换身份或配置[^。]*报告[^。]*不擅改明确指定")
         self.assertNotIn("存活轮次：未核验", self.dispatch + self.stack + self.openai_yaml)
         self.assertNotIn("经验：未核验", self.dispatch + self.stack + self.openai_yaml)
         self.assertNotRegex(
@@ -450,14 +470,13 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("缺少实际状态时先向父代理内部报告", self.results)
         self.assertIn("最终回复保持相同标记", read(REFS / "collaboration.md"))
         self.assertIn("名称标新建", self.flowcharts)
-        self.assertIn("第一行名称按实际派发标一次（复用）或（新建）", self.openai_yaml)
+        self.assertRegex(self.dispatch, r"第一行名称末尾只出现一个[^。]*实际路线一致的标记")
 
     def test_only_astra_is_the_expert_route(self) -> None:
         for surface in (
             self.stack,
             self.dispatch,
             self.readme,
-            self.openai_yaml,
         ):
             compact = surface.replace("`", "")
             self.assertIn("前两档都是常规子代理路线", compact)
@@ -488,7 +507,9 @@ class SkillContractTests(unittest.TestCase):
     def test_adopted_runtime_family_uses_the_bounded_retention_conditions(self) -> None:
         self.assertIn("references/agent-results.md#父代理采用", self.stack)
         self.assertIn("已完成切片或续用增量的最终结果", self.results)
-        self.assertIn("不等待用户提醒、保留线程结束或整个主任务结束", self.results)
+        adoption = self.results.split("## 父代理采用", 1)[1].split("\n## ", 1)[0]
+        self.assertRegex(adoption, r"接续已解锁的核心工作[^。]*再[^。]*同一采用闭环[^。]*不等待用户提醒或保留线程结束")
+        self.assertRegex(adoption, r"维护命令和必要回读[^。]*自然等待或收口前完成[^。]*不把[^。]*下一包启动前置")
         self.assertIn("是否保留能力族", self.results)
         self.assertIn("是否保存新增经验", self.results)
         self.assertIn("不要求首次发明算法", self.memory)
@@ -806,7 +827,6 @@ class SkillContractTests(unittest.TestCase):
             with self.subTest(surface=label):
                 self.assertIn(anchor, surface)
                 self.assertNotRegex(surface, r"#computer-use父代理指导(?:terra|sol)-操作")
-        self.assertRegex(self.openai_yaml, r"Computer Use 的[^；]*低风险[^；]*GPT-6\.1 Terra[^；]*高风险[^；]*GPT-6\.2 Sol")
 
     def test_action_scoped_skill_reading_and_user_input_ownership(self) -> None:
         windows = read(REFS / "windows-exec.md")
@@ -822,14 +842,20 @@ class SkillContractTests(unittest.TestCase):
             with self.subTest(entry=target):
                 self.assertIn(f"]({target}#按动作读取技能)", entry)
                 self.assertRegex(entry.split("---", 2)[1], r"(?m)^description: .*按动作读完整命中节")
-                self.assertRegex(prompt, r"下一动作[^。]*完整命中节[^。]*固定行数不代表")
+                self.assertRegex(prompt, r"当前动作[^。]*完整命中节")
 
         route = self.stack.split("\n## Computer Use：父代理指导，按任务选配\n", 1)[1].split("\n## ", 1)[0]
         self.assertIn("](../SKILL.md#computer-use父代理指导按任务选配)", windows)
         self.assertRegex(route, r"`UIA`[^。]*`Win32`[^。]*`SendKeys`[^。]*消费本节[^。]*不能[^。]*绕过")
-        self.assertRegex(route, r"用户正在输入[^。]*接管[^。]*停止后续界面变更[^。]*交权[^。]*核对已发动作[^。]*在途")
-        self.assertRegex(route, r"交权后[^。]*不自行抢焦点[^。]*被动观察不[^。]*激活窗口")
-        self.assertRegex(route, r"明确续作后重新观察[^。]*焦点[^。]*编辑状态")
+        ownership = route.split("- **操作所有权：**", 1)[1].split("\n- **", 1)[0]
+        self.assertRegex(ownership, r"用户打字[^。]*移动鼠标[^。]*暂缓[^。]*界面变更[^。]*交权")
+        self.assertRegex(ownership, r"用户要求接管\s*或[^。]*无法确认归属的焦点变化[^。]*同样暂缓")
+        self.assertRegex(ownership, r"核对已发动作[^。]*在途")
+        self.assertRegex(route, r"暂缓期间[^。]*不抢焦点[^。]*被动观察不[^。]*激活窗口[^。]*后台工作按原授权继续")
+        self.assertRegex(route, r"不默认等待用户再说[^。]*继续")
+        self.assertRegex(route, r"真实活动信号[^。]*确认用户已空闲[^。]*重新观察[^。]*在原授权内及时续作")
+        self.assertRegex(route, r"等待时长或一次截图不证明空闲[^。]*信号未知[^。]*只继续独立后台工作")
+        self.assertRegex(route, r"用户明确停止[^。]*空闲不解除[^。]*明确续作后才操作")
         self.assertRegex(route, r"缺少前值[^。]*不自行[^。]*整表恢复默认")
         self.assertRegex(route, r"用户明确要求默认值[^。]*按指定范围执行")
         self.assertRegex(route, r"可见状态冲突[^。]*保留未知[^。]*不宣称已稳定恢复")
@@ -929,7 +955,6 @@ class SkillContractTests(unittest.TestCase):
             self.dispatch,
             self.collaboration,
             self.versioning,
-            self.openai_yaml,
             self.readme,
         )
         for document in (self.stack, self.results, *fallback_documents):
@@ -942,19 +967,18 @@ class SkillContractTests(unittest.TestCase):
             self.assertIn("本次任务上下文", document)
 
     def test_skill_prompt_and_authoritative_rules_publish_current_behavior(self) -> None:
-        # Manifest starters fit the host's 128-character field and route to skills.
-        # Detailed dispatch contracts belong to the skill and its references.
-        for term in ("$lean-stack", "当前子代理", "保留子代理", "五行", "进展"):
-            self.assertIn(term, self.openai_yaml)
+        for skill, yaml in (("lean-stack", self.openai_yaml), ("lean-simplify", read(SIMPLIFY / "agents" / "openai.yaml"))):
+            prompt = json.loads(yaml.split("default_prompt: ", 1)[1].splitlines()[0])
+            self.assertLessEqual(len(prompt), 128)
+            self.assertIn(f"使用 ${skill}", prompt)
+            self.assertIn("完整命中节", prompt)
+        self.assertRegex(self.openai_yaml, r"三原则[^。]*首批人数不作上限[^。]*禁派[^。]*权限")
+        self.assertRegex(read(SIMPLIFY / "agents" / "openai.yaml"), r"先接续[^。]*核心工作[^。]*再闭合必要维护")
         self.assertIn("`xhigh` 是上限，不是默认值", self.stack)
-        self.assertIn("当前会话已经加载、属于同一能力族、质量兼容", self.openai_yaml)
-        self.assertIn(
-            "目录查询失败但当前会话已加载类型中已有符合三项条件的明确候选时",
-            self.openai_yaml,
-        )
-        self.assertIn("按结果采用入口自动分别判断身份保留和新增经验", self.openai_yaml)
-        self.assertIn("运行时经验行写“本次任务上下文”", self.openai_yaml)
-        self.assertIn("实质变化", self.openai_yaml)
+        self.assertRegex(self.dispatch, r"当前会话已经加载[^。]*属于同一能力族[^。]*质量兼容")
+        self.assertRegex(self.dispatch, r"目录查询失败但当前会话已加载类型中已有[^。]*符合三项条件的明确候选")
+        self.assertRegex(self.stack, r"父代理采用[^。]*自动完成能力族与新增经验的两项判断")
+        self.assertRegex(self.dispatch, r"只有用户优先级[^。]*实质变化时[^。]*重新选路")
         self.assertNotIn("必须尝试", self.openai_yaml)
         self.assertIn("运行时子代理在以下条件成立时选择性建档", self.memory)
         self.assertIn("“存活轮次：0”“经验：本次任务上下文”", self.dispatch)

@@ -2,12 +2,16 @@
 
 **Focused task execution and model-aware subagent delegation for Codex.**
 
-Current version: **10.1.2**
+Current version: **10.1.3**
 
-Read the complete section needed for the next action. New conversations use creation rather than
-history forks unless requested, and handoffs preserve the scope of temporary instructions. UI control
-includes the user's ownership and precise undo; delivered capabilities verify the public entry,
-actual backend calls, and visible results rather than startup or lower-level tests alone.
+Routine subagent delegation proceeds within the authorized task without repeated approval.
+Approved first-batch counts do not cap later reinforcement. Check the original user source before
+applying a relayed restriction, and start newly unblocked core work before independent maintenance.
+
+Skill prompts are short entry points; detailed rules live in the skill body. User keyboard or mouse
+activity temporarily yields UI control while background work continues. Fresh idle evidence and a
+new view of the target allow automatic continuation within the original authorization; an explicit
+stop remains binding.
 
 Delegation continues after the first batch. When a remaining assigned package becomes the delivery bottleneck,
 the owner checks for independent core work that additional agents can advance. The original owner retains
