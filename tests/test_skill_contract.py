@@ -783,7 +783,6 @@ class SkillContractTests(unittest.TestCase):
             "只读界面观察",
             "父代理指导与验收",
             "委派不扩大现有授权",
-            "同一桌面、窗口或标签页保持一个操作者",
             "模型和工具须在执行子代理中真实可用",
             "不把发出点击命令当作已保存或已完成",
             "报告具体缺口",
@@ -791,6 +790,7 @@ class SkillContractTests(unittest.TestCase):
             "指定执行者已操作",
         ):
             self.assertIn(term, route)
+        self.assertRegex(route, r"同一桌面、窗口或标签页[^。]*用户[^。]*一个实际操作者")
         observations = " ".join(route.split("Computer Use 工具自身", 1)[1].split("\n\n", 1)[0].split())
         self.assertIn("应用/窗口清单、UI 树和截图等只读观察也属于本节", observations)
         self.assertRegex(observations, r"不能因接口名是 API.+只有一次调用，就由父代理直接执行或绕过本入口")
@@ -807,6 +807,59 @@ class SkillContractTests(unittest.TestCase):
                 self.assertIn(anchor, surface)
                 self.assertNotRegex(surface, r"#computer-use父代理指导(?:terra|sol)-操作")
         self.assertRegex(self.openai_yaml, r"Computer Use 的[^；]*低风险[^；]*GPT-6\.1 Terra[^；]*高风险[^；]*GPT-6\.2 Sol")
+
+    def test_action_scoped_skill_reading_and_user_input_ownership(self) -> None:
+        windows = read(REFS / "windows-exec.md")
+        reading = windows.split("\n## 按动作读取技能\n", 1)[1].split("\n## ", 1)[0]
+        self.assertRegex(reading, r"下一动作[^。]*完整章节[^。]*实际读到再应用")
+        self.assertRegex(reading, r"截在命中节前[^。]*补该节[^。]*不能宣称[^。]*已读")
+        self.assertRegex(reading, r"不把固定行数当作稳定覆盖[^。]*未变化[^。]*复用")
+        self.assertRegex(reading, r"只补当前所需[^。]*不[^。]*预读所有入口")
+        for entry, target, prompt in (
+            (self.stack, "references/windows-exec.md", self.openai_yaml),
+            (self.simplify, "../lean-stack/references/windows-exec.md", read(SIMPLIFY / "agents" / "openai.yaml")),
+        ):
+            with self.subTest(entry=target):
+                self.assertIn(f"]({target}#按动作读取技能)", entry)
+                self.assertRegex(entry.split("---", 2)[1], r"(?m)^description: .*按动作读完整命中节")
+                self.assertRegex(prompt, r"下一动作[^。]*完整命中节[^。]*固定行数不代表")
+
+        route = self.stack.split("\n## Computer Use：父代理指导，按任务选配\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("](../SKILL.md#computer-use父代理指导按任务选配)", windows)
+        self.assertRegex(route, r"`UIA`[^。]*`Win32`[^。]*`SendKeys`[^。]*消费本节[^。]*不能[^。]*绕过")
+        self.assertRegex(route, r"用户正在输入[^。]*接管[^。]*停止后续界面变更[^。]*交权[^。]*核对已发动作[^。]*在途")
+        self.assertRegex(route, r"交权后[^。]*不自行抢焦点[^。]*被动观察不[^。]*激活窗口")
+        self.assertRegex(route, r"明确续作后重新观察[^。]*焦点[^。]*编辑状态")
+        self.assertRegex(route, r"缺少前值[^。]*不自行[^。]*整表恢复默认")
+        self.assertRegex(route, r"用户明确要求默认值[^。]*按指定范围执行")
+        self.assertRegex(route, r"可见状态冲突[^。]*保留未知[^。]*不宣称已稳定恢复")
+
+    def test_thread_actions_and_handoff_preserve_current_authorization_scope(self) -> None:
+        collaboration = self.collaboration.split("\n## 其他或新建 Codex 任务\n", 1)[1].split("\n## ", 1)[0]
+        scope = self.simplify.split("\n## 追加要求的作用范围\n", 1)[1].split("\n## ", 1)[0]
+        self.assertRegex(collaboration, r"新建会话继续[^。]*默认使用 `create_thread`[^。]*必要交接")
+        self.assertRegex(collaboration, r"只有用户明确要求[^。]*继承[^。]*历史[^。]*才使用 `fork_thread`")
+        self.assertRegex(collaboration, r"沿用项目[^。]*不等于继承整段历史")
+        self.assertRegex(collaboration, r"交付[^。]*结束运行[^。]*重分工[^。]*不推定为归档授权")
+        self.assertRegex(collaboration, r"归档、取消归档及删除[^。]*具体会话[^。]*明确授权")
+        self.assertIn("](../../lean-simplify/SKILL.md#追加要求的作用范围)", collaboration)
+        self.assertRegex(collaboration, r"已到期[^。]*止派[^。]*不写成新会话的用户限制")
+        self.assertRegex(collaboration, r"仍有效的禁派[^。]*只读及权限边界[^。]*保留")
+        self.assertRegex(scope, r"确认所指阶段已交付后[^。]*不[^。]*后续新任务的永久限制")
+        self.assertRegex(scope, r"无法确定期限时[^。]*不擅自撤销仍有效的明确禁止")
+
+    def test_positive_business_chain_is_consumed_by_build_and_verification(self) -> None:
+        verification = read(REFS / "verification.md")
+        chain = verification.split("\n## 正向业务链\n", 1)[1].split("\n## ", 1)[0]
+        build = read(REFS / "build.md").split("\n## UI 的实际验收\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("](#正向业务链)", verification.split("\n## 正向业务链\n", 1)[0])
+        self.assertIn("](verification.md#正向业务链)", build)
+        self.assertRegex(chain, r"用户入口[^。]*后台调用[^。]*关键参数[^。]*可见结果[^。]*保存或撤销")
+        self.assertRegex(chain, r"不能只直接调用底层接口[^。]*打开关闭[^。]*拒绝场景[^。]*替代成功主链")
+        self.assertRegex(chain, r"入口未修改[^。]*不排除[^。]*真实消费者")
+        self.assertRegex(chain, r"受控替身[^。]*只证明软件链[^。]*真实设备[^。]*权限缺口[^。]*保留")
+        self.assertRegex(build, r"新增或恢复[^。]*真实入口[^。]*后台调用[^。]*可见反馈")
+        self.assertRegex(build, r"实际入口不可用[^。]*缺口[^。]*不能据此宣称 UI 已验收")
 
     def test_machine_identity_and_display_name_are_distinct(self) -> None:
         for term in ("agent_ref", "display_name", "lean_*", "中文展示名"):
